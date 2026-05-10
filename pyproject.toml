@@ -1,18 +1,62 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pyjuxt"
-version = "0.1.0"
+name = "juxt"
+dynamic = ["version"]
+description = "Fast desktop tool for navigating N-dimensional hypercubes of geospatial plots"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
+authors = [
+    { name = "Colin Moldenhauer", email = "colin.moldenhauer@posteo.de" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
 dependencies = [
     "PySide6",
     "PyYAML",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ColinMoldenhauer/juxt"
+Documentation = "https://juxt.readthedocs.io"
+Repository = "https://github.com/ColinMoldenhauer/juxt"
+"Bug Tracker" = "https://github.com/ColinMoldenhauer/juxt/issues"
+
+[project.optional-dependencies]
+docs = [
+    "mkdocs-material",
+    "mkdocs-include-markdown-plugin",
+]
+
 [project.scripts]
 juxt = "juxt.__main__:main"
 
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "juxt/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["juxt"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "juxt/",
+    "README.md",
+    "pyproject.toml",
+    "sample_config.yaml",
+]

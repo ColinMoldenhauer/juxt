@@ -8,7 +8,7 @@
 ## Install
 
 ```
-pip install pyjuxt
+pip install juxt
 ```
 
 ## Quick start
