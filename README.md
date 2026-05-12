@@ -1,6 +1,8 @@
+<p align="center">
+  <img src="docs/assets/logo_large_transparent.png" width="120" alt="juxt logo">
+</p>
+
 # juxt
-
-
 *juxt* is clipped from *juxtapose* (Latin *juxta*, "beside") and shares its meaning with παραβολή (*parabolē*, "placing beside") — the Greek root of both *parable* and *parabola*.
 
 `juxt` is a fast desktop tool for visually comparing geospatial plots across multiple parameter axes. Define axes (sensor, date, overpass, source, …) and flip through the resulting image hypercube with keyboard navigation.

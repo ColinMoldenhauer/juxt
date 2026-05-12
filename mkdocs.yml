@@ -11,6 +11,8 @@ nav:
 
 theme:
   name: material
+  logo: assets/log_transparent.png
+  favicon: assets/logo_transparent.png
   palette:
     scheme: slate
     primary: teal
