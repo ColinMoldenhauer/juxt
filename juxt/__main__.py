@@ -1,8 +1,10 @@
 from __future__ import annotations
 import sys
-from itertools import product
+import warnings
+from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QProgressDialog
 
 from .config import load_config
@@ -15,8 +17,24 @@ def main():
         print("Usage: juxt <config.yaml>")
         sys.exit(1)
 
+    if sys.platform == "win32" and Path(sys.executable).stem.lower() in ("python", "pythonw"):
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("juxt")
+
     app = QApplication(sys.argv)
     app.setApplicationName("juxt")
+    _logo = Path(__file__).parent / "assets" / "logo_transparent.ico"
+    if not _logo.exists():  # fallback for editable installs
+        _logo = Path(__file__).parent.parent / "docs" / "assets" / "logo_transparent.ico"
+    app_icon = QIcon()
+    if _logo.exists():
+        app_icon = QIcon(str(_logo))
+        if app_icon.isNull():
+            warnings.warn(f"Icon file found but failed to load: {_logo}")
+        else:
+            app.setWindowIcon(app_icon)
+    else:
+        warnings.warn(f"No logo file found at {_logo}")
 
     try:
         config = load_config(sys.argv[1])
@@ -42,7 +60,10 @@ def main():
     progress.close()
 
     window = MainWindow(config, pixmaps)
-    window.show()
+    window.showMaximized()
+    app.processEvents()
+    if not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     sys.exit(app.exec())
 
 

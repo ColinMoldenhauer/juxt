@@ -53,6 +53,10 @@ version-file = "juxt/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["juxt"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"docs/assets/logo_large_transparent.png" = "juxt/assets/logo_large_transparent.png"
+"docs/assets/logo_transparent.png" = "juxt/assets/logo_transparent.png"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "juxt/",
