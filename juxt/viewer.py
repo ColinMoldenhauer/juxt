@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, QTimer
-from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPixmap
-from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QMainWindow
+from PySide6.QtCore import Qt, QRectF, QTimer, Signal
+from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
+from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QLabel, QMainWindow
 
 from .config import Config
 
 
 class ImageView(QGraphicsView):
+    state_changed = Signal()
+    toggle_bar = Signal()
+
     def __init__(self, config: Config, pixmaps: dict[tuple, QPixmap], parent=None):
         self._scene = QGraphicsScene()
         super().__init__(self._scene, parent)
@@ -32,8 +35,6 @@ class ImageView(QGraphicsView):
             for ch, name in config.keys.items()
             if name in self.axis_names
         }
-
-        self._overlay_on = True
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
@@ -61,6 +62,7 @@ class ImageView(QGraphicsView):
             self._item.setPixmap(pm)
             self._scene.setSceneRect(QRectF(pm.rect()))
         self.viewport().update()
+        self.state_changed.emit()
 
     def _h_axis(self) -> int:
         return self.focus_stack[0]
@@ -79,6 +81,7 @@ class ImageView(QGraphicsView):
             self.focus_stack.remove(axis)
         self.focus_stack.insert(0, axis)
         self.viewport().update()
+        self.state_changed.emit()
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -129,9 +132,18 @@ class ImageView(QGraphicsView):
             self.fit_image()
         elif k == Qt.Key_0:
             self.reset_zoom()
-        elif k == Qt.Key_H:
-            self._overlay_on = not self._overlay_on
-            self.viewport().update()
+        elif k == Qt.Key_H and event.modifiers() & Qt.ControlModifier:
+            self.toggle_bar.emit()
+        elif k in (Qt.Key_Return, Qt.Key_Enter):
+            win = self.window()
+            if win.isFullScreen():
+                win.showMaximized()
+            else:
+                win.showFullScreen()
+        elif k == Qt.Key_Escape:
+            win = self.window()
+            if win.isFullScreen():
+                win.showMaximized()
         else:
             ch = event.text().lower()
             if ch in self.key_to_axis:
@@ -149,56 +161,6 @@ class ImageView(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
 
-    def drawForeground(self, painter: QPainter, rect):
-        """Draw status overlay in viewport coordinates (immune to pan/zoom)."""
-        if not self._overlay_on:
-            return
-
-        painter.save()
-        painter.resetTransform()
-        painter.setClipping(False)
-
-        font = QFont("Courier New" if __import__("sys").platform == "win32" else "monospace", 10)
-        painter.setFont(font)
-        fm = painter.fontMetrics()
-
-        h_idx = self._h_axis()
-        v_idx = self._v_axis()
-
-        # Line 1: current coordinate values
-        coord_str = "  ".join(
-            f"{name}={self.axis_values[i][self.pos[i]]}"
-            for i, name in enumerate(self.axis_names)
-        )
-
-        # Line 2: arrow bindings
-        h_name = self.axis_names[h_idx]
-        v_name = self.axis_names[v_idx] if v_idx is not None else "—"
-        bind_str = f"→/← {h_name}    ↑/↓ {v_name}"
-
-        # Line 3: key hints
-        key_hints = "  ".join(
-            f"[{ch}] {self.axis_names[self.key_to_axis[ch]]}"
-            for ch in sorted(self.key_to_axis)
-        )
-
-        lines = [coord_str, bind_str]
-        if key_hints:
-            lines.append(key_hints)
-
-        margin = 8
-        pad = 6
-        line_h = fm.height() + 2
-        box_w = max(fm.horizontalAdvance(l) for l in lines) + pad * 2
-        box_h = line_h * len(lines) + pad * 2 - 2
-
-        painter.fillRect(margin, margin, box_w, box_h, QColor(0, 0, 0, 170))
-        painter.setPen(QColor(255, 255, 255))
-        for j, line in enumerate(lines):
-            painter.drawText(margin + pad, margin + pad + fm.ascent() + j * line_h, line)
-
-        painter.restore()
-
 
 class MainWindow(QMainWindow):
     def __init__(self, config: Config, pixmaps: dict):
@@ -206,5 +168,46 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("juxt")
         self.view = ImageView(config, pixmaps, self)
         self.setCentralWidget(self.view)
-        self.resize(1280, 860)
+
+        bar = self.statusBar()
+        bar.setStyleSheet(
+            "QStatusBar { background: #1a1a1a; color: #e0e0e0; "
+            "font-family: 'Courier New', monospace; font-size: 9pt; "
+            "border-top: 1px solid #333; }"
+            "QStatusBar::item { border: none; }"
+        )
+        self._status_label = QLabel()
+        self._status_label.setStyleSheet("color: #e0e0e0; padding: 2px 8px;")
+        bar.addWidget(self._status_label, 1)
+
+        self.view.state_changed.connect(self._update_status)
+        self.view.toggle_bar.connect(self._toggle_status_bar)
+
+        self._update_status()
         QTimer.singleShot(0, self.view.fit_image)
+
+    def _update_status(self):
+        v = self.view
+        h_idx = v._h_axis()
+        v_idx = v._v_axis()
+
+        coord_str = "  ".join(
+            f"{name}={v.axis_values[i][v.pos[i]]}"
+            for i, name in enumerate(v.axis_names)
+        )
+        h_name = v.axis_names[h_idx]
+        v_name = v.axis_names[v_idx] if v_idx is not None else "—"
+        bind_str = f"→/← {h_name}  ↑/↓ {v_name}"
+        key_hints = "  ".join(
+            f"[{ch}] {v.axis_names[v.key_to_axis[ch]]}"
+            for ch in sorted(v.key_to_axis)
+        )
+
+        parts = [coord_str, bind_str]
+        if key_hints:
+            parts.append(key_hints)
+        self._status_label.setText("  |  ".join(parts))
+
+    def _toggle_status_bar(self):
+        sb = self.statusBar()
+        sb.setVisible(not sb.isVisible())
