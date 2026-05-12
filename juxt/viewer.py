@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+from enum import IntEnum
+
 from PySide6.QtCore import Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QLabel, QMainWindow
 
 from .config import Config
+
+
+class NavMode(IntEnum):
+    TWIN = 0
+    MULTI_SELECT = 1
+    CASE_SENSITIVE = 2
+
+    @property
+    def label(self) -> str:
+        return ("twin", "multi-select", "case-sensitive")[self]
 
 
 class ImageView(QGraphicsView):
@@ -21,12 +33,10 @@ class ImageView(QGraphicsView):
         self.axis_values = list(config.axes.values())
         self.n_axes = len(self.axis_names)
 
-        # Current position (indices) and previous for spacebar toggle
         self.pos: list[int] = [0] * self.n_axes
         self.prev: list[int] | None = None
 
-        # Focus stack: axis indices, most recently focused first.
-        # pos[focus_stack[0]] is cycled by →/←; pos[focus_stack[1]] by ↑/↓.
+        # Most recently focused axis first; focus_stack[0] → ←/→, [1] → ↑/↓
         self.focus_stack: list[int] = list(range(self.n_axes))
 
         # letter → axis index
@@ -35,6 +45,14 @@ class ImageView(QGraphicsView):
             for ch, name in config.keys.items()
             if name in self.axis_names
         }
+
+        self.nav_mode = NavMode(config.mode)
+
+        # Active incremental-search state (value picker and multi-select).
+        # None  = no active selection
+        # axis phase:  {"phase": "axis",  "query": str}
+        # value phase: {"phase": "value", "query": str, "axis_idx": int}
+        self._sel: dict | None = None
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
@@ -80,8 +98,115 @@ class ImageView(QGraphicsView):
         if axis in self.focus_stack:
             self.focus_stack.remove(axis)
         self.focus_stack.insert(0, axis)
-        self.viewport().update()
-        self.state_changed.emit()
+
+    # ── incremental-search (value picker / multi-select) ─────────────────────
+
+    def _sel_candidates(self) -> list[str]:
+        """Items matching the current query by case-insensitive prefix."""
+        assert self._sel is not None
+        q = self._sel["query"]
+        if self._sel["phase"] == "axis":
+            return [n for n in self.axis_names if n.lower().startswith(q)]
+        return [v for v in self.axis_values[self._sel["axis_idx"]] if v.lower().startswith(q)]
+
+    def _sel_open_axis(self, initial: str = ""):
+        """Enter axis-selection phase (mode 1 entry point)."""
+        self._sel = {"phase": "axis", "query": initial.lower(), "cursor": 0}
+        self._sel_try_commit()
+
+    def _sel_open_value(self, axis_idx: int, initial: str = ""):
+        """Enter value-selection phase for a known axis (ctrl+letter entry point)."""
+        self._focus(axis_idx)
+        self._sel = {"phase": "value", "query": initial.lower(), "axis_idx": axis_idx, "cursor": 0}
+        self._sel_try_commit()
+
+    def _sel_try_commit(self):
+        """Auto-commit when exactly one candidate remains (greedy match).
+
+        NOTE: the greedy auto-confirm behaviour is a candidate for a
+        user-configurable flag (require explicit Enter instead).
+        """
+        candidates = self._sel_candidates()
+        if len(candidates) == 1:
+            self._sel_commit(candidates[0])
+        else:
+            # Clamp cursor in case the candidate list shrank
+            n = len(candidates)
+            self._sel["cursor"] = min(self._sel["cursor"], n - 1) if n else 0
+            self.state_changed.emit()
+
+    def _sel_commit(self, value: str):
+        if self._sel["phase"] == "axis":
+            axis_idx = self.axis_names.index(value)
+            self._focus(axis_idx)
+            self._sel = {"phase": "value", "query": "", "axis_idx": axis_idx, "cursor": 0}
+            self._sel_try_commit()
+        else:
+            axis_idx = self._sel["axis_idx"]
+            self.prev = list(self.pos)
+            self.pos[axis_idx] = self.axis_values[axis_idx].index(value)
+            self._sel = None
+            self._refresh()
+
+    def _sel_handle_key(self, event: QKeyEvent) -> bool:
+        """Handle input while a selection is active. Returns True if consumed."""
+        k = event.key()
+
+        if k == Qt.Key_Escape:
+            self._sel = None
+            self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Backspace:
+            q = self._sel["query"]
+            if q:
+                self._sel["query"] = q[:-1]
+                self._sel["cursor"] = 0
+                self.state_changed.emit()
+            elif self._sel["phase"] == "value":
+                # backspace on empty value query → back to axis search
+                self._sel = {"phase": "axis", "query": "", "cursor": 0}
+                self.state_changed.emit()
+            else:
+                self._sel = None
+                self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Right:
+            candidates = self._sel_candidates()
+            if candidates:
+                self._sel["cursor"] = (self._sel["cursor"] + 1) % len(candidates)
+                self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Left:
+            candidates = self._sel_candidates()
+            if candidates:
+                self._sel["cursor"] = (self._sel["cursor"] - 1) % len(candidates)
+                self.state_changed.emit()
+            return True
+
+        if Qt.Key_1 <= k <= Qt.Key_9:
+            idx = k - Qt.Key_1
+            candidates = self._sel_candidates()
+            if idx < len(candidates):
+                self._sel_commit(candidates[idx])
+            return True
+
+        if k in (Qt.Key_Return, Qt.Key_Enter):
+            candidates = self._sel_candidates()
+            if candidates:
+                self._sel_commit(candidates[self._sel["cursor"]])
+            return True
+
+        ch = event.text()
+        if ch and ch.isprintable():
+            self._sel["query"] += ch.lower()
+            self._sel["cursor"] = 0
+            self._sel_try_commit()
+            return True
+
+        return False
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -95,59 +220,111 @@ class ImageView(QGraphicsView):
 
     def keyPressEvent(self, event: QKeyEvent):
         k = event.key()
+        mods = event.modifiers()
 
+        # Global shortcuts — work in every state including active selection
+        if k == Qt.Key_H and mods == Qt.ControlModifier:
+            self.toggle_bar.emit()
+            return
+        if k == Qt.Key_M and mods == Qt.ControlModifier:
+            self.nav_mode = NavMode((self.nav_mode + 1) % len(NavMode))
+            self._sel = None
+            self.state_changed.emit()
+            return
+        if k == Qt.Key_F and mods == Qt.NoModifier:
+            self.fit_image()
+            return
+        if k == Qt.Key_0 and mods == Qt.NoModifier:
+            self.reset_zoom()
+            return
+
+        # Incremental-search intercepts everything while active
+        if self._sel is not None:
+            if not self._sel_handle_key(event):
+                super().keyPressEvent(event)
+            return
+
+        # Universal navigation keys (all modes)
         if k == Qt.Key_Right:
             self._navigate(self._h_axis(), 1)
-        elif k == Qt.Key_Left:
+            return
+        if k == Qt.Key_Left:
             self._navigate(self._h_axis(), -1)
-        elif k == Qt.Key_Down:
+            return
+        if k == Qt.Key_Down:
             v = self._v_axis()
             if v is not None:
                 self._navigate(v, 1)
-        elif k == Qt.Key_Up:
+            return
+        if k == Qt.Key_Up:
             v = self._v_axis()
             if v is not None:
                 self._navigate(v, -1)
-        elif k == Qt.Key_Space:
+            return
+        if k == Qt.Key_Space:
             if self.prev is not None:
                 self.pos, self.prev = self.prev, list(self.pos)
                 self._refresh()
-        elif k == Qt.Key_Home:
+            return
+        if k == Qt.Key_Home:
             self.prev = list(self.pos)
             self.pos[self._h_axis()] = 0
             self._refresh()
-        elif k == Qt.Key_End:
+            return
+        if k == Qt.Key_End:
             h = self._h_axis()
             self.prev = list(self.pos)
             self.pos[h] = len(self.axis_values[h]) - 1
             self._refresh()
-        elif Qt.Key_1 <= k <= Qt.Key_9:
-            idx = k - Qt.Key_1  # 0-based
+            return
+        if Qt.Key_1 <= k <= Qt.Key_9:
+            idx = k - Qt.Key_1
             h = self._h_axis()
             if idx < len(self.axis_values[h]):
                 self.prev = list(self.pos)
                 self.pos[h] = idx
                 self._refresh()
-        elif k == Qt.Key_F:
-            self.fit_image()
-        elif k == Qt.Key_0:
-            self.reset_zoom()
-        elif k == Qt.Key_H and event.modifiers() & Qt.ControlModifier:
-            self.toggle_bar.emit()
-        elif k in (Qt.Key_Return, Qt.Key_Enter):
+            return
+        if k in (Qt.Key_Return, Qt.Key_Enter):
             win = self.window()
             if win.isFullScreen():
                 win.showMaximized()
             else:
                 win.showFullScreen()
-        elif k == Qt.Key_Escape:
+            return
+        if k == Qt.Key_Escape:
             win = self.window()
             if win.isFullScreen():
                 win.showMaximized()
-        else:
-            ch = event.text().lower()
-            if ch in self.key_to_axis:
-                self._focus(self.key_to_axis[ch])
+            return
+
+        # Mode-specific letter handling
+        ch = event.text()
+        ch_lower = ch.lower()
+
+        if self.nav_mode == NavMode.TWIN:
+            if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
+                self._sel_open_value(self.key_to_axis[ch_lower])
+            elif mods == Qt.NoModifier and ch_lower in self.key_to_axis:
+                self._focus(self.key_to_axis[ch_lower])
+                self.state_changed.emit()
+            else:
+                super().keyPressEvent(event)
+
+        elif self.nav_mode == NavMode.MULTI_SELECT:
+            if mods == Qt.NoModifier and ch.isalpha():
+                self._sel_open_axis(ch)
+            else:
+                super().keyPressEvent(event)
+
+        elif self.nav_mode == NavMode.CASE_SENSITIVE:
+            if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
+                self._sel_open_value(self.key_to_axis[ch_lower])
+            elif ch_lower in self.key_to_axis and mods in (Qt.NoModifier, Qt.ShiftModifier):
+                axis = self.key_to_axis[ch_lower]
+                delta = -1 if ch.isupper() else 1
+                self._focus(axis)
+                self._navigate(axis, delta)
             else:
                 super().keyPressEvent(event)
 
@@ -188,6 +365,28 @@ class MainWindow(QMainWindow):
 
     def _update_status(self):
         v = self.view
+        mode_str = f"[{v.nav_mode.label}]"
+
+        if v._sel is not None:
+            phase = v._sel["phase"]
+            query = v._sel["query"]
+            cursor = v._sel["cursor"]
+            candidates = v._sel_candidates()
+            if phase == "axis":
+                prompt = f"axis? {query}▌"
+            else:
+                axis_name = v.axis_names[v._sel["axis_idx"]]
+                prompt = f"{axis_name}? {query}▌"
+            if candidates:
+                cand_str = "  ".join(
+                    f"[{c}]" if i == cursor else c
+                    for i, c in enumerate(candidates)
+                )
+            else:
+                cand_str = "(no match)"
+            self._status_label.setText(f"{mode_str}  |  {prompt}  →  {cand_str}")
+            return
+
         h_idx = v._h_axis()
         v_idx = v._v_axis()
 
@@ -203,7 +402,7 @@ class MainWindow(QMainWindow):
             for ch in sorted(v.key_to_axis)
         )
 
-        parts = [coord_str, bind_str]
+        parts = [mode_str, coord_str, bind_str]
         if key_hints:
             parts.append(key_hints)
         self._status_label.setText("  |  ".join(parts))
