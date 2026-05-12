@@ -9,6 +9,7 @@ class Config:
     template: str
     axes: dict[str, list[str]]  # ordered; all values are strings
     keys: dict[str, str]        # letter -> axis_name
+    mode: int = 2               # NavMode value (0=twin, 1=multi-select, 2=case-sensitive)
 
 
 def _auto_discover(directory: str, separator: str) -> tuple[str, dict[str, list[str]]]:
@@ -76,4 +77,18 @@ def load_config(path: str) -> Config:
     keys_cfg = data.get("keys", {})
     keys = {str(k): str(v) for k, v in keys_cfg.items()} if keys_cfg else _auto_keys(axes)
 
-    return Config(template=template, axes=axes, keys=keys)
+    mode = _parse_mode(data.get("mode", 2))
+
+    return Config(template=template, axes=axes, keys=keys, mode=mode)
+
+
+def _parse_mode(value) -> int:
+    if isinstance(value, int):
+        if 0 <= value <= 2:
+            return value
+        raise ValueError(f"mode must be 0–2, got {value}")
+    s = str(value).lower().replace("-", "_").replace(" ", "_")
+    table = {"0": 0, "twin": 0, "1": 1, "multi_select": 1, "2": 2, "case_sensitive": 2}
+    if s not in table:
+        raise ValueError(f"Unknown mode {value!r}; choose twin/multi-select/case-sensitive or 0/1/2")
+    return table[s]
