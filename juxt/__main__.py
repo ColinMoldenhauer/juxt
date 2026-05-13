@@ -1,9 +1,10 @@
 from __future__ import annotations
+import signal
 import sys
 import warnings
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QProgressDialog
 
@@ -88,6 +89,15 @@ def main():
     if not app_icon.isNull():
         window.setWindowIcon(app_icon)
     _force_focus(window)
+
+    # Qt's C++ event loop blocks Python signal delivery. Install a handler
+    # that calls app.quit(), and tick a no-op timer so Python wakes up
+    # periodically and can actually invoke it.
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    sigint_tick = QTimer()
+    sigint_tick.timeout.connect(lambda: None)
+    sigint_tick.start(200)
+
     sys.exit(app.exec())
 
 
