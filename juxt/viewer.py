@@ -29,7 +29,6 @@ _COMMANDS = [
 # Discrete argument options for commands that take a value.
 # Commands absent from this dict take no arguments (or free-text only).
 _CMD_ARGS: dict[str, list[str]] = {
-    "fit": ["window", "height", "width"],
     "mode": ["twin", "multi-select", "case-sensitive"],
     "zoom": ["50", "75", "100", "150", "200"],
 }
@@ -417,6 +416,14 @@ class ImageView(QGraphicsView):
             self.nav_mode = NavMode((self.nav_mode + 1) % len(NavMode))
             self._sel = None
             self.state_changed.emit()
+            return
+
+        # Ctrl+C cancels any active command or selection mode
+        if k == Qt.Key_C and mods == Qt.ControlModifier:
+            if self._cmd is not None or self._sel is not None:
+                self._cmd = None
+                self._sel = None
+                self.state_changed.emit()
             return
 
         # Command mode intercepts all input while active
