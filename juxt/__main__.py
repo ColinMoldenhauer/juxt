@@ -12,6 +12,29 @@ from .loader import preload
 from .viewer import MainWindow
 
 
+def _force_focus(window):
+    """Bring the window to the foreground even when launched from a terminal.
+
+    On Windows the OS blocks focus-stealing by default. The AttachThreadInput
+    trick borrows the foreground thread's lock so SetForegroundWindow succeeds.
+    On other platforms activateWindow/raise_ is sufficient.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        hwnd = int(window.winId())
+        fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+        fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None)
+        our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+        if fg_tid != our_tid:
+            ctypes.windll.user32.AttachThreadInput(fg_tid, our_tid, True)
+            ctypes.windll.user32.BringWindowToTop(hwnd)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            ctypes.windll.user32.AttachThreadInput(fg_tid, our_tid, False)
+    else:
+        window.activateWindow()
+        window.raise_()
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: juxt <config.yaml>")
@@ -64,6 +87,7 @@ def main():
     app.processEvents()
     if not app_icon.isNull():
         window.setWindowIcon(app_icon)
+    _force_focus(window)
     sys.exit(app.exec())
 
 
