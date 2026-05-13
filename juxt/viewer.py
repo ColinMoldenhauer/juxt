@@ -4,9 +4,35 @@ from enum import IntEnum
 
 from PySide6.QtCore import Qt, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
-from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QLabel, QMainWindow
+from PySide6.QtWidgets import (
+    QApplication,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
+    QGraphicsView,
+    QLabel,
+    QMainWindow,
+)
 
 from .config import Config
+
+_COMMANDS = [
+    "fit",
+    "fit-height",
+    "fit-width",
+    "fullscreen",
+    "mode",
+    "q",
+    "switch-last",
+    "zoom",
+]
+
+# Discrete argument options for commands that take a value.
+# Commands absent from this dict take no arguments (or free-text only).
+_CMD_ARGS: dict[str, list[str]] = {
+    "fit": ["window", "height", "width"],
+    "mode": ["twin", "multi-select", "case-sensitive"],
+    "zoom": ["50", "75", "100", "150", "200"],
+}
 
 
 class NavMode(IntEnum):
@@ -53,6 +79,11 @@ class ImageView(QGraphicsView):
         # axis phase:  {"phase": "axis",  "query": str}
         # value phase: {"phase": "value", "query": str, "axis_idx": int}
         self._sel: dict | None = None
+
+        # Active command-mode state; None = not in command mode.
+        # verb phase: {"phase": "verb", "query": str, "cursor": int}
+        # arg  phase: {"phase": "arg",  "verb": str, "query": str, "cursor": int}
+        self._cmd: dict | None = None
 
         self.setFocusPolicy(Qt.StrongFocus)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
@@ -208,13 +239,169 @@ class ImageView(QGraphicsView):
 
         return False
 
+    # ── command mode ─────────────────────────────────────────────────────────
+
+    def _cmd_candidates(self) -> list[str]:
+        assert self._cmd is not None
+        q = self._cmd["query"].strip()
+        if self._cmd["phase"] == "verb":
+            pool = _COMMANDS
+        else:
+            pool = _CMD_ARGS.get(self._cmd["verb"], [])
+        return [c for c in pool if c.startswith(q)] if q else list(pool)
+
+    def _cmd_handle_key(self, event: QKeyEvent) -> bool:
+        """Handle input while command mode is active. Returns True if consumed."""
+        k = event.key()
+
+        if k == Qt.Key_Escape:
+            self._cmd = None
+            self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Backspace:
+            if self._cmd["query"]:
+                self._cmd["query"] = self._cmd["query"][:-1]
+                self._cmd["cursor"] = 0
+            elif self._cmd["phase"] == "arg":
+                verb = self._cmd["verb"]
+                self._cmd = {"phase": "verb", "query": verb, "cursor": 0}
+                candidates = self._cmd_candidates()
+                if verb in candidates:
+                    self._cmd["cursor"] = candidates.index(verb)
+            else:
+                self._cmd = None
+            self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Right:
+            candidates = self._cmd_candidates()
+            if candidates:
+                self._cmd["cursor"] = (self._cmd["cursor"] + 1) % len(candidates)
+                self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Left:
+            candidates = self._cmd_candidates()
+            if candidates:
+                self._cmd["cursor"] = (self._cmd["cursor"] - 1) % len(candidates)
+                self.state_changed.emit()
+            return True
+
+        if k in (Qt.Key_Return, Qt.Key_Enter):
+            candidates = self._cmd_candidates()
+            if self._cmd["phase"] == "verb":
+                if not candidates:
+                    self._cmd = None
+                    self.state_changed.emit()
+                    return True
+                verb = candidates[min(self._cmd["cursor"], len(candidates) - 1)]
+                if verb in _CMD_ARGS:
+                    self._cmd = {"phase": "arg", "verb": verb, "query": "", "cursor": 0}
+                    self.state_changed.emit()
+                else:
+                    self._cmd = None
+                    self._cmd_execute(verb)
+                    self.state_changed.emit()
+            else:
+                verb = self._cmd["verb"]
+                arg = (
+                    candidates[min(self._cmd["cursor"], len(candidates) - 1)]
+                    if candidates
+                    else self._cmd["query"]
+                )
+                self._cmd = None
+                self._cmd_execute(f"{verb} {arg}" if arg else verb)
+                self.state_changed.emit()
+            return True
+
+        ch = event.text()
+        if ch and ch.isprintable():
+            self._cmd["query"] += ch.lower()
+            self._cmd["cursor"] = 0
+            self.state_changed.emit()
+            return True
+
+        return False
+
+    def _cmd_execute(self, cmd: str):
+        parts = cmd.strip().split()
+        if not parts:
+            return
+        verb = parts[0].lower()
+        args = [a.lower() for a in parts[1:]]
+
+        if verb == "q":
+            QApplication.instance().quit()
+        elif verb == "fit":
+            sub = args[0] if args else ""
+            if sub in ("height", "h"):
+                self.fit_height()
+            elif sub in ("width", "w"):
+                self.fit_width()
+            else:
+                self.fit_image()
+        elif verb == "fit-height":
+            self.fit_height()
+        elif verb == "fit-width":
+            self.fit_width()
+        elif verb == "zoom":
+            if args:
+                try:
+                    self.set_zoom(float(args[0]))
+                except ValueError:
+                    pass
+        elif verb == "fullscreen":
+            win = self.window()
+            if win.isFullScreen():
+                win.showMaximized()
+            else:
+                win.showFullScreen()
+        elif verb == "mode":
+            if args:
+                arg = args[0]
+                if arg in ("0", "twin"):
+                    self.nav_mode = NavMode.TWIN
+                elif arg in ("1", "multi", "multi-select"):
+                    self.nav_mode = NavMode.MULTI_SELECT
+                elif arg in ("2", "case", "case-sensitive"):
+                    self.nav_mode = NavMode.CASE_SENSITIVE
+                self._sel = None
+                self.state_changed.emit()
+        elif verb == "switch-last":
+            if self.prev is not None:
+                self.pos, self.prev = self.prev, list(self.pos)
+                self._refresh()
+
     # ── public ────────────────────────────────────────────────────────────────
 
     def fit_image(self):
         self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
 
+    def fit_height(self):
+        pm = self._item.pixmap()
+        if pm.isNull():
+            return
+        factor = self.viewport().height() / pm.height()
+        self.resetTransform()
+        self.scale(factor, factor)
+        self.centerOn(self._scene.sceneRect().center())
+
+    def fit_width(self):
+        pm = self._item.pixmap()
+        if pm.isNull():
+            return
+        factor = self.viewport().width() / pm.width()
+        self.resetTransform()
+        self.scale(factor, factor)
+        self.centerOn(self._scene.sceneRect().center())
+
     def reset_zoom(self):
         self.resetTransform()
+
+    def set_zoom(self, pct: float):
+        self.resetTransform()
+        self.scale(pct / 100.0, pct / 100.0)
 
     # ── Qt overrides ──────────────────────────────────────────────────────────
 
@@ -222,7 +409,7 @@ class ImageView(QGraphicsView):
         k = event.key()
         mods = event.modifiers()
 
-        # Global shortcuts — work in every state including active selection
+        # Truly global shortcuts — work in every state
         if k == Qt.Key_H and mods == Qt.ControlModifier:
             self.toggle_bar.emit()
             return
@@ -231,6 +418,14 @@ class ImageView(QGraphicsView):
             self._sel = None
             self.state_changed.emit()
             return
+
+        # Command mode intercepts all input while active
+        if self._cmd is not None:
+            if not self._cmd_handle_key(event):
+                super().keyPressEvent(event)
+            return
+
+        # Semi-global shortcuts — work in normal mode and selection mode
         if k == Qt.Key_F and mods == Qt.NoModifier:
             self.fit_image()
             return
@@ -242,6 +437,12 @@ class ImageView(QGraphicsView):
         if self._sel is not None:
             if not self._sel_handle_key(event):
                 super().keyPressEvent(event)
+            return
+
+        # Colon opens command mode
+        if event.text() == ":":
+            self._cmd = {"phase": "verb", "query": "", "cursor": 0}
+            self.state_changed.emit()
             return
 
         # Universal navigation keys (all modes)
@@ -366,6 +567,29 @@ class MainWindow(QMainWindow):
     def _update_status(self):
         v = self.view
         mode_str = f"[{v.nav_mode.label}]"
+
+        if v._cmd is not None:
+            candidates = v._cmd_candidates()
+            cursor = min(v._cmd["cursor"], len(candidates) - 1) if candidates else 0
+            query = v._cmd["query"]
+            if v._cmd["phase"] == "verb":
+                prompt = f":{query}▌"
+                is_exact = query.strip() in _COMMANDS
+                hide = is_exact and len(candidates) == 1 and query.strip() not in _CMD_ARGS
+            else:
+                prompt = f":{v._cmd['verb']} {query}▌"
+                hide = False
+            if candidates and not hide:
+                cand_str = "  ".join(
+                    f"[{c}]" if i == cursor else c
+                    for i, c in enumerate(candidates)
+                )
+                self._status_label.setText(f"{prompt}  →  {cand_str}")
+            elif not candidates and v._cmd["phase"] == "verb" and query:
+                self._status_label.setText(f"{prompt}  (unknown command)")
+            else:
+                self._status_label.setText(prompt)
+            return
 
         if v._sel is not None:
             phase = v._sel["phase"]
