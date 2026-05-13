@@ -21,10 +21,14 @@ _COMMANDS = [
     "fit-width",
     "fullscreen",
     "mode",
-    "q",
+    "quit",
     "switch-last",
     "zoom",
 ]
+
+_ALIASES: dict[str, str] = {
+    "q": "quit",
+}
 
 # Discrete argument options for commands that take a value.
 # Commands absent from this dict take no arguments (or free-text only).
@@ -244,6 +248,8 @@ class ImageView(QGraphicsView):
         assert self._cmd is not None
         q = self._cmd["query"].strip()
         if self._cmd["phase"] == "verb":
+            if q in _ALIASES:
+                return [_ALIASES[q]]
             pool = _COMMANDS
         else:
             pool = _CMD_ARGS.get(self._cmd["verb"], [])
@@ -327,10 +333,10 @@ class ImageView(QGraphicsView):
         parts = cmd.strip().split()
         if not parts:
             return
-        verb = parts[0].lower()
+        verb = _ALIASES.get(parts[0].lower(), parts[0].lower())
         args = [a.lower() for a in parts[1:]]
 
-        if verb == "q":
+        if verb == "quit":
             QApplication.instance().quit()
         elif verb == "fit":
             sub = args[0] if args else ""
