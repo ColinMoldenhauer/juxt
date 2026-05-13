@@ -581,8 +581,7 @@ class MainWindow(QMainWindow):
             query = v._cmd["query"]
             if v._cmd["phase"] == "verb":
                 prompt = f":{query}▌"
-                is_exact = query.strip() in _COMMANDS
-                hide = is_exact and len(candidates) == 1 and query.strip() not in _CMD_ARGS
+                hide = False
             else:
                 prompt = f":{v._cmd['verb']} {query}▌"
                 hide = False
