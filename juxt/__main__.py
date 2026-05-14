@@ -1,4 +1,5 @@
 from __future__ import annotations
+import argparse
 import signal
 import sys
 import warnings
@@ -37,8 +38,19 @@ def _force_focus(window):
         window.raise_()
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(prog="juxt", description="Geospatial plot comparison tool")
+    p.add_argument("path", nargs="?", default=".", metavar="PATH",
+                   help="directory to scan, or YAML config file (default: current directory)")
+    p.add_argument("-s", "--separator", metavar="SEP", nargs="+",
+                   help="separator(s) for auto-detection, space-separated (default: auto)")
+    p.add_argument("-a", "--auto", action="store_true",
+                   help="skip axis naming prompt and use dummy names")
+    return p.parse_args()
+
+
 def main():
-    arg = sys.argv[1] if len(sys.argv) >= 2 else "."
+    args = _parse_args()
 
     if sys.platform == "win32" and Path(sys.executable).stem.lower() in ("python", "pythonw"):
         import ctypes
@@ -60,18 +72,19 @@ def main():
         warnings.warn(f"No logo file found at {_logo}")
 
     try:
-        path = Path(arg)
+        path = Path(args.path)
         if path.is_dir():
             n_images = sum(
                 1 for f in path.iterdir()
                 if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
             )
-            config, sep = detect_config(path)
-            config = prompt_rename(config, n_images, sep)
+            config, sep = detect_config(path, args.separator)
+            if not args.auto:
+                config = prompt_rename(config, n_images, sep, path)
         elif path.suffix.lower() in (".yaml", ".yml"):
-            config = load_config(arg)
+            config = load_config(str(path))
         else:
-            print(f"Error: {arg!r} is not a directory or YAML config file", file=sys.stderr)
+            print(f"Error: {args.path!r} is not a directory or YAML config file", file=sys.stderr)
             sys.exit(1)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
