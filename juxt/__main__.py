@@ -9,7 +9,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QProgressDialog
 
 from .config import load_config
-from .detect import detect_config
+from .detect import IMAGE_EXTENSIONS, detect_config, prompt_rename
 from .loader import preload
 from .viewer import MainWindow
 
@@ -62,7 +62,12 @@ def main():
     try:
         path = Path(arg)
         if path.is_dir():
-            config = detect_config(path)
+            n_images = sum(
+                1 for f in path.iterdir()
+                if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+            )
+            config, sep = detect_config(path)
+            config = prompt_rename(config, n_images, sep)
         elif path.suffix.lower() in (".yaml", ".yml"):
             config = load_config(arg)
         else:
