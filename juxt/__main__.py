@@ -9,6 +9,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QProgressDialog
 
 from .config import load_config
+from .detect import detect_config
 from .loader import preload
 from .viewer import MainWindow
 
@@ -37,9 +38,7 @@ def _force_focus(window):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: juxt <config.yaml>")
-        sys.exit(1)
+    arg = sys.argv[1] if len(sys.argv) >= 2 else "."
 
     if sys.platform == "win32" and Path(sys.executable).stem.lower() in ("python", "pythonw"):
         import ctypes
@@ -61,9 +60,16 @@ def main():
         warnings.warn(f"No logo file found at {_logo}")
 
     try:
-        config = load_config(sys.argv[1])
+        path = Path(arg)
+        if path.is_dir():
+            config = detect_config(path)
+        elif path.suffix.lower() in (".yaml", ".yml"):
+            config = load_config(arg)
+        else:
+            print(f"Error: {arg!r} is not a directory or YAML config file", file=sys.stderr)
+            sys.exit(1)
     except Exception as e:
-        print(f"Error loading config: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     total = 1
