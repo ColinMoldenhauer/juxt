@@ -76,11 +76,20 @@ def make_image(sensor: str, date: str, overpass: str, source: str) -> QPixmap:
 
 
 def main():
-    out = Path("sample_plots")
-    out.mkdir(exist_ok=True)
+    NESTED = True
+
+    out = Path("sample_plots_nested") if NESTED else Path("sample_plots")
     combos = list(product(SENSORS, DATES, OVERPASSES, SOURCES))
     for sensor, date, overpass, source in combos:
-        path = out / f"{sensor}_{date}_{overpass}_{source}.png"
+
+        # output path
+        if NESTED:
+            path = out / sensor / overpass / f"{date}_{source}.png"
+        else:
+            path = out / f"{sensor}_{date}_{overpass}_{source}.png"
+
+        path.parent.mkdir(exist_ok=True, parents=True)
+
         pm = make_image(sensor, date, overpass, source)
         pm.save(str(path))
         print(f"  {path}")
