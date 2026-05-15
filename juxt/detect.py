@@ -7,20 +7,13 @@ from pathlib import Path
 from .config import Config, _auto_keys
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
-_CANDIDATE_SEPS = ["_", "-", ".", " "]
+_DEFAULT_SEPS = ["_", "/"]   # underscore + path separator (always normalised to /)
 _MAX_VALS = 3
 
 # Cyan, yellow, green, magenta, blue — readable on both light and dark terminals
 _PALETTE = ["\033[96m", "\033[93m", "\033[92m", "\033[95m", "\033[94m"]
 _RESET = "\033[0m"
 
-
-def _score(parts_list: list[list[str]]) -> int:
-    """Count columns with more than one distinct value (higher = better split)."""
-    if not parts_list or len({len(p) for p in parts_list}) > 1:
-        return 0
-    n = len(parts_list[0])
-    return sum(1 for i in range(n) if len({p[i] for p in parts_list}) > 1)
 
 
 def _split_with_seps(stem: str, separators: list[str]) -> tuple[list[str], list[str]]:
@@ -42,40 +35,58 @@ def _seps_display(separators: list[str]) -> str:
     return " ".join(repr(s) for s in separators)
 
 
+def _iter_images(directory: Path, max_depth: int | None = None) -> list[Path]:
+    """Recursively collect image files, optionally limited to *max_depth* levels."""
+    result: list[Path] = []
+
+    def _walk(d: Path, depth: int) -> None:
+        if max_depth is not None and depth > max_depth:
+            return
+        for f in sorted(d.iterdir()):
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
+                result.append(f)
+            elif f.is_dir():
+                _walk(f, depth + 1)
+
+    _walk(directory, 0)
+    return result
+
+
 def detect_config(
     directory: str | Path,
     separators: list[str] | None = None,
+    max_depth: int | None = None,
 ) -> tuple[Config, list[str]]:
-    """Build a Config by analysing image filenames in *directory*.
+    """Build a Config by analysing image filenames under *directory*.
 
-    If *separators* is None, tries each candidate separator individually and
-    picks whichever produces the most variable columns.  Multiple separators
-    split on any of the given characters, preserving which one sat between each
-    pair of tokens so the template reconstructs correctly.
+    Discovery is recursive up to *max_depth* levels (None = unlimited).
+    Relative paths from *directory* are used as the stems to split, so
+    directory structure becomes part of the axis space automatically.
+
+    Separators default to ['_', '/'] (underscore + path separator).
+    Multiple separators split on any of the given characters, preserving
+    which one sat between each token pair so the template reconstructs exactly.
 
     Returns (config, separators).
     """
     directory = Path(directory)
-    files = sorted(
-        f for f in directory.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
-    )
+    files = _iter_images(directory, max_depth)
     if not files:
-        raise ValueError(f"No image files found in {str(directory)!r}")
+        raise ValueError(f"No image files found under {str(directory)!r}")
 
-    stems = [f.stem for f in files]
+    # Relative paths without extension, normalised to forward slashes
+    rel_stems = [
+        str(f.relative_to(directory).with_suffix("")).replace("\\", "/")
+        for f in files
+    ]
 
     if separators is None:
-        best_seps: list[str] = ["_"]
-        best_score = -1
-        for sep in _CANDIDATE_SEPS:
-            score = _score([_split_with_seps(s, [sep])[0] for s in stems])
-            if score > best_score:
-                best_score, best_seps = score, [sep]
-        separators = best_seps
+        separators = _DEFAULT_SEPS
+    # Normalise any backslash path separators supplied by the caller
+    separators = [s.replace("\\", "/") for s in separators]
 
     ext = files[0].suffix
-    splits = [_split_with_seps(s, separators) for s in stems]
+    splits = [_split_with_seps(s, separators) for s in rel_stems]
     all_tokens = [t for t, _ in splits]
     ref_between = splits[0][1]  # separators from the first file define the template
 
@@ -106,7 +117,9 @@ def detect_config(
     template_stem = template_tokens[0]
     for i, between in enumerate(ref_between):
         template_stem += between + template_tokens[i + 1]
-    template = str(directory / (template_stem + ext))
+
+    dir_str = str(directory).replace("\\", "/")
+    template = f"{dir_str}/{template_stem}{ext}"
 
     return Config(template=template, axes=axes, keys=_auto_keys(axes)), separators
 
@@ -140,7 +153,7 @@ def _render_pattern(
     return result
 
 
-def prompt_rename(config: Config, n_files: int, separators: list[str], directory: Path) -> Config:
+def prompt_rename(config: Config, n_files: int, separators: list[str], directory: Path, max_depth: int | None = None) -> Config:
     """Interactively rename or ignore each auto-detected axis.
 
     First prompts to confirm or change the separator(s) (re-detecting on
@@ -164,15 +177,18 @@ def prompt_rename(config: Config, n_files: int, separators: list[str], directory
         axis_colors = _make_colors(config.axes)
         print(f"  separator {_seps_display(separators)} → {_render_pattern(config.template, config.axes, {}, axis_colors)}")
         try:
-            new_sep_str = input("  Change separator (Enter to keep): ").strip()
+            new_sep_str = input("  Change separator(s) (Enter to keep): ").strip()
         except EOFError:
             new_sep_str = ""
+        except KeyboardInterrupt:
+            print()
+            sys.exit(0)
         if not new_sep_str:
             print()
             break
         new_seps = new_sep_str.split()
         try:
-            config, separators = detect_config(directory, new_seps)
+            config, separators = detect_config(directory, new_seps, max_depth)
         except ValueError as e:
             print(f"  {e}")
 
@@ -198,6 +214,9 @@ def prompt_rename(config: Config, n_files: int, separators: list[str], directory
             answer = input("    name (Enter to ignore): ").strip()
         except EOFError:
             answer = ""
+        except KeyboardInterrupt:
+            print()
+            sys.exit(0)
 
         if answer:
             if answer in used_names:
