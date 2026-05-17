@@ -1,0 +1,140 @@
+# Navigation
+
+juxt has three navigation modes and a command mode. All modes share the same core key bindings; the modes differ only in how letter keys are interpreted.
+
+Switch modes at runtime with `:mode twin|multi-select|case-sensitive`, or set a default in the [config file](configuration.md#navigation-mode).
+
+---
+
+## Universal keys (all modes)
+
+These bindings work identically regardless of which mode is active.
+
+### Image navigation
+
+| Key | Action |
+|---|---|
+| `←` / `→` | Cycle the primary axis (most recently focused) |
+| `↑` / `↓` | Cycle the secondary axis (second most recently focused) |
+| `Space` | Toggle between current and previous position — the main comparison tool |
+| `Home` / `End` | Jump to first / last value on the primary axis |
+| `1` – `9` | Jump to the Nth value on the primary axis |
+
+### View controls
+
+| Key | Action |
+|---|---|
+| `f` or double-click | Fit image to window |
+| `0` | Reset zoom to 100% |
+| Scroll wheel | Zoom in/out, anchored under the cursor |
+| Click + drag | Pan the image |
+| `Enter` | Toggle fullscreen |
+| `Ctrl+H` | Toggle the status bar |
+
+### Other
+
+| Key | Action |
+|---|---|
+| `:` | Open command mode |
+| `Ctrl+M` | Cycle through navigation modes |
+| `Escape` | Exit fullscreen or cancel an active selection / command |
+
+---
+
+## The focus stack
+
+Arrow keys always navigate the two most recently focused axes, regardless of mode. The focus stack tracks which axes have been touched most recently:
+
+- **`←` / `→`** — navigate `focus_stack[0]` (the most recently focused axis)
+- **`↑` / `↓`** — navigate `focus_stack[1]` (the second most recently focused axis)
+
+Any action that selects or navigates an axis promotes it to the top of the focus stack.
+
+---
+
+## Mode 2 — case-sensitive (default)
+
+Each axis key navigates directly without first shifting focus. Lower = forward (+1), upper = backward (−1). Good for workflows that cycle through many axes individually without heavy reliance on arrow keys.
+
+| Key | Action |
+|---|---|
+| Lowercase letter (e.g. `s`) | Navigate +1 on that axis and focus it |
+| Uppercase letter (e.g. `S`) | Navigate −1 on that axis and focus it |
+| `Ctrl` + letter | Open the value picker for that axis |
+
+Arrow keys still work and navigate the top two entries in the focus stack, as in all modes.
+
+**Trade-off vs. twin mode:** every step costs one keypress, but Shift is needed for the reverse direction. Mode 0 (twin) removes the Shift cost for sustained cycling at the expense of an explicit focus step before navigating.
+
+---
+
+## Mode 1 — multi-select
+
+Every letter key starts an incremental prefix search, first for an axis name, then for a value on that axis. Good when there are many axes or you don't want to memorise per-axis letter bindings.
+
+| Key | Action |
+|---|---|
+| Letter | Begin axis search with that letter as the initial query |
+| Letter (during search) | Narrow the candidate list |
+| `Enter` | Confirm the first candidate explicitly |
+| `Backspace` | Delete the last query character; on an empty value query, step back to axis search |
+| `Escape` | Cancel the search |
+
+**Greedy auto-confirm:** when exactly one candidate remains, it is selected automatically without pressing Enter.
+
+**Phase transition:** after confirming an axis, the mode transitions immediately into value selection on that axis using the same prefix matching. Backspace on an empty value query returns to axis selection.
+
+---
+
+## Mode 0 — twin
+
+Optimised for comparing two axes at a time with no modifier keys in the hot path.
+
+| Key | Action |
+|---|---|
+| Letter (e.g. `s` for `sensor`) | Focus that axis; it becomes `←`/`→`, previous primary becomes `↑`/`↓` |
+| `Ctrl` + letter | Open the value picker for that axis |
+
+Letter keys only shift focus — they do not advance the axis. Use arrow keys after focusing to cycle through values. This keeps sustained rapid cycling (dozens of presses) free of modifier keys.
+
+**Example workflow:** press `s` to put `sensor` on `←`/`→`, press `d` to put `date` on `←`/`↓` (sensor shifts to `↑`/`↓`), then use arrow keys freely to compare any combination.
+
+---
+
+## Value picker
+
+`Ctrl` + a letter key opens an incremental value picker for that axis in any mode. Type a prefix to filter the list; the match is case-insensitive. When exactly one candidate remains it is confirmed automatically; press `Enter` to confirm the first candidate explicitly at any point; press `Escape` to cancel.
+
+---
+
+## Command mode
+
+Press `:` to open command mode. The status bar shows your input and a prefix-filtered list of matching commands as you type. Press `Enter` to execute, `Escape` or `Backspace`-to-empty to cancel.
+
+| Command | Action |
+|---|---|
+| `:q` / `:quit` | Quit the application |
+| `:fit` | Fit image to window (both dimensions) |
+| `:fit-height` | Fit image height to the viewport |
+| `:fit-width` | Fit image width to the viewport |
+| `:zoom N` | Set zoom to N% (e.g. `:zoom 50`, `:zoom 200`) |
+| `:fullscreen` | Toggle fullscreen |
+| `:mode twin` | Switch to twin mode |
+| `:mode multi-select` | Switch to multi-select mode |
+| `:mode case-sensitive` | Switch to case-sensitive mode |
+| `:switch-last` | Toggle between current and previous position (same as `Space`) |
+
+---
+
+## Status bar
+
+The status bar at the bottom shows:
+
+- Current navigation mode
+- Current axis values (e.g. `sensor=ASCAT  date=2024-03-15  overpass=AM  source=L2`)
+- Which axes are bound to `←`/`→` and `↑`/`↓`
+- Letter-to-axis assignments
+- Active query and candidate list when value picker or multi-select is active
+- Command being typed in command mode
+
+Toggle the status bar with `Ctrl+H`.
