@@ -418,12 +418,6 @@ class ImageView(QGraphicsView):
         if k == Qt.Key_H and mods == Qt.ControlModifier:
             self.toggle_bar.emit()
             return
-        if k == Qt.Key_M and mods == Qt.ControlModifier:
-            self.nav_mode = NavMode((self.nav_mode + 1) % len(NavMode))
-            self._sel = None
-            self.state_changed.emit()
-            return
-
         # Ctrl+C cancels any active command or selection mode
         if k == Qt.Key_C and mods == Qt.ControlModifier:
             if self._cmd is not None or self._sel is not None:
