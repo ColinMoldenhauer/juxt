@@ -1,5 +1,5 @@
 site_name: juxt
-site_description: Fast desktop tool for navigating N-dimensional hypercubes of geospatial plots
+site_description: Fast desktop tool for navigating N-dimensional hypercubes of plots
 site_url: https://juxt.readthedocs.io
 repo_url: https://github.com/ColinMoldenhauer/juxt
 repo_name: ColinMoldenhauer/juxt
@@ -11,7 +11,7 @@ nav:
 
 theme:
   name: material
-  logo: assets/log_transparent.png
+  logo: assets/logo_transparent.png
   favicon: assets/logo_transparent.png
   palette:
     scheme: slate
