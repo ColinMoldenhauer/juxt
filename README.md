@@ -3,9 +3,11 @@
 </p>
 
 # juxt
-*juxt* is clipped from *juxtapose* (Latin *juxta*, "beside") and shares its meaning with παραβολή (*parabolē*, "placing beside") — the Greek root of both *parable* and *parabola*.
 
-`juxt` is a fast desktop tool for visually comparing geospatial plots across multiple parameter axes. Define axes (sensor, date, overpass, source, …) and flip through the resulting image hypercube with keyboard navigation.
+`juxt` is a fast desktop tool for visually comparing plots across multiple parameter axes. Define axes (model, date, data source, ...) and flip through the resulting image hypercube with keyboard navigation.
+
+
+*juxt* comes from *juxtapose* — placing things side by side to compare. That's the whole idea: flip through congruent plots fast enough to visually identify differences.
 
 ## Install
 
@@ -16,13 +18,36 @@ pip install juxt
 ## Quick start
 
 ```bash
-python make_sample.py          # generate 24 synthetic test images
-juxt sample_config.yaml
+# auto-detect axes from a directory of images
+juxt /path/to/plots/
+
+# or use a config file
+juxt config.yaml
 ```
 
 ## Config
 
+### Auto-discover mode
+
+Point juxt at a directory and it figures out the axes from the filenames:
+
+```bash
+juxt /path/to/plots/
+```
+
+Or with an explicit config:
+
+```yaml
+discover:
+  directory: plots/
+  separator: "_"
+```
+
+Filenames are split on the separator; any position with more than one distinct value becomes an axis. Axes are initially named `axis_0`, `axis_1`, … — you'll be prompted to rename them on first run, or use `-a` to skip.
+
 ### Template mode
+
+For full control, define the template and axes explicitly:
 
 ```yaml
 template: "plots/{sensor}_{date}_{overpass}_{source}.png"
@@ -38,30 +63,34 @@ keys:
   r: source
 ```
 
-### Auto-discover mode
-
-```yaml
-discover:
-  directory: plots/
-  separator: "_"
-```
-
-Scans filenames, splits on the separator, and treats any column with more than one distinct value as an axis. On first run, axes are named `axis_0`, `axis_1`, … — rename them by switching to template mode.
-
 ## Navigation
+
+Default mode is **case-sensitive**: a lowercase letter navigates forward (+1) on that axis; uppercase navigates backward (−1). Arrow keys navigate the most recently used axis. To select any value of the axis, use `CTRL+[letter]`.
 
 | Key | Action |
 |---|---|
-| `←` / `→` | cycle the horizontal axis |
-| `↑` / `↓` | cycle the vertical axis |
-| letter key | focus that axis — most recent becomes horizontal, previous becomes vertical |
+| `←` / `→` | cycle the active axis |
+| `↑` / `↓` | cycle the secondary axis |
+| lowercase letter | navigate +1 on that axis |
+| uppercase letter | navigate −1 on that axis |
+| `Ctrl`+letter | open value picker for that axis |
 | `Space` | toggle between current and previous position |
-| `Home` / `End` | jump to first / last value on the focused axis |
-| `1`–`9` | jump to the Nth value on the focused axis |
-| `f` or double-click | fit image to window |
-| `0` | reset zoom to 100% |
-| `h` | toggle status overlay |
-| scroll wheel | zoom (anchored under cursor) |
-| drag | pan |
+| `Home` / `End` | jump to first / last value |
+| `1`–`9` | jump to the Nth value |
 
-The status overlay (top-left) shows the current coordinate values and which axes are bound to the arrow keys.
+Use `:mode twin|multi|case` in the command bar to switch navigation modes.
+
+
+## Controls
+
+#### zoom controls
+| Key | Action |
+|---|---|
+| double-click | fit image to window |
+| `0` | reset zoom to 100% |
+| scroll wheel | zoom (anchored under cursor) |
+#### zoom controls
+| Key | Action |
+|---|---|
+| `Enter` | toggle fullscreen |
+| `Ctrl+H` | toggle status bar |
