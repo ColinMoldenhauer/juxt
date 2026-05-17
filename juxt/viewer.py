@@ -515,6 +515,10 @@ class ImageView(QGraphicsView):
         # Mode-specific letter handling
         ch = event.text()
         ch_lower = ch.lower()
+        # When Ctrl is held, event.text() is a control character (\x01–\x1a).
+        # Recover the letter from the Qt key code instead.
+        if mods == Qt.ControlModifier and Qt.Key_A <= k <= Qt.Key_Z:
+            ch_lower = chr(k).lower()
 
         if self.nav_mode == NavMode.TWIN:
             if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
