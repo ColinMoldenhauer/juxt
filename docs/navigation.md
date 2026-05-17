@@ -53,7 +53,7 @@ Any action that selects or navigates an axis promotes it to the top of the focus
 
 ## tap (default)
 
-Each axis key navigates directly without first shifting focus. Lower = forward (+1), upper = backward (−1). Good for workflows that cycle through many axes individually without heavy reliance on arrow keys.
+Each axis is assigned one letter key. Tap it to step forward (+1); hold Shift to step backward (−1). Every navigation is a single keypress — no prefix, no menu, no mode to enter first.
 
 | Key | Action |
 |---|---|

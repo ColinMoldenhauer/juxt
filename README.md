@@ -94,7 +94,7 @@ Requires the SSH extra: `pip install juxt[ssh]`
 
 ## Navigation
 
-Default mode is **tap**: a lowercase letter navigates forward (+1) on that axis; uppercase navigates backward (−1). Arrow keys navigate the most recently used axis.
+Default mode is **tap**. Each axis is assigned one letter key — tap it to step forward, hold Shift to step backward. Every navigation is a single keypress, no modifiers, no menus.
 
 | Key | Action |
 |---|---|
