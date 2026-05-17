@@ -433,9 +433,6 @@ class ImageView(QGraphicsView):
             return
 
         # Semi-global shortcuts — work in normal mode and selection mode
-        if k == Qt.Key_F and mods == Qt.NoModifier:
-            self.fit_image()
-            return
         if k == Qt.Key_0 and mods == Qt.NoModifier:
             self.reset_zoom()
             return
