@@ -1,0 +1,88 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: "Python ${{ matrix.python-version }} / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # PySide6 wheels bundle Qt but still link against system EGL / XKB on Linux.
+      - name: Install Qt system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            libegl1 \
+            libxkbcommon0 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xfixes0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
+            libfontconfig1
+
+      - name: Install package with all extras
+        run: pip install -e ".[ssh,test]"
+
+      # Generate a throwaway key pair, authorise it, and start a temporary sshd
+      # on port 2222.  No credentials are stored or exposed — the key pair is
+      # created fresh each run and only lives for the duration of the job.
+      - name: Set up local SSH server (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          ssh-keygen -t ed25519 -f /tmp/test_key -N ""
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          cat /tmp/test_key.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          # Start sshd on a non-privileged port so sudo isn't needed for the client
+          sudo /usr/sbin/sshd -p 2222 -D &
+          # Wait until the port is open
+          timeout 10 bash -c 'until nc -z localhost 2222; do sleep 0.5; done'
+          # Smoke-test: connect and exit immediately
+          ssh -o StrictHostKeyChecking=no \
+              -o BatchMode=yes \
+              -i /tmp/test_key \
+              -p 2222 \
+              "$USER@localhost" exit
+
+      - name: Run tests (Linux — includes SSH tests)
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          TEST_SSH_HOST: localhost
+          TEST_SSH_PORT: "2222"
+          TEST_SSH_KEY: /tmp/test_key
+          TEST_SSH_USER: ${{ github.actor }}
+        run: pytest -v
+
+      - name: Run tests (Windows / macOS — SSH tests skipped)
+        if: runner.os != 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -v
