@@ -48,7 +48,7 @@ def _print_help() -> None:
         "",
         "juxt — navigate N-dimensional plot hypercubes",
         "",
-        "Flip through congruent geospatial images using",
+        "Flip through congruent images using",
         "keyboard-driven axis control to spot visual",
         "differences at a glance.",
         "",
