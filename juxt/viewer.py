@@ -566,7 +566,10 @@ class MainWindow(QMainWindow):
             "QStatusBar::item { border: none; }"
         )
         self._status_label = QLabel()
-        self._status_label.setStyleSheet("color: #e0e0e0; padding: 2px 8px;")
+        self._status_label.setStyleSheet(
+            "color: #e0e0e0; padding: 2px 8px; "
+            "font-family: 'Courier New', monospace; font-size: 9pt;"
+        )
         bar.addWidget(self._status_label, 1)
 
         self.view.state_changed.connect(self._update_status)
@@ -625,7 +628,7 @@ class MainWindow(QMainWindow):
         v_idx = v._v_axis()
 
         coord_str = "  ".join(
-            f"{name}={v.axis_values[i][v.pos[i]]}"
+            f"{name}={v.axis_values[i][v.pos[i]]:<{max(len(val) for val in v.axis_values[i])}}"
             for i, name in enumerate(v.axis_names)
         )
         h_name = v.axis_names[h_idx]
