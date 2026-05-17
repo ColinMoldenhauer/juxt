@@ -86,8 +86,13 @@ def _print_help() -> None:
     print("""
   usage:  juxt [options] [PATH]
 
-  PATH                        directory to scan or YAML config
-                              file  (default: current directory)
+  PATH accepts several forms (auto-detected):
+    /path/to/dir              scan directory, detect axes from filenames
+    plots/{sensor}_{date}.png local template with explicit placeholders
+    host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
+    host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
+    config.yaml               explicit YAML config file
+    (default: current directory)
 
   -s, --separator SEP [...]   separator(s) for auto-detection
   -a, --auto                  skip axis naming prompt
