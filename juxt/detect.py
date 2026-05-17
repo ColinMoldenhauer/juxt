@@ -1,14 +1,20 @@
-"""Auto-detect image axes from a directory without a config file."""
+"""Auto-detect image axes from a directory, local template, or remote path."""
 from __future__ import annotations
+import glob as _glob_mod
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Callable
 
-from .config import Config, _auto_keys
+from .config import Config, RemoteConfig, _auto_keys
+
+if TYPE_CHECKING:
+    pass
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
 _DEFAULT_SEPS = ["_", "/"]   # underscore + path separator (always normalised to /)
-_MAX_VALS = 3
+_MAX_VALS = 3          # max values shown inline in the {v1|v2|...} path display
+_MAX_VALS_DISPLAY = 10  # max values listed per axis in the naming dialogue
 
 # Cyan, yellow, green, magenta, blue — readable on both light and dark terminals
 _PALETTE = ["\033[96m", "\033[93m", "\033[92m", "\033[95m", "\033[94m"]
@@ -52,43 +58,20 @@ def _iter_images(directory: Path, max_depth: int | None = None) -> list[Path]:
     return result
 
 
-def detect_config(
-    directory: str | Path,
-    separators: list[str] | None = None,
-    max_depth: int | None = None,
+def _detect_from_rel_stems(
+    rel_stems: list[str],
+    ext: str,
+    dir_prefix: str,
+    separators: list[str],
 ) -> tuple[Config, list[str]]:
-    """Build a Config by analysing image filenames under *directory*.
+    """Core axis-detection algorithm given normalised relative stems (no extension).
 
-    Discovery is recursive up to *max_depth* levels (None = unlimited).
-    Relative paths from *directory* are used as the stems to split, so
-    directory structure becomes part of the axis space automatically.
-
-    Separators default to ['_', '/'] (underscore + path separator).
-    Multiple separators split on any of the given characters, preserving
-    which one sat between each token pair so the template reconstructs exactly.
-
+    *dir_prefix* is prepended to the generated template (local dir or remote path).
     Returns (config, separators).
     """
-    directory = Path(directory)
-    files = _iter_images(directory, max_depth)
-    if not files:
-        raise ValueError(f"No image files found under {str(directory)!r}")
-
-    # Relative paths without extension, normalised to forward slashes
-    rel_stems = [
-        str(f.relative_to(directory).with_suffix("")).replace("\\", "/")
-        for f in files
-    ]
-
-    if separators is None:
-        separators = _DEFAULT_SEPS
-    # Normalise any backslash path separators supplied by the caller
-    separators = [s.replace("\\", "/") for s in separators]
-
-    ext = files[0].suffix
     splits = [_split_with_seps(s, separators) for s in rel_stems]
     all_tokens = [t for t, _ in splits]
-    ref_between = splits[0][1]  # separators from the first file define the template
+    ref_between = splits[0][1]
 
     n_cols = len(all_tokens[0])
     if any(len(t) != n_cols for t in all_tokens):
@@ -118,10 +101,92 @@ def detect_config(
     for i, between in enumerate(ref_between):
         template_stem += between + template_tokens[i + 1]
 
-    dir_str = str(directory).replace("\\", "/")
-    template = f"{dir_str}/{template_stem}{ext}"
-
+    template = f"{dir_prefix}/{template_stem}{ext}"
     return Config(template=template, axes=axes, keys=_auto_keys(axes)), separators
+
+
+def detect_config(
+    directory: str | Path,
+    separators: list[str] | None = None,
+    max_depth: int | None = None,
+) -> tuple[Config, list[str]]:
+    """Build a Config by analysing image filenames under *directory*.
+
+    Discovery is recursive up to *max_depth* levels (None = unlimited).
+    Relative paths from *directory* are used as the stems to split, so
+    directory structure becomes part of the axis space automatically.
+
+    Separators default to ['_', '/'] (underscore + path separator).
+    Multiple separators split on any of the given characters, preserving
+    which one sat between each token pair so the template reconstructs exactly.
+
+    Returns (config, separators).
+    """
+    directory = Path(directory)
+    files = _iter_images(directory, max_depth)
+    if not files:
+        raise ValueError(f"No image files found under {str(directory)!r}")
+
+    rel_stems = [
+        str(f.relative_to(directory).with_suffix("")).replace("\\", "/")
+        for f in files
+    ]
+    if separators is None:
+        separators = _DEFAULT_SEPS
+    separators = [s.replace("\\", "/") for s in separators]
+    ext = files[0].suffix
+    dir_str = str(directory).replace("\\", "/")
+    return _detect_from_rel_stems(rel_stems, ext, dir_str, separators)
+
+
+def detect_config_remote(
+    remote_dir: str,
+    remote: RemoteConfig,
+    separators: list[str] | None = None,
+    get_password: Callable[[str], str | None] | None = None,
+) -> tuple[Config, list[str], int]:
+    """Build a Config by analysing image filenames in a remote directory via SFTP.
+
+    Returns (config_with_remote_set, separators, n_files).
+    The template in the returned config uses absolute remote paths so that
+    preload_remote can download files without modification.
+    """
+    import stat
+    from .loader import _connect_sftp
+
+    base = remote_dir.rstrip('/')
+    client, sftp = _connect_sftp(remote, get_password)
+    try:
+        remote_files: list[str] = []
+        stack = [base]
+        while stack:
+            path = stack.pop()
+            try:
+                entries = sftp.listdir_attr(path)
+            except IOError:
+                continue
+            for entry in sorted(entries, key=lambda e: e.filename):
+                full = f"{path}/{entry.filename}"
+                if stat.S_ISDIR(entry.st_mode):
+                    stack.append(full)
+                elif any(entry.filename.lower().endswith(x) for x in IMAGE_EXTENSIONS):
+                    remote_files.append(full)
+    finally:
+        sftp.close()
+        client.close()
+
+    if not remote_files:
+        raise ValueError(f"No image files found on remote at {remote_dir!r}")
+
+    ext = PurePosixPath(remote_files[0]).suffix
+    rel_stems = [str(PurePosixPath(f).relative_to(base).with_suffix('')) for f in remote_files]
+
+    if separators is None:
+        separators = _DEFAULT_SEPS
+    config, separators = _detect_from_rel_stems(rel_stems, ext, base, separators)
+    config = Config(template=config.template, axes=config.axes,
+                    keys=config.keys, remote=remote)
+    return config, separators, len(remote_files)
 
 
 def _render_pattern(
@@ -153,14 +218,20 @@ def _render_pattern(
     return result
 
 
-def prompt_rename(config: Config, n_files: int, separators: list[str], directory: Path, max_depth: int | None = None) -> Config:
+def prompt_rename(
+    config: Config,
+    n_files: int,
+    separators: list[str],
+    directory: Path | None = None,
+    max_depth: int | None = None,
+) -> Config:
     """Interactively rename or ignore each auto-detected axis.
 
-    First prompts to confirm or change the separator(s) (re-detecting on
-    change), then for each axis shows its values, reads a name (or Enter to
-    ignore), and prints the updated pattern as feedback.  Multiple separators
-    are entered space-separated (e.g. `_ -`).  Raises ValueError if every axis
-    is ignored.
+    If *directory* is given, first prompts to confirm or change the separator(s),
+    re-detecting on change.  Without it, the separator step is skipped (useful
+    for remote directories where re-detection would require another SFTP round-trip).
+
+    Raises ValueError if every axis is ignored.
     """
     use_col = sys.stdout.isatty()
 
@@ -172,8 +243,8 @@ def prompt_rename(config: Config, n_files: int, separators: list[str], directory
 
     print(f"\nDetected {n_files} image{'s' if n_files != 1 else ''}\n")
 
-    # --- Separator selection ---
-    while True:
+    # --- Separator selection (local only) ---
+    while directory is not None:
         axis_colors = _make_colors(config.axes)
         print(f"  separator {_seps_display(separators)} → {_render_pattern(config.template, config.axes, {}, axis_colors)}")
         try:
@@ -204,10 +275,10 @@ def prompt_rename(config: Config, n_files: int, separators: list[str], directory
         color = axis_colors.get(auto_name, "")
         reset = _RESET if color else ""
 
-        if len(values) <= _MAX_VALS:
+        if len(values) <= _MAX_VALS_DISPLAY:
             vals_display = "  ".join(values)
         else:
-            vals_display = "  ".join(values[:_MAX_VALS]) + f"  … ({len(values)} total)"
+            vals_display = "  ".join(values[:_MAX_VALS_DISPLAY]) + f"  … ({len(values)} total)"
         print(f"  {color}{auto_name}{reset}:  {vals_display}")
 
         try:
@@ -237,4 +308,135 @@ def prompt_rename(config: Config, n_files: int, separators: list[str], directory
     if not new_axes:
         raise ValueError("All axes were ignored — nothing to navigate")
 
-    return Config(template=template, axes=new_axes, keys=_auto_keys(new_axes), mode=config.mode)
+    return Config(template=template, axes=new_axes, keys=_auto_keys(new_axes),
+                  mode=config.mode, remote=config.remote)
+
+
+# ── Smart path dispatch ────────────────────────────────────────────────────────
+
+def _is_remote_pattern(arg: str) -> bool:
+    """True if *arg* looks like a remote path (user@host:/path or host:/path).
+
+    A single uppercase letter followed by ':' is treated as a Windows drive,
+    not a hostname, so 'C:/foo' is not remote.
+    """
+    # Explicit user@host: form — unambiguous
+    if re.match(r'^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:', arg):
+        return True
+    # host:/path — require 2+ letter hostname to exclude Windows drive letters
+    if re.match(r'^[A-Za-z]{2}[A-Za-z0-9._-]*:/', arg):
+        return True
+    return False
+
+
+def _parse_remote_pattern(arg: str) -> tuple[RemoteConfig, str]:
+    """Split 'user@host:/remote/template' into (RemoteConfig, remote_template_path)."""
+    colon = arg.index(':')
+    host_part = arg[:colon]
+    remote_template = arg[colon + 1:]
+    user: str | None = None
+    if '@' in host_part:
+        user, host_part = host_part.rsplit('@', 1)
+    return RemoteConfig(host=host_part, user=user), remote_template
+
+
+def _axes_from_local_template(template: str) -> dict[str, list[str]]:
+    """Detect axis values by globbing the local filesystem against *template*.
+
+    Example: 'plots/{sensor}_{date}.png' scans for matching files and returns
+    {'sensor': ['ASCAT', 'SMAP', ...], 'date': ['2024-03-15', ...]}.
+    """
+    names = re.findall(r'\{(\w+)\}', template)
+    if not names:
+        raise ValueError(f"Template {template!r} has no {{placeholder}} variables")
+
+    norm = template.replace('\\', '/')
+    glob_pat = re.sub(r'\{(\w+)\}', '*', norm)
+    raw_files = _glob_mod.glob(glob_pat)
+    if not raw_files:
+        raise ValueError(f"No files match template {template!r}")
+
+    segs = re.split(r'\{(\w+)\}', norm)
+    regex = ''.join(
+        re.escape(s) if i % 2 == 0 else f'(?P<{s}>[^/]+)'
+        for i, s in enumerate(segs)
+    )
+
+    axes: dict[str, list[str]] = {n: [] for n in names}
+    seen: dict[str, set] = {n: set() for n in names}
+    for f in sorted(raw_files):
+        m = re.fullmatch(regex, f.replace('\\', '/'))
+        if m:
+            for n in names:
+                v = m.group(n)
+                if v not in seen[n]:
+                    seen[n].add(v)
+                    axes[n].append(v)
+
+    axes = {k: v for k, v in axes.items() if v}
+    if not axes:
+        raise ValueError(f"Could not extract axis values from files matching {template!r}")
+    return axes
+
+
+def _axes_from_remote_template(
+    template: str,
+    remote: RemoteConfig,
+    get_password: Callable[[str], str | None] | None = None,
+) -> dict[str, list[str]]:
+    """Connect via SFTP and detect axis values from files matching the remote template.
+
+    Walks the remote directory tree starting at the fixed prefix before the
+    first placeholder, then matches every file against the template pattern.
+    """
+    import stat
+    from .loader import _connect_sftp
+
+    names = re.findall(r'\{(\w+)\}', template)
+    if not names:
+        raise ValueError(f"Remote template {template!r} has no {{placeholder}} variables")
+
+    prefix = template[:template.index('{')]
+    base_dir = prefix.rstrip('/') or '/'
+
+    segs = re.split(r'\{(\w+)\}', template)
+    regex = ''.join(
+        re.escape(s) if i % 2 == 0 else f'(?P<{s}>[^/]+)'
+        for i, s in enumerate(segs)
+    )
+
+    client, sftp = _connect_sftp(remote, get_password)
+    try:
+        remote_files: list[str] = []
+        stack = [base_dir]
+        while stack:
+            path = stack.pop()
+            try:
+                entries = sftp.listdir_attr(path)
+            except IOError:
+                continue
+            for entry in entries:
+                full = f"{path}/{entry.filename}"
+                if stat.S_ISDIR(entry.st_mode):
+                    stack.append(full)
+                else:
+                    remote_files.append(full)
+    finally:
+        sftp.close()
+        client.close()
+
+    axes: dict[str, list[str]] = {n: [] for n in names}
+    seen: dict[str, set] = {n: set() for n in names}
+    for f in sorted(remote_files):
+        m = re.fullmatch(regex, f)
+        if m:
+            for n in names:
+                v = m.group(n)
+                if v not in seen[n]:
+                    seen[n].add(v)
+                    axes[n].append(v)
+
+    axes = {k: v for k, v in axes.items() if v}
+    if not axes:
+        raise ValueError(f"No files on remote match template {template!r}")
+    return axes

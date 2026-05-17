@@ -6,7 +6,6 @@
 
 `juxt` is a fast desktop tool for visually comparing plots across multiple parameter axes. Define axes (model, date, data source, ...) and flip through the resulting image hypercube with keyboard navigation.
 
-
 *juxt* comes from *juxtapose* — placing things side by side to compare. That's the whole idea: flip through congruent plots fast enough to visually identify differences.
 
 ## Install
@@ -15,15 +14,25 @@
 pip install juxt
 ```
 
+For SSH remote loading:
+
+```
+pip install juxt[ssh]
+```
+
 ## Quick start
 
-```bash
-# auto-detect axes from a directory of images
-juxt /path/to/plots/
+`juxt` accepts several forms as its first argument:
 
-# or use a config file
-juxt config.yaml
+```bash
+juxt /path/to/plots/                        # auto-detect axes from a directory of images
+juxt "plots/{sensor}_{date}.png"            # explicit local template
+juxt myhost:/path/to/plots/                 # remote directory over SSH
+juxt "myhost:/path/{sensor}_{date}.png"     # remote template over SSH
+juxt config.yaml                            # explicit config file
 ```
+
+For directory and remote-directory modes, filenames are split on separators (`_` and `/` by default) and any position with more than one distinct value becomes an axis. You'll be prompted to name the axes on first run; use `-a` to skip.
 
 ## Config
 
@@ -43,8 +52,6 @@ discover:
   separator: "_"
 ```
 
-Filenames are split on the separator; any position with more than one distinct value becomes an axis. Axes are initially named `axis_0`, `axis_1`, … — you'll be prompted to rename them on first run, or use `-a` to skip.
-
 ### Template mode
 
 For full control, define the template and axes explicitly:
@@ -63,9 +70,31 @@ keys:
   r: source
 ```
 
+### Remote mode (SSH)
+
+Images are downloaded over SFTP at startup and cached locally; navigation afterwards is identical to local use. Auth uses your SSH agent or `~/.ssh/config` key, with a password fallback.
+
+```yaml
+remote: myhost               # or user@myhost, or user@myhost:port
+template: "/data/plots/{sensor}_{date}.png"
+axes:
+  sensor: [ASCAT, SMAP]
+  date:   [2024-03-15, 2024-03-16]
+```
+
+Or pass the remote path directly on the command line — juxt will detect axes from the remote filenames automatically:
+
+```bash
+juxt myhost:/data/plots/
+```
+
+Requires the SSH extra: `pip install juxt[ssh]`
+
+
+
 ## Navigation
 
-Default mode is **case-sensitive**: a lowercase letter navigates forward (+1) on that axis; uppercase navigates backward (−1). Arrow keys navigate the most recently used axis. To select any value of the axis, use `CTRL+[letter]`.
+Default mode is **case-sensitive**: a lowercase letter navigates forward (+1) on that axis; uppercase navigates backward (−1). Arrow keys navigate the most recently used axis.
 
 | Key | Action |
 |---|---|
@@ -80,16 +109,30 @@ Default mode is **case-sensitive**: a lowercase letter navigates forward (+1) on
 
 Use `:mode twin|multi|case` in the command bar to switch navigation modes.
 
+## Command mode
+
+Press `:` to open the command bar (vim-style). Tab-completion narrows candidates as you type.
+
+| Command | Action |
+|---|---|
+| `:q` | quit |
+| `:fit` | fit image to window |
+| `:fit height` / `:fit width` | fit to height or width |
+| `:zoom N` | set zoom to N% |
+| `:fullscreen` | toggle fullscreen |
+| `:mode twin\|multi\|case` | switch navigation mode |
 
 ## Controls
 
-#### zoom controls
+#### Zoom
 | Key | Action |
 |---|---|
 | double-click | fit image to window |
 | `0` | reset zoom to 100% |
 | scroll wheel | zoom (anchored under cursor) |
-#### zoom controls
+| drag | pan |
+
+#### View
 | Key | Action |
 |---|---|
 | `Enter` | toggle fullscreen |

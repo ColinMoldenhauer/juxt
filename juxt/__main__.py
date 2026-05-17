@@ -10,8 +10,17 @@ from PySide6.QtCore import Qt, QSocketNotifier, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QProgressDialog
 
-from .config import load_config
-from .detect import _iter_images, detect_config, prompt_rename
+from .config import Config, _auto_keys, load_config
+from .detect import (
+    _axes_from_local_template,
+    _axes_from_remote_template,
+    _is_remote_pattern,
+    _iter_images,
+    _parse_remote_pattern,
+    detect_config,
+    detect_config_remote,
+    prompt_rename,
+)
 from .loader import preload, preload_remote
 from .viewer import MainWindow
 
@@ -129,17 +138,51 @@ def main():
     else:
         warnings.warn(f"No logo file found at {_logo}")
 
+    _pw_cache: list[str | None] = [None]
+
+    def _ask_password(label: str) -> str | None:
+        """Password dialog for the detection phase (no progress to manage)."""
+        if _pw_cache[0] is not None:
+            return _pw_cache[0]
+        dlg = QInputDialog()
+        dlg.setWindowTitle("SSH Authentication")
+        dlg.setLabelText(f"Password for {label}:")
+        dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
+        QTimer.singleShot(0, lambda: _force_focus(dlg))
+        ok = dlg.exec()
+        _pw_cache[0] = dlg.textValue() if ok else None
+        return _pw_cache[0]
+
     try:
-        path = Path(args.path)
-        if path.is_dir():
-            files = _iter_images(path, args.max_depth)
-            config, sep = detect_config(path, args.separator, args.max_depth)
+        raw = args.path
+        if _is_remote_pattern(raw):
+            remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
+            if '{' in remote_tmpl:
+                axes = _axes_from_remote_template(remote_tmpl, remote_cfg, _ask_password)
+                config = Config(template=remote_tmpl, axes=axes,
+                                keys=_auto_keys(axes), remote=remote_cfg)
+            else:
+                config, sep, n_remote = detect_config_remote(
+                    remote_tmpl, remote_cfg, args.separator, _ask_password)
+                if not args.auto:
+                    config = prompt_rename(config, n_remote, sep)
+        elif Path(raw).is_dir():
+            p = Path(raw)
+            files = _iter_images(p, args.max_depth)
+            config, sep = detect_config(p, args.separator, args.max_depth)
             if not args.auto:
-                config = prompt_rename(config, len(files), sep, path, args.max_depth)
-        elif path.suffix.lower() in (".yaml", ".yml"):
-            config = load_config(str(path))
+                config = prompt_rename(config, len(files), sep, p, args.max_depth)
+        elif raw.lower().endswith((".yaml", ".yml")):
+            config = load_config(raw)
+        elif '{' in raw:
+            axes = _axes_from_local_template(raw)
+            config = Config(template=raw, axes=axes, keys=_auto_keys(axes))
         else:
-            print(f"Error: {args.path!r} is not a directory or YAML config file", file=sys.stderr)
+            print(
+                f"Error: {raw!r} is not a directory, YAML config, "
+                "template pattern, or remote path",
+                file=sys.stderr,
+            )
             sys.exit(1)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -178,6 +221,8 @@ def main():
 
     if is_remote:
         def get_password(label: str) -> str | None:
+            if _pw_cache[0] is not None:
+                return _pw_cache[0]
             # Drop ApplicationModal before hiding so Qt doesn't keep progress
             # at the top of the modal stack, which would block the password dialog.
             progress.setWindowModality(Qt.NonModal)
@@ -185,15 +230,17 @@ def main():
             app.processEvents()
             dlg = QInputDialog()
             dlg.setWindowTitle("SSH Authentication")
-            dlg.setLabelText(f"Password / passphrase for {label}:")
+            dlg.setLabelText(f"Password for {label}:")
             dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
             QTimer.singleShot(0, lambda: _force_focus(dlg))
             ok = dlg.exec()
             progress.setWindowModality(Qt.ApplicationModal)
             progress.show()
-            return dlg.textValue() if ok else None
+            _pw_cache[0] = dlg.textValue() if ok else None
+            return _pw_cache[0]
 
         pixmaps = preload_remote(config.template, config.axes, config.remote, on_progress, get_password)
+        _pw_cache[0] = None  # drop the cached password as soon as it's no longer needed
     else:
         pixmaps = preload(config.template, config.axes, on_progress)
     progress.close()

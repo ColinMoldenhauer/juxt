@@ -52,20 +52,14 @@ def preload(
     return pixmaps
 
 
-def preload_remote(
-    template: str,
-    axes: dict[str, list[str]],
+def _connect_sftp(
     remote: "RemoteConfig",
-    progress: Callable[[int, int], None] | None = None,
     get_password: Callable[[str], str | None] | None = None,
-) -> dict[tuple[int, ...], QPixmap]:
-    """Download every image from a remote host via SFTP, then preload into pixmaps.
+) -> "tuple[paramiko.SSHClient, paramiko.SFTPClient]":
+    """Open an authenticated SSH+SFTP session, optionally prompting for a password.
 
-    Progress runs 0 → 2*N: first half is downloading, second half is pixmap decoding.
+    Resolves host aliases and keys via ~/.ssh/config.
     Requires paramiko: pip install juxt[ssh]
-
-    get_password: optional callable(label) -> password string, called on auth
-    failure so the caller can show a GUI prompt and retry with a password.
     """
     try:
         import paramiko
@@ -75,15 +69,6 @@ def preload_remote(
             "    pip install juxt[ssh]"
         )
 
-    axis_names = list(axes.keys())
-    axis_values = list(axes.values())
-    combos = list(product(*axis_values))
-    n = len(combos)
-
-    tmpdir = tempfile.mkdtemp(prefix="juxt_ssh_")
-    atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)
-
-    # Resolve connection params via ~/.ssh/config so aliases like "myremote" work.
     host, user, port, key = remote.host, remote.user, remote.port, remote.key_path
     ssh_cfg_path = Path("~/.ssh/config").expanduser()
     if ssh_cfg_path.exists():
@@ -94,7 +79,7 @@ def preload_remote(
         user = user or h.get("user")
         port = port if port != 22 else int(h.get("port", 22))
         if not key and h.get("identityfile"):
-            key = h["identityfile"][0]  # paramiko returns a list
+            key = h["identityfile"][0]
 
     def _make_client(password: str | None = None) -> "paramiko.SSHClient":
         c = paramiko.SSHClient()
@@ -120,7 +105,30 @@ def preload_remote(
         if pw is None:
             raise paramiko.AuthenticationException("No password provided")
         client = _make_client(password=pw)
-    sftp = client.open_sftp()
+    return client, client.open_sftp()
+
+
+def preload_remote(
+    template: str,
+    axes: dict[str, list[str]],
+    remote: "RemoteConfig",
+    progress: Callable[[int, int], None] | None = None,
+    get_password: Callable[[str], str | None] | None = None,
+) -> dict[tuple[int, ...], QPixmap]:
+    """Download every image from a remote host via SFTP, then preload into pixmaps.
+
+    Progress runs 0 → 2*N: first half is downloading, second half is pixmap decoding.
+    Requires paramiko: pip install juxt[ssh]
+    """
+    axis_names = list(axes.keys())
+    axis_values = list(axes.values())
+    combos = list(product(*axis_values))
+    n = len(combos)
+
+    tmpdir = tempfile.mkdtemp(prefix="juxt_ssh_")
+    atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)
+
+    client, sftp = _connect_sftp(remote, get_password)
 
     for i, combo in enumerate(combos):
         if progress:
