@@ -119,6 +119,50 @@ def _parse_remote(value) -> RemoteConfig:
     raise ValueError(f"Invalid remote config: {value!r}; expected 'user@host' or a dict")
 
 
+_MODE_NAMES = {0: "tap", 1: "seek", 2: "pin"}
+
+
+def dump_config(config: Config, path: str) -> None:
+    """Serialize *config* to a YAML file at *path* (template mode format)."""
+    class _Dumper(yaml.Dumper):
+        pass
+
+    def _inline_list(dumper, data):
+        return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=True)
+
+    _Dumper.add_representer(list, _inline_list)
+
+    out: dict = {
+        "template": config.template,
+        "axes": {k: list(v) for k, v in config.axes.items()},
+        "keys": dict(config.keys),
+    }
+    if config.mode != 0:
+        out["mode"] = _MODE_NAMES.get(config.mode, config.mode)
+    if config.remote is not None:
+        r = config.remote
+        if r.key_path is None:
+            s = ""
+            if r.user:
+                s += f"{r.user}@"
+            s += r.host
+            if r.port != 22:
+                s += f":{r.port}"
+            out["remote"] = s
+        else:
+            rd: dict = {"host": r.host}
+            if r.user:
+                rd["user"] = r.user
+            if r.port != 22:
+                rd["port"] = r.port
+            rd["key_path"] = r.key_path
+            out["remote"] = rd
+
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(out, f, Dumper=_Dumper, default_flow_style=False,
+                  allow_unicode=True, sort_keys=False)
+
+
 def _parse_mode(value) -> int:
     if isinstance(value, int):
         if 0 <= value <= 2:

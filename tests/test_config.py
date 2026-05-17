@@ -11,6 +11,7 @@ from juxt.config import (
     _auto_keys,
     _parse_mode,
     _parse_remote,
+    dump_config,
     load_config,
 )
 
@@ -227,3 +228,85 @@ class TestLoadConfig:
         }))
         cfg = load_config(str(cfg_path))
         assert cfg.axes["year"] == ["2023", "2024"]
+
+
+class TestDumpConfig:
+    def _base_config(self, **kw) -> Config:
+        axes = {"sensor": ["A", "B"], "date": ["d1", "d2"]}
+        return Config(
+            template="plots/{sensor}_{date}.png",
+            axes=axes,
+            keys=_auto_keys(axes),
+            **kw,
+        )
+
+    def test_roundtrip(self, tmp_path):
+        cfg = self._base_config()
+        out = tmp_path / "saved.yaml"
+        dump_config(cfg, str(out))
+        reloaded = load_config(str(out))
+        assert reloaded.template == cfg.template
+        assert reloaded.axes == cfg.axes
+        assert reloaded.keys == cfg.keys
+        assert reloaded.mode == cfg.mode
+
+    def test_default_mode_omitted(self, tmp_path):
+        # mode 0 (tap) is the default — no need to write it
+        out = tmp_path / "saved.yaml"
+        dump_config(self._base_config(mode=0), str(out))
+        data = yaml.safe_load(out.read_text())
+        assert "mode" not in data
+
+    def test_non_default_mode_written_as_name(self, tmp_path):
+        out = tmp_path / "saved.yaml"
+        dump_config(self._base_config(mode=1), str(out))
+        data = yaml.safe_load(out.read_text())
+        assert data["mode"] == "seek"
+
+        dump_config(self._base_config(mode=2), str(out))
+        data = yaml.safe_load(out.read_text())
+        assert data["mode"] == "pin"
+
+    def test_axes_written_as_inline_lists(self, tmp_path):
+        out = tmp_path / "saved.yaml"
+        dump_config(self._base_config(), str(out))
+        text = out.read_text()
+        # Flow-style lists look like [A, B] on a single line
+        assert "[" in text and "]" in text
+
+    def test_remote_simple_written_as_string(self, tmp_path):
+        cfg = self._base_config(remote=RemoteConfig(host="myhost", user="alice", port=22))
+        out = tmp_path / "saved.yaml"
+        dump_config(cfg, str(out))
+        data = yaml.safe_load(out.read_text())
+        assert data["remote"] == "alice@myhost"
+
+    def test_remote_with_port_written_as_string(self, tmp_path):
+        cfg = self._base_config(remote=RemoteConfig(host="myhost", user="alice", port=2222))
+        out = tmp_path / "saved.yaml"
+        dump_config(cfg, str(out))
+        data = yaml.safe_load(out.read_text())
+        assert data["remote"] == "alice@myhost:2222"
+
+    def test_remote_with_key_path_written_as_dict(self, tmp_path):
+        cfg = self._base_config(
+            remote=RemoteConfig(host="myhost", user="alice", port=22, key_path="/home/alice/.ssh/id_ed25519")
+        )
+        out = tmp_path / "saved.yaml"
+        dump_config(cfg, str(out))
+        data = yaml.safe_load(out.read_text())
+        assert isinstance(data["remote"], dict)
+        assert data["remote"]["host"] == "myhost"
+        assert data["remote"]["key_path"] == "/home/alice/.ssh/id_ed25519"
+        assert "port" not in data["remote"]  # default port omitted
+
+    def test_roundtrip_with_remote(self, tmp_path):
+        remote = RemoteConfig(host="srv", user="bob", port=2222)
+        cfg = self._base_config(remote=remote)
+        out = tmp_path / "saved.yaml"
+        dump_config(cfg, str(out))
+        reloaded = load_config(str(out))
+        assert reloaded.remote is not None
+        assert reloaded.remote.host == "srv"
+        assert reloaded.remote.user == "bob"
+        assert reloaded.remote.port == 2222

@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QSocketNotifier, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QProgressDialog
 
-from .config import Config, _auto_keys, load_config
+from .config import Config, _auto_keys, dump_config, load_config
 from .detect import (
     _axes_from_local_template,
     _axes_from_remote_template,
@@ -97,6 +97,7 @@ def _print_help() -> None:
   -s, --separator SEP [...]   separator(s) for auto-detection
   -a, --auto                  skip axis naming prompt
       --max-depth N           max subdirectory search depth
+      --save PATH             save resolved config to PATH after detection
   -h, --help                  show this message and exit
 
   navigation modes (switch with :mode)
@@ -122,6 +123,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("-s", "--separator", metavar="SEP", nargs="+")
     p.add_argument("-a", "--auto", action="store_true")
     p.add_argument("--max-depth", type=int, default=None, metavar="N")
+    p.add_argument("--save", metavar="PATH")
     p.add_argument("-h", "--help", action=_HelpAction)
     return p.parse_args()
 
@@ -197,6 +199,13 @@ def main():
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if args.save:
+        try:
+            dump_config(config, args.save)
+            print(f"Config saved to {args.save}")
+        except Exception as e:
+            print(f"Warning: could not save config: {e}", file=sys.stderr)
 
     n_images = 1
     for vs in config.axes.values():

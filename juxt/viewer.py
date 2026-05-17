@@ -22,6 +22,7 @@ _COMMANDS = [
     "fullscreen",
     "mode",
     "quit",
+    "save",
     "switch-last",
     "zoom",
 ]
@@ -34,6 +35,7 @@ _ALIASES: dict[str, str] = {
 # Commands absent from this dict take no arguments (or free-text only).
 _CMD_ARGS: dict[str, list[str]] = {
     "mode": ["tap", "seek", "pin"],
+    "save": [],   # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
 }
 
@@ -76,6 +78,11 @@ class ImageView(QGraphicsView):
         }
 
         self.nav_mode = NavMode(config.mode)
+
+        self._flash_msg: str | None = None
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.timeout.connect(self._clear_flash)
 
         # Active incremental-search state (value picker and multi-select).
         # None  = no active selection
@@ -373,10 +380,41 @@ class ImageView(QGraphicsView):
                     self.nav_mode = NavMode.PIN
                 self._sel = None
                 self.state_changed.emit()
+        elif verb == "save":
+            # Reconstruct path from original parts to preserve case
+            path_str = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            if path_str:
+                self._do_save(path_str)
+            else:
+                from PySide6.QtWidgets import QFileDialog
+                path_str, _ = QFileDialog.getSaveFileName(
+                    self, "Save config", "juxt.yaml", "YAML files (*.yaml *.yml)"
+                )
+                if path_str:
+                    self._do_save(path_str)
         elif verb == "switch-last":
             if self.prev is not None:
                 self.pos, self.prev = self.prev, list(self.pos)
                 self._refresh()
+
+    # ── flash message ────────────────────────────────────────────────────────
+
+    def _clear_flash(self):
+        self._flash_msg = None
+        self.state_changed.emit()
+
+    def _flash(self, msg: str, ms: int = 2500):
+        self._flash_msg = msg
+        self._flash_timer.start(ms)
+        self.state_changed.emit()
+
+    def _do_save(self, path: str):
+        from .config import dump_config
+        try:
+            dump_config(self.config, path)
+            self._flash(f"saved → {path}")
+        except Exception as e:
+            self._flash(f"save failed: {e}")
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -577,6 +615,11 @@ class MainWindow(QMainWindow):
 
     def _update_status(self):
         v = self.view
+
+        if v._flash_msg is not None:
+            self._status_label.setText(v._flash_msg)
+            return
+
         mode_str = f"[{v.nav_mode.label}]"
 
         if v._cmd is not None:
