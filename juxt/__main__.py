@@ -39,16 +39,71 @@ def _force_focus(window):
         window.raise_()
 
 
+def _print_help() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+    content = [
+        "",
+        "juxt — navigate N-dimensional plot hypercubes",
+        "",
+        "Flip through congruent geospatial images using",
+        "keyboard-driven axis control to spot visual",
+        "differences at a glance.",
+        "",
+        "keys (all modes)",
+        None,  # horizontal rule
+        "↑ ↓ ← →    navigate axes",
+        "Space       toggle between two positions",
+        "1–9         jump to Nth value on active axis",
+        ":           command mode  (:fit  :zoom N  :q)",
+        "Ctrl+H      toggle status bar",
+        "",
+    ]
+    pad = 2
+    max_w = max(len(line) for line in content if line is not None)
+    inner = max_w + 2 * pad
+    top = "╭" + "─" * inner + "╮"
+    bot = "╰" + "─" * inner + "╯"
+    rows = [top]
+    for line in content:
+        if line is None:
+            rows.append("│" + " " * pad + "─" * (inner - 2 * pad) + " " * pad + "│")
+        else:
+            rows.append("│" + " " * pad + line.ljust(inner - 2 * pad) + " " * pad + "│")
+    rows.append(bot)
+    print("\n".join(rows))
+    print("""
+  usage:  juxt [options] [PATH]
+
+  PATH                        directory to scan or YAML config
+                              file  (default: current directory)
+
+  -s, --separator SEP [...]   separator(s) for auto-detection
+  -a, --auto                  skip axis naming prompt
+      --max-depth N           max subdirectory search depth
+  -h, --help                  show this message and exit""")
+
+
+class _HelpAction(argparse.Action):
+    def __init__(self, option_strings, dest=argparse.SUPPRESS,
+                 default=argparse.SUPPRESS, help=None):
+        super().__init__(option_strings=option_strings, dest=dest,
+                         default=default, nargs=0, help=help)
+
+    def __call__(self, parser, *_):
+        _print_help()
+        parser.exit()
+
+
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="juxt", description="Geospatial plot comparison tool")
-    p.add_argument("path", nargs="?", default=".", metavar="PATH",
-                   help="directory to scan, or YAML config file (default: current directory)")
-    p.add_argument("-s", "--separator", metavar="SEP", nargs="+",
-                   help="separator(s) for auto-detection, space-separated (default: auto)")
-    p.add_argument("-a", "--auto", action="store_true",
-                   help="skip axis naming prompt and use auto-detected names")
-    p.add_argument("--max-depth", type=int, default=None, metavar="N",
-                   help="maximum subdirectory depth for image search (default: unlimited)")
+    p = argparse.ArgumentParser(prog="juxt", add_help=False)
+    p.add_argument("path", nargs="?", default=".", metavar="PATH")
+    p.add_argument("-s", "--separator", metavar="SEP", nargs="+")
+    p.add_argument("-a", "--auto", action="store_true")
+    p.add_argument("--max-depth", type=int, default=None, metavar="N")
+    p.add_argument("-h", "--help", action=_HelpAction)
     return p.parse_args()
 
 
