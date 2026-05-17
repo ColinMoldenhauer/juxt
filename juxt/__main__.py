@@ -97,7 +97,12 @@ def _print_help() -> None:
   -s, --separator SEP [...]   separator(s) for auto-detection
   -a, --auto                  skip axis naming prompt
       --max-depth N           max subdirectory search depth
-  -h, --help                  show this message and exit""")
+  -h, --help                  show this message and exit
+
+  navigation modes (switch with :mode)
+    tap   letter=+1/LETTER=-1 on that axis (default)
+    seek  type to search axes and values by prefix
+    pin   letter focuses axis; arrows navigate""")
 
 
 class _HelpAction(argparse.Action):

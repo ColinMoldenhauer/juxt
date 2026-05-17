@@ -33,19 +33,19 @@ _ALIASES: dict[str, str] = {
 # Discrete argument options for commands that take a value.
 # Commands absent from this dict take no arguments (or free-text only).
 _CMD_ARGS: dict[str, list[str]] = {
-    "mode": ["twin", "multi-select", "case-sensitive"],
+    "mode": ["tap", "seek", "pin"],
     "zoom": ["50", "75", "100", "150", "200"],
 }
 
 
 class NavMode(IntEnum):
-    TWIN = 0
-    MULTI_SELECT = 1
-    CASE_SENSITIVE = 2
+    TAP = 0
+    SEEK = 1
+    PIN = 2
 
     @property
     def label(self) -> str:
-        return ("twin", "multi-select", "case-sensitive")[self]
+        return ("tap", "seek", "pin")[self]
 
 
 class ImageView(QGraphicsView):
@@ -365,12 +365,12 @@ class ImageView(QGraphicsView):
         elif verb == "mode":
             if args:
                 arg = args[0]
-                if arg in ("0", "twin"):
-                    self.nav_mode = NavMode.TWIN
-                elif arg in ("1", "multi", "multi-select"):
-                    self.nav_mode = NavMode.MULTI_SELECT
-                elif arg in ("2", "case", "case-sensitive"):
-                    self.nav_mode = NavMode.CASE_SENSITIVE
+                if arg in ("0", "tap"):
+                    self.nav_mode = NavMode.TAP
+                elif arg in ("1", "seek"):
+                    self.nav_mode = NavMode.SEEK
+                elif arg in ("2", "pin"):
+                    self.nav_mode = NavMode.PIN
                 self._sel = None
                 self.state_changed.emit()
         elif verb == "switch-last":
@@ -511,7 +511,7 @@ class ImageView(QGraphicsView):
         if mods == Qt.ControlModifier and Qt.Key_A <= k <= Qt.Key_Z:
             ch_lower = chr(k).lower()
 
-        if self.nav_mode == NavMode.TWIN:
+        if self.nav_mode == NavMode.PIN:
             if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
                 self._sel_open_value(self.key_to_axis[ch_lower])
             elif mods == Qt.NoModifier and ch_lower in self.key_to_axis:
@@ -520,13 +520,13 @@ class ImageView(QGraphicsView):
             else:
                 super().keyPressEvent(event)
 
-        elif self.nav_mode == NavMode.MULTI_SELECT:
+        elif self.nav_mode == NavMode.SEEK:
             if mods == Qt.NoModifier and ch.isalpha():
                 self._sel_open_axis(ch)
             else:
                 super().keyPressEvent(event)
 
-        elif self.nav_mode == NavMode.CASE_SENSITIVE:
+        elif self.nav_mode == NavMode.TAP:
             if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
                 self._sel_open_value(self.key_to_axis[ch_lower])
             elif ch_lower in self.key_to_axis and mods in (Qt.NoModifier, Qt.ShiftModifier):

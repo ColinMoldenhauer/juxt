@@ -94,7 +94,7 @@ Requires the SSH extra: `pip install juxt[ssh]`
 
 ## Navigation
 
-Default mode is **case-sensitive**: a lowercase letter navigates forward (+1) on that axis; uppercase navigates backward (−1). Arrow keys navigate the most recently used axis.
+Default mode is **tap**: a lowercase letter navigates forward (+1) on that axis; uppercase navigates backward (−1). Arrow keys navigate the most recently used axis.
 
 | Key | Action |
 |---|---|
@@ -107,7 +107,7 @@ Default mode is **case-sensitive**: a lowercase letter navigates forward (+1) on
 | `Home` / `End` | jump to first / last value |
 | `1`–`9` | jump to the Nth value |
 
-Use `:mode twin|multi|case` in the command bar to switch navigation modes.
+Use `:mode tap|seek|pin` in the command bar to switch navigation modes.
 
 ## Command mode
 

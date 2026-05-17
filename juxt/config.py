@@ -17,7 +17,7 @@ class Config:
     template: str
     axes: dict[str, list[str]]  # ordered; all values are strings
     keys: dict[str, str]        # letter -> axis_name
-    mode: int = 2               # NavMode value (0=twin, 1=multi-select, 2=case-sensitive)
+    mode: int = 0               # NavMode value (0=tap, 1=seek, 2=pin)
     remote: RemoteConfig | None = None
 
 
@@ -86,7 +86,7 @@ def load_config(path: str) -> Config:
     keys_cfg = data.get("keys", {})
     keys = {str(k): str(v) for k, v in keys_cfg.items()} if keys_cfg else _auto_keys(axes)
 
-    mode = _parse_mode(data.get("mode", 2))
+    mode = _parse_mode(data.get("mode", 0))
 
     remote = None
     if "remote" in data:
@@ -125,7 +125,7 @@ def _parse_mode(value) -> int:
             return value
         raise ValueError(f"mode must be 0–2, got {value}")
     s = str(value).lower().replace("-", "_").replace(" ", "_")
-    table = {"0": 0, "twin": 0, "1": 1, "multi_select": 1, "2": 2, "case_sensitive": 2}
+    table = {"0": 0, "tap": 0, "1": 1, "seek": 1, "2": 2, "pin": 2}
     if s not in table:
-        raise ValueError(f"Unknown mode {value!r}; choose twin/multi-select/case-sensitive or 0/1/2")
+        raise ValueError(f"Unknown mode {value!r}; choose tap/seek/pin or 0/1/2")
     return table[s]

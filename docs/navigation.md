@@ -2,7 +2,7 @@
 
 juxt has three navigation modes and a command mode. All modes share the same core key bindings; the modes differ only in how letter keys are interpreted.
 
-Switch modes at runtime with `:mode twin|multi-select|case-sensitive`, or set a default in the [config file](configuration.md#navigation-mode).
+Switch modes at runtime with `:mode tap|seek|pin`, or set a default in the [config file](configuration.md#navigation-mode).
 
 ---
 
@@ -24,7 +24,7 @@ These bindings work identically regardless of which mode is active.
 
 | Key | Action |
 |---|---|
-| `f` or double-click | Fit image to window |
+| double-click | Fit image to window |
 | `0` | Reset zoom to 100% |
 | Scroll wheel | Zoom in/out, anchored under the cursor |
 | Click + drag | Pan the image |
@@ -36,7 +36,6 @@ These bindings work identically regardless of which mode is active.
 | Key | Action |
 |---|---|
 | `:` | Open command mode |
-| `Ctrl+M` | Cycle through navigation modes |
 | `Escape` | Exit fullscreen or cancel an active selection / command |
 
 ---
@@ -52,7 +51,7 @@ Any action that selects or navigates an axis promotes it to the top of the focus
 
 ---
 
-## Mode 2 — case-sensitive (default)
+## tap (default)
 
 Each axis key navigates directly without first shifting focus. Lower = forward (+1), upper = backward (−1). Good for workflows that cycle through many axes individually without heavy reliance on arrow keys.
 
@@ -64,11 +63,11 @@ Each axis key navigates directly without first shifting focus. Lower = forward (
 
 Arrow keys still work and navigate the top two entries in the focus stack, as in all modes.
 
-**Trade-off vs. twin mode:** every step costs one keypress, but Shift is needed for the reverse direction. Mode 0 (twin) removes the Shift cost for sustained cycling at the expense of an explicit focus step before navigating.
+**Trade-off vs. pin:** every step costs one keypress, but Shift is needed for the reverse direction. Pin removes the Shift cost for sustained cycling at the expense of an explicit focus step before navigating.
 
 ---
 
-## Mode 1 — multi-select
+## seek
 
 Every letter key starts an incremental prefix search, first for an axis name, then for a value on that axis. Good when there are many axes or you don't want to memorise per-axis letter bindings.
 
@@ -86,7 +85,7 @@ Every letter key starts an incremental prefix search, first for an axis name, th
 
 ---
 
-## Mode 0 — twin
+## pin
 
 Optimised for comparing two axes at a time with no modifier keys in the hot path.
 
@@ -119,9 +118,9 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:fit-width` | Fit image width to the viewport |
 | `:zoom N` | Set zoom to N% (e.g. `:zoom 50`, `:zoom 200`) |
 | `:fullscreen` | Toggle fullscreen |
-| `:mode twin` | Switch to twin mode |
-| `:mode multi-select` | Switch to multi-select mode |
-| `:mode case-sensitive` | Switch to case-sensitive mode |
+| `:mode tap` | Switch to tap mode |
+| `:mode seek` | Switch to seek mode |
+| `:mode pin` | Switch to pin mode |
 | `:switch-last` | Toggle between current and previous position (same as `Space`) |
 
 ---
@@ -134,7 +133,7 @@ The status bar at the bottom shows:
 - Current axis values (e.g. `sensor=ASCAT  date=2024-03-15  overpass=AM  source=L2`)
 - Which axes are bound to `←`/`→` and `↑`/`↓`
 - Letter-to-axis assignments
-- Active query and candidate list when value picker or multi-select is active
+- Active query and candidate list when value picker or seek is active
 - Command being typed in command mode
 
 Toggle the status bar with `Ctrl+H`.
