@@ -5,11 +5,20 @@ import yaml
 
 
 @dataclass
+class RemoteConfig:
+    host: str
+    user: str | None = None
+    port: int = 22
+    key_path: str | None = None  # path to private key; None = use agent / default keys
+
+
+@dataclass
 class Config:
     template: str
     axes: dict[str, list[str]]  # ordered; all values are strings
     keys: dict[str, str]        # letter -> axis_name
     mode: int = 2               # NavMode value (0=twin, 1=multi-select, 2=case-sensitive)
+    remote: RemoteConfig | None = None
 
 
 def _auto_discover(directory: str, separator: str) -> tuple[str, dict[str, list[str]]]:
@@ -79,7 +88,35 @@ def load_config(path: str) -> Config:
 
     mode = _parse_mode(data.get("mode", 2))
 
-    return Config(template=template, axes=axes, keys=keys, mode=mode)
+    remote = None
+    if "remote" in data:
+        if "discover" in data:
+            raise ValueError("'remote' and 'discover' cannot be used together")
+        remote = _parse_remote(data["remote"])
+
+    return Config(template=template, axes=axes, keys=keys, mode=mode, remote=remote)
+
+
+def _parse_remote(value) -> RemoteConfig:
+    if isinstance(value, str):
+        # accepts: host  |  user@host  |  host:port  |  user@host:port
+        user = None
+        host = value
+        port = 22
+        if "@" in host:
+            user, host = host.split("@", 1)
+        if ":" in host:
+            host, port_str = host.rsplit(":", 1)
+            port = int(port_str)
+        return RemoteConfig(host=host, user=user, port=port)
+    if isinstance(value, dict):
+        return RemoteConfig(
+            host=value["host"],
+            user=value.get("user"),
+            port=int(value.get("port", 22)),
+            key_path=value.get("key_path") or value.get("key"),
+        )
+    raise ValueError(f"Invalid remote config: {value!r}; expected 'user@host' or a dict")
 
 
 def _parse_mode(value) -> int:

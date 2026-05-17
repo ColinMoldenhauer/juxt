@@ -1,17 +1,18 @@
 from __future__ import annotations
 import argparse
 import signal
+import socket
 import sys
 import warnings
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QSocketNotifier, QTimer
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QProgressDialog
+from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QProgressDialog
 
 from .config import load_config
 from .detect import _iter_images, detect_config, prompt_rename
-from .loader import preload
+from .loader import preload, preload_remote
 from .viewer import MainWindow
 
 
@@ -89,21 +90,57 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    total = 1
+    n_images = 1
     for vs in config.axes.values():
-        total *= len(vs)
+        n_images *= len(vs)
 
-    progress = QProgressDialog("Loading images…", None, 0, total)
+    is_remote = config.remote is not None
+    total_steps = n_images * 2 if is_remote else n_images
+    first_label = "Downloading images…" if is_remote else "Loading images…"
+
+    # Reliable Ctrl+C in any nested Qt event loop (loading, dialogs, etc.).
+    # set_wakeup_fd writes a byte to wsock when SIGINT arrives; QSocketNotifier
+    # delivers it as a socket event so Python runs the handler immediately
+    # without needing a polling timer.
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    _rsock, _wsock = socket.socketpair()
+    _wsock.setblocking(False)
+    signal.set_wakeup_fd(_wsock.fileno())
+    _signotifier = QSocketNotifier(_rsock.fileno(), QSocketNotifier.Type.Read)
+    _signotifier.activated.connect(lambda *_: (_rsock.recv(4096), app.quit()))
+
+    progress = QProgressDialog(first_label, None, 0, total_steps)
     progress.setWindowTitle("juxt")
     progress.setWindowModality(Qt.ApplicationModal)
     progress.setMinimumDuration(0)
     progress.setValue(0)
 
     def on_progress(i: int, n: int):
+        if is_remote and i == n_images:
+            progress.setLabelText("Loading images…")
         progress.setValue(i)
         app.processEvents()
 
-    pixmaps = preload(config.template, config.axes, on_progress)
+    if is_remote:
+        def get_password(label: str) -> str | None:
+            # Drop ApplicationModal before hiding so Qt doesn't keep progress
+            # at the top of the modal stack, which would block the password dialog.
+            progress.setWindowModality(Qt.NonModal)
+            progress.hide()
+            app.processEvents()
+            dlg = QInputDialog()
+            dlg.setWindowTitle("SSH Authentication")
+            dlg.setLabelText(f"Password / passphrase for {label}:")
+            dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
+            QTimer.singleShot(0, lambda: _force_focus(dlg))
+            ok = dlg.exec()
+            progress.setWindowModality(Qt.ApplicationModal)
+            progress.show()
+            return dlg.textValue() if ok else None
+
+        pixmaps = preload_remote(config.template, config.axes, config.remote, on_progress, get_password)
+    else:
+        pixmaps = preload(config.template, config.axes, on_progress)
     progress.close()
 
     window = MainWindow(config, pixmaps)
@@ -113,14 +150,7 @@ def main():
         window.setWindowIcon(app_icon)
     _force_focus(window)
 
-    # Qt's C++ event loop blocks Python signal delivery. Install a handler
-    # that calls app.quit(), and tick a no-op timer so Python wakes up
-    # periodically and can actually invoke it.
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
-    sigint_tick = QTimer()
-    sigint_tick.timeout.connect(lambda: None)
-    sigint_tick.start(200)
-
+    # QTimer import kept for other uses; no polling timer needed for SIGINT.
     sys.exit(app.exec())
 
 
