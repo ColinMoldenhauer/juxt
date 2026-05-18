@@ -78,7 +78,7 @@ jobs:
           TEST_SSH_HOST: localhost
           TEST_SSH_PORT: "2222"
           TEST_SSH_KEY: /tmp/test_key
-          TEST_SSH_USER: ${{ github.actor }}
+          TEST_SSH_USER: runner
         run: pytest -v
 
       - name: Run tests (Windows / macOS — SSH tests skipped)
