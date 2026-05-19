@@ -102,6 +102,7 @@ def _print_help() -> None:
       --watch-interval SEC    poll remote for changes every SEC seconds (default: 5, 0 to disable)
       --axis-h NAME           lock ←/→ to this axis on startup
       --axis-v NAME           lock ↑/↓ to this axis on startup
+      --squeeze               drop axes with only one value
   -h, --help                  show this message and exit
 
   navigation modes (switch with :mode)
@@ -132,6 +133,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--watch-interval", type=int, default=5, metavar="SEC")
     p.add_argument("--axis-h", metavar="NAME", default=None)
     p.add_argument("--axis-v", metavar="NAME", default=None)
+    p.add_argument("--squeeze", action="store_true", default=False)
     p.add_argument("-h", "--help", action=_HelpAction)
     return p.parse_args()
 
@@ -209,6 +211,15 @@ def main():
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if args.squeeze:
+        squeezed = {k: v for k, v in config.axes.items() if len(v) > 1}
+        if not squeezed:
+            print("Error: --squeeze removed all axes — nothing to navigate", file=sys.stderr)
+            sys.exit(1)
+        if len(squeezed) < len(config.axes):
+            config = Config(template=config.template, axes=squeezed,
+                            keys=_auto_keys(squeezed), mode=config.mode, remote=config.remote)
 
     if args.save:
         try:
