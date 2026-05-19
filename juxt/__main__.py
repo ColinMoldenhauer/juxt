@@ -100,6 +100,8 @@ def _print_help() -> None:
       --save PATH             save resolved config to PATH after detection
       --no-watch              disable automatic file watching (local only)
       --watch-interval SEC    poll remote for changes every SEC seconds (default: 5, 0 to disable)
+      --axis-h NAME           lock ←/→ to this axis on startup
+      --axis-v NAME           lock ↑/↓ to this axis on startup
   -h, --help                  show this message and exit
 
   navigation modes (switch with :mode)
@@ -128,6 +130,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--save", metavar="PATH")
     p.add_argument("--no-watch", action="store_true", default=False)
     p.add_argument("--watch-interval", type=int, default=5, metavar="SEC")
+    p.add_argument("--axis-h", metavar="NAME", default=None)
+    p.add_argument("--axis-v", metavar="NAME", default=None)
     p.add_argument("-h", "--help", action=_HelpAction)
     return p.parse_args()
 
@@ -165,7 +169,7 @@ def main():
         dlg.setLabelText(f"Password for {label}:")
         dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
         if not app_icon.isNull():
-            dlg.setWindowIcon(app_icon)
+            QTimer.singleShot(0, lambda: dlg.setWindowIcon(app_icon))
         QTimer.singleShot(0, lambda: _force_focus(dlg))
         ok = dlg.exec()
         _pw_cache[0] = dlg.textValue() if ok else None
@@ -236,10 +240,11 @@ def main():
     progress.setWindowTitle("juxt")
     progress.setWindowModality(Qt.ApplicationModal)
     progress.setMinimumDuration(0)
-    if not app_icon.isNull():
-        progress.setWindowIcon(app_icon)
     progress.setValue(0)
     app.processEvents()
+    if not app_icon.isNull():
+        progress.setWindowIcon(app_icon)
+        app.processEvents()
     _force_focus(progress)
 
     def on_progress(i: int, n: int):
@@ -262,7 +267,7 @@ def main():
             dlg.setLabelText(f"Password for {label}:")
             dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
             if not app_icon.isNull():
-                dlg.setWindowIcon(app_icon)
+                QTimer.singleShot(0, lambda: dlg.setWindowIcon(app_icon))
             QTimer.singleShot(0, lambda: _force_focus(dlg))
             ok = dlg.exec()
             progress.setWindowModality(Qt.ApplicationModal)
@@ -278,6 +283,11 @@ def main():
         remote_mtimes = None
     progress.close()
 
+    axis_names = list(config.axes.keys())
+    for flag, name in (("--axis-h", args.axis_h), ("--axis-v", args.axis_v)):
+        if name and name not in axis_names:
+            print(f"Warning: {flag} {name!r} not found in axes {axis_names}", file=sys.stderr)
+
     window = MainWindow(
         config, pixmaps,
         watch=not args.no_watch,
@@ -285,6 +295,8 @@ def main():
         get_password=_ask_password if is_remote else None,
         poll_interval=args.watch_interval,
         remote_mtimes=remote_mtimes,
+        axis_h=args.axis_h,
+        axis_v=args.axis_v,
     )
     window.showMaximized()
     app.processEvents()
