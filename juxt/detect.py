@@ -397,7 +397,8 @@ def _axes_from_remote_template(
         raise ValueError(f"Remote template {template!r} has no {{placeholder}} variables")
 
     prefix = template[:template.index('{')]
-    base_dir = prefix.rstrip('/') or '/'
+    last_slash = prefix.rfind('/')
+    base_dir = prefix[:last_slash] if last_slash > 0 else '/'
 
     segs = re.split(r'\{(\w+)\}', template)
     regex = ''.join(
