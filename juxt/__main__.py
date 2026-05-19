@@ -218,7 +218,11 @@ def main():
             print("Error: --squeeze removed all axes — nothing to navigate", file=sys.stderr)
             sys.exit(1)
         if len(squeezed) < len(config.axes):
-            config = Config(template=config.template, axes=squeezed,
+            template = config.template
+            for k, v in config.axes.items():
+                if len(v) == 1:
+                    template = template.replace(f"{{{k}}}", v[0])
+            config = Config(template=template, axes=squeezed,
                             keys=_auto_keys(squeezed), mode=config.mode, remote=config.remote)
 
     if args.save:
