@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as _html
+import re as _re
 import threading
 from enum import IntEnum
 
@@ -13,11 +14,15 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QLabel,
     QMainWindow,
+    QSizePolicy,
 )
 
 from .config import Config
 
 _COMMANDS = [
+    "axis-auto",
+    "axis-h",
+    "axis-v",
     "fit",
     "fit-height",
     "fit-width",
@@ -25,8 +30,9 @@ _COMMANDS = [
     "mode",
     "quit",
     "reload",
-    "reload-images",
     "save",
+    "watch",
+    "swap-axes",
     "switch-last",
     "zoom",
 ]
@@ -37,12 +43,48 @@ _ALIASES: dict[str, str] = {
 
 # Discrete argument options for commands that take a value.
 # Commands absent from this dict take no arguments (or free-text only).
+# axis-h and axis-v completions are dynamic (axis names); handled in _cmd_candidates.
 _CMD_ARGS: dict[str, list[str]] = {
+    "axis-h": [],
+    "axis-v": [],
     "mode": ["tap", "seek", "pin"],
-    "reload-images": ["true", "false"],
+    "watch": ["true", "false"],
     "save": [],   # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
 }
+
+
+class _ElidingLabel(QLabel):
+    """QLabel that elides its content (plain text or HTML) to fit the available width."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full_plain = ""
+        self._full_html: str | None = None
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def setText(self, text: str) -> None:
+        if "<" in text:
+            self._full_html = text
+            self._full_plain = _re.sub(r"<[^>]+>", "", text)
+        else:
+            self._full_html = None
+            self._full_plain = text
+        self._recompute()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._recompute()
+
+    def _recompute(self):
+        w = self.width()
+        if w <= 0:
+            return
+        fm = self.fontMetrics()
+        if fm.horizontalAdvance(self._full_plain) <= w:
+            super().setText(self._full_html if self._full_html is not None else self._full_plain)
+        else:
+            super().setText(fm.elidedText(self._full_plain, Qt.TextElideMode.ElideRight, w))
 
 
 class NavMode(IntEnum):
@@ -71,6 +113,8 @@ class ImageView(QGraphicsView):
         get_password: object = None,
         poll_interval: int = 0,
         remote_mtimes: dict | None = None,
+        axis_h: str | None = None,
+        axis_v: str | None = None,
     ):
         self._scene = QGraphicsScene()
         super().__init__(self._scene, parent)
@@ -113,6 +157,9 @@ class ImageView(QGraphicsView):
         self._poll_timer.timeout.connect(self._start_poll_worker)
         self._poll_result.connect(self._apply_remote_poll)
         self._reload_result.connect(self._apply_reload)
+        self._initial_fit_done = False
+        self._locked_h: int | None = self.axis_names.index(axis_h) if axis_h and axis_h in self.axis_names else None
+        self._locked_v: int | None = self.axis_names.index(axis_v) if axis_v and axis_v in self.axis_names else None
 
         # Active incremental-search state (value picker and multi-select).
         # None  = no active selection
@@ -160,9 +207,11 @@ class ImageView(QGraphicsView):
         self.state_changed.emit()
 
     def _h_axis(self) -> int:
-        return self.focus_stack[0]
+        return self._locked_h if self._locked_h is not None else self.focus_stack[0]
 
     def _v_axis(self) -> int | None:
+        if self._locked_v is not None:
+            return self._locked_v
         return self.focus_stack[1] if len(self.focus_stack) >= 2 else None
 
     def _navigate(self, axis: int, delta: int):
@@ -295,7 +344,8 @@ class ImageView(QGraphicsView):
                 return [_ALIASES[q]]
             pool = _COMMANDS
         else:
-            pool = _CMD_ARGS.get(self._cmd["verb"], [])
+            verb = self._cmd["verb"]
+            pool = list(self.axis_names) if verb in ("axis-h", "axis-v") else _CMD_ARGS.get(verb, [])
         return [c for c in pool if c.startswith(q)] if q else list(pool)
 
     def _cmd_handle_key(self, event: QKeyEvent) -> bool:
@@ -425,7 +475,7 @@ class ImageView(QGraphicsView):
                 self.state_changed.emit()
         elif verb == "reload":
             self._do_reload()
-        elif verb == "reload-images":
+        elif verb == "watch":
             arg = args[0] if args else ""
             if arg == "false":
                 self._stop_watching()
@@ -453,6 +503,34 @@ class ImageView(QGraphicsView):
                 )
                 if path_str:
                     self._do_save(path_str)
+        elif verb == "axis-h":
+            if args:
+                name = args[0]
+                if name in self.axis_names:
+                    self._locked_h = self.axis_names.index(name)
+                    self.state_changed.emit()
+                else:
+                    self._flash(f"unknown axis: {name!r}")
+        elif verb == "axis-v":
+            if args:
+                name = args[0]
+                if name in self.axis_names:
+                    self._locked_v = self.axis_names.index(name)
+                    self.state_changed.emit()
+                else:
+                    self._flash(f"unknown axis: {name!r}")
+        elif verb == "axis-auto":
+            self._locked_h = None
+            self._locked_v = None
+            self.state_changed.emit()
+        elif verb == "swap-axes":
+            h, v = self._h_axis(), self._v_axis()
+            if v is not None:
+                if self._locked_h is not None or self._locked_v is not None:
+                    self._locked_h, self._locked_v = v, h
+                else:
+                    self.focus_stack[0], self.focus_stack[1] = v, h
+                self.state_changed.emit()
         elif verb == "switch-last":
             if self.prev is not None:
                 self.pos, self.prev = self.prev, list(self.pos)
@@ -729,6 +807,10 @@ class ImageView(QGraphicsView):
             else:
                 new_pos.append(0)
 
+        # Remap locked axes by name to new indices (clear if axis disappeared)
+        old_locked_h_name = old_names[self._locked_h] if self._locked_h is not None and self._locked_h < len(old_names) else None
+        old_locked_v_name = old_names[self._locked_v] if self._locked_v is not None and self._locked_v < len(old_names) else None
+
         self.config = new_config
         self.pixmaps = new_pixmaps
         self.axis_names = new_axis_names
@@ -737,6 +819,8 @@ class ImageView(QGraphicsView):
         self.pos = new_pos
         self.prev = None
         self.focus_stack = list(range(self.n_axes))
+        self._locked_h = new_axis_names.index(old_locked_h_name) if old_locked_h_name in new_axis_names else None
+        self._locked_v = new_axis_names.index(old_locked_v_name) if old_locked_v_name in new_axis_names else None
         self._rebuild_key_to_axis()
 
         # Restart poll timer / rebuild local watcher with updated paths
@@ -923,8 +1007,9 @@ class ImageView(QGraphicsView):
             factor = 1.15 if delta > 0 else 1 / 1.15
             self.scale(factor, factor)
         elif mods == Qt.ShiftModifier:
-            if delta != 0:
-                self._navigate(self._h_axis(), -1 if delta > 0 else 1)
+            v = self._v_axis()
+            if delta != 0 and v is not None:
+                self._navigate(v, 1 if delta > 0 else -1)
         else:
             if delta != 0:
                 self._navigate(self._h_axis(), 1 if delta > 0 else -1)
@@ -943,6 +1028,8 @@ class MainWindow(QMainWindow):
         get_password: object = None,
         poll_interval: int = 0,
         remote_mtimes: dict | None = None,
+        axis_h: str | None = None,
+        axis_v: str | None = None,
     ):
         super().__init__()
         self.setWindowTitle("juxt")
@@ -953,6 +1040,8 @@ class MainWindow(QMainWindow):
             get_password=get_password,
             poll_interval=poll_interval,
             remote_mtimes=remote_mtimes,
+            axis_h=axis_h,
+            axis_v=axis_v,
         )
         self.setCentralWidget(self.view)
 
@@ -963,7 +1052,7 @@ class MainWindow(QMainWindow):
             "border-top: 1px solid #333; }"
             "QStatusBar::item { border: none; }"
         )
-        self._status_label = QLabel()
+        self._status_label = _ElidingLabel()
         self._status_label.setStyleSheet(
             "color: #e0e0e0; padding: 2px 8px; "
             "font-family: 'Courier New', monospace; font-size: 9pt; "
@@ -975,7 +1064,6 @@ class MainWindow(QMainWindow):
         self.view.toggle_bar.connect(self._toggle_status_bar)
 
         self._update_status()
-        QTimer.singleShot(0, self.view.fit_image)
 
     def _update_status(self):
         v = self.view
@@ -1069,6 +1157,12 @@ class MainWindow(QMainWindow):
                 if key_hints:
                     parts.append(key_hints)
                 self._status_label.setText(sep.join(parts))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.view._initial_fit_done:
+            self.view._initial_fit_done = True
+            QTimer.singleShot(0, self.view.fit_image)
 
     def _toggle_status_bar(self):
         sb = self.statusBar()
