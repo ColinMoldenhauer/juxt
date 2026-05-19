@@ -164,6 +164,8 @@ def main():
         dlg.setWindowTitle("SSH Authentication")
         dlg.setLabelText(f"Password for {label}:")
         dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
+        if not app_icon.isNull():
+            dlg.setWindowIcon(app_icon)
         QTimer.singleShot(0, lambda: _force_focus(dlg))
         ok = dlg.exec()
         _pw_cache[0] = dlg.textValue() if ok else None
@@ -234,6 +236,8 @@ def main():
     progress.setWindowTitle("juxt")
     progress.setWindowModality(Qt.ApplicationModal)
     progress.setMinimumDuration(0)
+    if not app_icon.isNull():
+        progress.setWindowIcon(app_icon)
     progress.setValue(0)
     app.processEvents()
     _force_focus(progress)
@@ -257,6 +261,8 @@ def main():
             dlg.setWindowTitle("SSH Authentication")
             dlg.setLabelText(f"Password for {label}:")
             dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
+            if not app_icon.isNull():
+                dlg.setWindowIcon(app_icon)
             QTimer.singleShot(0, lambda: _force_focus(dlg))
             ok = dlg.exec()
             progress.setWindowModality(Qt.ApplicationModal)
