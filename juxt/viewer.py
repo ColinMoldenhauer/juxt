@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as _html
 from enum import IntEnum
 
 from PySide6.QtCore import Qt, QRectF, QTimer, Signal
@@ -70,12 +71,9 @@ class ImageView(QGraphicsView):
         # Most recently focused axis first; focus_stack[0] → ←/→, [1] → ↑/↓
         self.focus_stack: list[int] = list(range(self.n_axes))
 
-        # letter → axis index
-        self.key_to_axis: dict[str, int] = {
-            ch: self.axis_names.index(name)
-            for ch, name in config.keys.items()
-            if name in self.axis_names
-        }
+        # letter → axis index; rebuilt when mode changes
+        self.key_to_axis: dict[str, int] = {}
+        self._rebuild_key_to_axis()
 
         self.nav_mode = NavMode(config.mode)
 
@@ -274,7 +272,7 @@ class ImageView(QGraphicsView):
         if k == Qt.Key_Backspace:
             if self._cmd["query"]:
                 self._cmd["query"] = self._cmd["query"][:-1]
-                self._cmd["cursor"] = 0
+                self._cmd["cursor"] = -1 if (not self._cmd["query"] and self._cmd["phase"] == "verb") else 0
             elif self._cmd["phase"] == "arg":
                 verb = self._cmd["verb"]
                 self._cmd = {"phase": "verb", "query": verb, "cursor": 0}
@@ -289,18 +287,24 @@ class ImageView(QGraphicsView):
         if k == Qt.Key_Right:
             candidates = self._cmd_candidates()
             if candidates:
-                self._cmd["cursor"] = (self._cmd["cursor"] + 1) % len(candidates)
+                cur = self._cmd["cursor"]
+                self._cmd["cursor"] = 0 if cur < 0 else (cur + 1) % len(candidates)
                 self.state_changed.emit()
             return True
 
         if k == Qt.Key_Left:
             candidates = self._cmd_candidates()
             if candidates:
-                self._cmd["cursor"] = (self._cmd["cursor"] - 1) % len(candidates)
+                cur = self._cmd["cursor"]
+                self._cmd["cursor"] = len(candidates) - 1 if cur < 0 else (cur - 1) % len(candidates)
                 self.state_changed.emit()
             return True
 
         if k in (Qt.Key_Return, Qt.Key_Enter):
+            if self._cmd["phase"] == "verb" and self._cmd["cursor"] < 0:
+                self._cmd = None
+                self.state_changed.emit()
+                return True
             candidates = self._cmd_candidates()
             if self._cmd["phase"] == "verb":
                 if not candidates:
@@ -378,6 +382,7 @@ class ImageView(QGraphicsView):
                     self.nav_mode = NavMode.SEEK
                 elif arg in ("2", "pin"):
                     self.nav_mode = NavMode.PIN
+                self._rebuild_key_to_axis()
                 self._sel = None
                 self.state_changed.emit()
         elif verb == "save":
@@ -396,6 +401,36 @@ class ImageView(QGraphicsView):
             if self.prev is not None:
                 self.pos, self.prev = self.prev, list(self.pos)
                 self._refresh()
+
+    # ── key assignment ───────────────────────────────────────────────────────
+
+    def _rebuild_key_to_axis(self):
+        """Recompute letter→axis-index, filling any gaps with _auto_keys."""
+        from .config import _auto_keys
+        axes_dict = {name: self.axis_values[i] for i, name in enumerate(self.axis_names)}
+
+        # Start from auto-assigned keys so every axis gets a letter if possible
+        merged: dict[str, str] = _auto_keys(axes_dict)
+
+        # User-configured keys override auto assignments for their specific letters
+        for ch, name in self.config.keys.items():
+            if name in self.axis_names:
+                merged[ch] = name
+
+        # Remove any letter that ended up pointing at an axis that already has
+        # a better (user-configured) letter, to avoid duplicate axis entries
+        axis_to_ch: dict[str, str] = {}
+        user_keys = {ch for ch in self.config.keys if self.config.keys[ch] in self.axis_names}
+        for ch, name in list(merged.items()):
+            if ch in user_keys:
+                axis_to_ch[name] = ch          # user binding wins unconditionally
+            elif name not in axis_to_ch:
+                axis_to_ch[name] = ch          # first auto assignment wins
+
+        self.key_to_axis = {
+            ch: self.axis_names.index(name)
+            for name, ch in axis_to_ch.items()
+        }
 
     # ── flash message ────────────────────────────────────────────────────────
 
@@ -483,7 +518,7 @@ class ImageView(QGraphicsView):
 
         # Colon opens command mode
         if event.text() == ":":
-            self._cmd = {"phase": "verb", "query": "", "cursor": 0}
+            self._cmd = {"phase": "verb", "query": "", "cursor": -1}
             self.state_changed.emit()
             return
 
@@ -603,7 +638,8 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel()
         self._status_label.setStyleSheet(
             "color: #e0e0e0; padding: 2px 8px; "
-            "font-family: 'Courier New', monospace; font-size: 9pt;"
+            "font-family: 'Courier New', monospace; font-size: 9pt; "
+            "white-space: pre;"
         )
         bar.addWidget(self._status_label, 1)
 
@@ -624,8 +660,9 @@ class MainWindow(QMainWindow):
 
         if v._cmd is not None:
             candidates = v._cmd_candidates()
-            cursor = min(v._cmd["cursor"], len(candidates) - 1) if candidates else 0
             query = v._cmd["query"]
+            raw = v._cmd["cursor"]
+            cursor = raw if raw < 0 else (min(raw, len(candidates) - 1) if candidates else 0)
             if v._cmd["phase"] == "verb":
                 prompt = f":{query}▌"
                 hide = False
@@ -674,15 +711,36 @@ class MainWindow(QMainWindow):
         h_name = v.axis_names[h_idx]
         v_name = v.axis_names[v_idx] if v_idx is not None else "—"
         bind_str = f"→/← {h_name}  ↑/↓ {v_name}"
-        key_hints = "  ".join(
-            f"[{ch}] {v.axis_names[v.key_to_axis[ch]]}"
-            for ch in sorted(v.key_to_axis)
-        )
-
-        parts = [mode_str, coord_str, bind_str]
-        if key_hints:
-            parts.append(key_hints)
-        self._status_label.setText("  |  ".join(parts))
+        sep = "  |  "
+        if v.nav_mode == NavMode.SEEK:
+            key_hints = "  ".join(v.axis_names)
+            parts = [mode_str, coord_str, bind_str]
+            if key_hints:
+                parts.append(key_hints)
+            self._status_label.setText(sep.join(parts))
+        else:
+            name_to_ch = {v.axis_names[idx]: ch for ch, idx in v.key_to_axis.items()}
+            unbound = [n for n in v.axis_names if n not in name_to_ch]
+            bound_items = [
+                f"[{ch}] {v.axis_names[v.key_to_axis[ch]]}"
+                for ch in sorted(v.key_to_axis)
+            ]
+            if unbound:
+                e = _html.escape
+                bound_html = "  ".join(e(b) for b in bound_items)
+                unbound_html = "  ".join(
+                    f'<span style="color:#cc4444">{e(n)}</span>' for n in unbound
+                )
+                key_hints_html = "  ".join(filter(None, [bound_html, unbound_html]))
+                parts_html = sep.join(e(p) for p in [mode_str, coord_str, bind_str])
+                label = parts_html + sep + key_hints_html if key_hints_html else parts_html
+                self._status_label.setText(label)
+            else:
+                key_hints = "  ".join(bound_items)
+                parts = [mode_str, coord_str, bind_str]
+                if key_hints:
+                    parts.append(key_hints)
+                self._status_label.setText(sep.join(parts))
 
     def _toggle_status_bar(self):
         sb = self.statusBar()
