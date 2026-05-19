@@ -124,8 +124,9 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:mode seek` | Switch to seek mode |
 | `:mode pin` | Switch to pin mode |
 | `:switch-last` | Toggle between current and previous position (same as `Space`) |
-| `:reload-images` / `:reload-images true` | Enable live file watching (local configs only) |
-| `:reload-images false` | Disable live file watching |
+| `:watch` / `:watch true` | Enable live file watching / polling |
+| `:watch false` | Disable live file watching / polling |
+| `:watch N` | Set remote poll interval to N seconds |
 
 ---
 
