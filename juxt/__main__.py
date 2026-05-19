@@ -98,6 +98,8 @@ def _print_help() -> None:
   -a, --auto                  skip axis naming prompt
       --max-depth N           max subdirectory search depth
       --save PATH             save resolved config to PATH after detection
+      --no-watch              disable automatic file watching (local only)
+      --watch-interval SEC    poll remote for changes every SEC seconds
   -h, --help                  show this message and exit
 
   navigation modes (switch with :mode)
@@ -124,6 +126,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("-a", "--auto", action="store_true")
     p.add_argument("--max-depth", type=int, default=None, metavar="N")
     p.add_argument("--save", metavar="PATH")
+    p.add_argument("--no-watch", action="store_true", default=False)
+    p.add_argument("--watch-interval", type=int, default=0, metavar="SEC")
     p.add_argument("-h", "--help", action=_HelpAction)
     return p.parse_args()
 
@@ -258,13 +262,22 @@ def main():
             _pw_cache[0] = dlg.textValue() if ok else None
             return _pw_cache[0]
 
-        pixmaps = preload_remote(config.template, config.axes, config.remote, on_progress, get_password)
-        _pw_cache[0] = None  # drop the cached password as soon as it's no longer needed
+        pixmaps, remote_tmpdir, remote_mtimes = preload_remote(
+            config.template, config.axes, config.remote, on_progress, get_password)
     else:
         pixmaps = preload(config.template, config.axes, on_progress)
+        remote_tmpdir = None
+        remote_mtimes = None
     progress.close()
 
-    window = MainWindow(config, pixmaps)
+    window = MainWindow(
+        config, pixmaps,
+        watch=not args.no_watch,
+        remote_tmpdir=remote_tmpdir,
+        get_password=_ask_password if is_remote else None,
+        poll_interval=args.watch_interval,
+        remote_mtimes=remote_mtimes,
+    )
     window.showMaximized()
     app.processEvents()
     if not app_icon.isNull():

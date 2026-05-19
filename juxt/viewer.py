@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import html as _html
+import threading
 from enum import IntEnum
 
-from PySide6.QtCore import Qt, QRectF, QTimer, Signal
+from PySide6.QtCore import Qt, QFileSystemWatcher, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -23,6 +24,7 @@ _COMMANDS = [
     "fullscreen",
     "mode",
     "quit",
+    "reload-images",
     "save",
     "switch-last",
     "zoom",
@@ -36,6 +38,7 @@ _ALIASES: dict[str, str] = {
 # Commands absent from this dict take no arguments (or free-text only).
 _CMD_ARGS: dict[str, list[str]] = {
     "mode": ["tap", "seek", "pin"],
+    "reload-images": ["true", "false"],
     "save": [],   # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
 }
@@ -54,8 +57,19 @@ class NavMode(IntEnum):
 class ImageView(QGraphicsView):
     state_changed = Signal()
     toggle_bar = Signal()
+    _poll_result = Signal(object)   # emitted from worker thread; carries dict or Exception
 
-    def __init__(self, config: Config, pixmaps: dict[tuple, QPixmap], parent=None):
+    def __init__(
+        self,
+        config: Config,
+        pixmaps: dict[tuple, QPixmap],
+        parent=None,
+        watch: bool = True,
+        remote_tmpdir: str | None = None,
+        get_password: object = None,
+        poll_interval: int = 0,
+        remote_mtimes: dict | None = None,
+    ):
         self._scene = QGraphicsScene()
         super().__init__(self._scene, parent)
 
@@ -82,6 +96,20 @@ class ImageView(QGraphicsView):
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(self._clear_flash)
 
+        self._watching = False
+        self._watcher: QFileSystemWatcher | None = None
+        self._path_to_key: dict[str, tuple] = {}
+
+        self._remote_tmpdir: str | None = remote_tmpdir
+        self._get_password: object = get_password
+        self._poll_interval: int = poll_interval if poll_interval > 0 else 20
+        self._poll_in_progress: bool = False
+        self._remote_conn: list = [None, None]   # [ssh_client, sftp_client], worker-thread only
+        self._remote_mtimes: dict = remote_mtimes if remote_mtimes is not None else {}
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._start_poll_worker)
+        self._poll_result.connect(self._apply_remote_poll)
+
         # Active incremental-search state (value picker and multi-select).
         # None  = no active selection
         # axis phase:  {"phase": "axis",  "query": str}
@@ -107,6 +135,12 @@ class ImageView(QGraphicsView):
         self._scene.addItem(self._item)
 
         self._refresh()
+
+        if watch:
+            if config.remote is None:
+                self._start_watching(silent=True)
+            elif remote_tmpdir is not None and poll_interval > 0:
+                self._start_watching(silent=True)
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -385,6 +419,22 @@ class ImageView(QGraphicsView):
                 self._rebuild_key_to_axis()
                 self._sel = None
                 self.state_changed.emit()
+        elif verb == "reload-images":
+            arg = args[0] if args else ""
+            if arg == "false":
+                self._stop_watching()
+            elif self.config.remote is not None:
+                if arg and arg != "true":
+                    try:
+                        self._poll_interval = max(1, int(arg))
+                    except ValueError:
+                        self._flash(f"invalid interval: {arg!r}")
+                        return
+                if self._watching:
+                    self._poll_timer.stop()
+                self._start_watching()
+            else:
+                self._start_watching()
         elif verb == "save":
             # Reconstruct path from original parts to preserve case
             path_str = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
@@ -450,6 +500,125 @@ class ImageView(QGraphicsView):
             self._flash(f"saved → {path}")
         except Exception as e:
             self._flash(f"save failed: {e}")
+
+    # ── file watcher ─────────────────────────────────────────────────────────
+
+    def _key_to_path(self, key: tuple) -> str:
+        path = self.config.template
+        for i, name in enumerate(self.axis_names):
+            path = path.replace(f"{{{name}}}", self.axis_values[i][key[i]])
+        return path
+
+    def _build_path_to_key(self) -> dict[str, tuple]:
+        import itertools
+        result = {}
+        ranges = [range(len(vals)) for vals in self.axis_values]
+        for indices in itertools.product(*ranges):
+            result[self._key_to_path(indices)] = indices
+        return result
+
+    def _start_watching(self, *, silent: bool = False):
+        if self.config.remote is None:
+            if self._watcher is not None:
+                self._watcher.fileChanged.disconnect(self._on_file_changed)
+                self._watcher.deleteLater()
+            self._path_to_key = self._build_path_to_key()
+            self._watcher = QFileSystemWatcher(list(self._path_to_key.keys()), self)
+            self._watcher.fileChanged.connect(self._on_file_changed)
+            self._watching = True
+            if not silent:
+                n = len(self._path_to_key)
+                self._flash(f"watching {n} file{'s' if n != 1 else ''}")
+        else:
+            if self._remote_tmpdir is None:
+                self._flash("remote polling not available (no cache dir)")
+                return
+            self._poll_timer.start(self._poll_interval * 1000)
+            self._watching = True
+            if not silent:
+                self._flash(f"polling every {self._poll_interval}s")
+
+    def _stop_watching(self):
+        if self.config.remote is None:
+            if self._watcher is not None:
+                self._watcher.fileChanged.disconnect(self._on_file_changed)
+                self._watcher.deleteLater()
+                self._watcher = None
+            self._path_to_key = {}
+        else:
+            self._poll_timer.stop()
+        self._watching = False
+        self._flash("file watching disabled")
+
+    def _on_file_changed(self, path: str):
+        key = self._path_to_key.get(path)
+        if key is None:
+            return
+        pm = QPixmap(path)
+        if not pm.isNull():
+            self.pixmaps[key] = pm
+        # Some OS implementations drop a path from the watcher after deletion;
+        # re-add it so saves that write via a temp-rename are still tracked.
+        if self._watcher is not None and path not in self._watcher.files():
+            self._watcher.addPath(path)
+        if tuple(self.pos) == key:
+            self._refresh()
+
+    def _start_poll_worker(self):
+        if self._poll_in_progress or self._remote_tmpdir is None:
+            return
+        self._poll_in_progress = True
+
+        conn = self._remote_conn       # [ssh, sftp] — mutable list, worker-owned
+        tmpdir = self._remote_tmpdir
+        mtimes = self._remote_mtimes   # mutable dict, updated in-place by worker
+        get_pw = self._get_password
+        config = self.config
+
+        def _worker():
+            # Lazily connect; reconnect whenever the session is dead
+            if conn[1] is None:
+                try:
+                    from .loader import _connect_sftp
+                    conn[0], conn[1] = _connect_sftp(config.remote, get_pw)
+                except Exception as e:
+                    self._poll_result.emit(e)
+                    return
+            try:
+                from .loader import poll_remote_with_sftp
+                changed = poll_remote_with_sftp(
+                    config.template, config.axes, tmpdir, conn[1], mtimes)
+                self._poll_result.emit(changed)
+            except Exception as e:
+                # Session likely dead — clear so next poll reconnects
+                try:
+                    conn[1].close()
+                    conn[0].close()
+                except Exception:
+                    pass
+                conn[0], conn[1] = None, None
+                self._poll_result.emit(e)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_remote_poll(self, result: object):
+        self._poll_in_progress = False
+        if isinstance(result, Exception):
+            self._flash(f"poll failed: {result}")
+            return
+        # result is list[(key, local_path|None)] for changed files only.
+        # local_path is None when the remote file was deleted or moved.
+        # Decode QPixmaps here on the main thread (Qt requirement).
+        changed: list = result
+        for key, local_path in changed:
+            if local_path is None:
+                from .loader import _error_pixmap
+                self.pixmaps[key] = _error_pixmap(self._key_to_path(key))
+            else:
+                pm = QPixmap(local_path)
+                self.pixmaps[key] = pm if not pm.isNull() else _error_pixmap(local_path)
+        if any(tuple(self.pos) == key for key, _ in changed):
+            self._refresh()
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -631,10 +800,26 @@ class ImageView(QGraphicsView):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, config: Config, pixmaps: dict):
+    def __init__(
+        self,
+        config: Config,
+        pixmaps: dict,
+        watch: bool = True,
+        remote_tmpdir: str | None = None,
+        get_password: object = None,
+        poll_interval: int = 0,
+        remote_mtimes: dict | None = None,
+    ):
         super().__init__()
         self.setWindowTitle("juxt")
-        self.view = ImageView(config, pixmaps, self)
+        self.view = ImageView(
+            config, pixmaps, self,
+            watch=watch,
+            remote_tmpdir=remote_tmpdir,
+            get_password=get_password,
+            poll_interval=poll_interval,
+            remote_mtimes=remote_mtimes,
+        )
         self.setCentralWidget(self.view)
 
         bar = self.statusBar()
@@ -665,7 +850,7 @@ class MainWindow(QMainWindow):
             self._status_label.setText(v._flash_msg)
             return
 
-        mode_str = f"[{v.nav_mode.label}]"
+        mode_str = f"[{v.nav_mode.label}{'  ●' if v._watching else ''}]"
 
         if v._cmd is not None:
             candidates = v._cmd_candidates()

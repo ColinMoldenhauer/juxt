@@ -114,10 +114,13 @@ def preload_remote(
     remote: "RemoteConfig",
     progress: Callable[[int, int], None] | None = None,
     get_password: Callable[[str], str | None] | None = None,
-) -> dict[tuple[int, ...], QPixmap]:
+) -> tuple[dict[tuple[int, ...], QPixmap], str, dict[tuple[int, ...], float]]:
     """Download every image from a remote host via SFTP, then preload into pixmaps.
 
     Progress runs 0 → 2*N: first half is downloading, second half is pixmap decoding.
+    Returns (pixmaps, tmpdir, mtimes) where mtimes maps each coordinate key to the
+    remote file's mtime at download time — used by poll_remote_with_sftp to skip
+    unchanged files on subsequent polls.
     Requires paramiko: pip install juxt[ssh]
     """
     axis_names = list(axes.keys())
@@ -130,16 +133,20 @@ def preload_remote(
 
     client, sftp = _connect_sftp(remote, get_password)
 
+    mtimes: dict[tuple[int, ...], float] = {}
     for i, combo in enumerate(combos):
         if progress:
             progress(i, n * 2)
         mapping = dict(zip(axis_names, combo))
         remote_path = template.format(**mapping)
+        key = tuple(values.index(v) for values, v in zip(axis_values, combo))
         local_path = Path(tmpdir) / PurePosixPath(remote_path.lstrip("/"))
         local_path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            attr = sftp.stat(remote_path)
+            mtimes[key] = attr.st_mtime
             sftp.get(remote_path, str(local_path))
-        except FileNotFoundError:
+        except OSError:
             pass  # missing file → error pixmap shown by preload()
 
     sftp.close()
@@ -151,4 +158,51 @@ def preload_remote(
         if progress:
             progress(n + i, n * 2)
 
-    return preload(local_template, axes, _offset_progress)
+    return preload(local_template, axes, _offset_progress), tmpdir, mtimes
+
+
+def poll_remote_with_sftp(
+    template: str,
+    axes: dict[str, list[str]],
+    tmpdir: str,
+    sftp: "paramiko.SFTPClient",
+    mtimes: dict[tuple[int, ...], float],
+) -> list[tuple[tuple[int, ...], str]]:
+    """Check for changed files and download only those whose remote mtime differs.
+
+    *mtimes* is updated in-place for every file that is re-downloaded.
+    Returns a list of (key, local_path) pairs for the changed files only —
+    the caller loads QPixmap objects on the main thread from those paths.
+    """
+    axis_names = list(axes.keys())
+    axis_values = list(axes.values())
+    combos = list(product(*axis_values))
+
+    changed: list[tuple[tuple[int, ...], str | None]] = []
+    for combo in combos:
+        mapping = dict(zip(axis_names, combo))
+        remote_path = template.format(**mapping)
+        key = tuple(values.index(v) for values, v in zip(axis_values, combo))
+
+        try:
+            new_mtime = sftp.stat(remote_path).st_mtime
+        except OSError:
+            if key in mtimes:
+                # File previously existed but is now gone — surface the change
+                del mtimes[key]
+                changed.append((key, None))
+            continue
+
+        if mtimes.get(key) == new_mtime:
+            continue  # unchanged — skip download entirely
+
+        local_path = Path(tmpdir) / PurePosixPath(remote_path.lstrip("/"))
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            sftp.get(remote_path, str(local_path))
+            mtimes[key] = new_mtime
+            changed.append((key, str(local_path)))
+        except OSError:
+            pass
+
+    return changed

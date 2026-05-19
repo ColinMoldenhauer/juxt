@@ -124,6 +124,8 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:mode seek` | Switch to seek mode |
 | `:mode pin` | Switch to pin mode |
 | `:switch-last` | Toggle between current and previous position (same as `Space`) |
+| `:reload-images` / `:reload-images true` | Enable live file watching (local configs only) |
+| `:reload-images false` | Disable live file watching |
 
 ---
 
@@ -131,10 +133,10 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 
 The status bar at the bottom shows:
 
-- Current navigation mode
+- Current navigation mode — `[tap]`, `[seek]`, or `[pin]`; a `●` is appended when live file watching is active (e.g. `[tap  ●]`)
 - Current axis values (e.g. `sensor=ASCAT  date=2024-03-15  overpass=AM  source=L2`)
 - Which axes are bound to `←`/`→` and `↑`/`↓`
-- Letter-to-axis assignments
+- Letter-to-axis assignments; axes with no available letter binding are shown in red
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode
 
