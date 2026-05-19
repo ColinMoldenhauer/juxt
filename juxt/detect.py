@@ -1,6 +1,7 @@
 """Auto-detect image axes from a directory, local template, or remote path."""
 from __future__ import annotations
 import glob as _glob_mod
+import math
 import re
 import sys
 from pathlib import Path, PurePosixPath
@@ -20,6 +21,16 @@ _MAX_VALS_DISPLAY = 10  # max values listed per axis in the naming dialogue
 _PALETTE = ["\033[96m", "\033[93m", "\033[92m", "\033[95m", "\033[94m"]
 _RESET = "\033[0m"
 
+
+def _numeric_sort(values: list[str]) -> list[str]:
+    """Re-sort *values* numerically if every element parses as a finite number."""
+    try:
+        nums = [float(v) for v in values]
+    except ValueError:
+        return values
+    if any(not math.isfinite(n) for n in nums):
+        return values
+    return [v for _, v in sorted(zip(nums, values))]
 
 
 def _split_with_seps(stem: str, separators: list[str]) -> tuple[list[str], list[str]]:
@@ -82,7 +93,7 @@ def _detect_from_rel_stems(
     axes: dict[str, list[str]] = {}
     col_axis: dict[int, str] = {}
     for i in range(n_cols):
-        values = list(dict.fromkeys(t[i] for t in all_tokens))
+        values = _numeric_sort(list(dict.fromkeys(t[i] for t in all_tokens)))
         if len(values) > 1:
             name = f"axis_{i}"
             axes[name] = values
@@ -373,7 +384,7 @@ def _axes_from_local_template(template: str) -> dict[str, list[str]]:
                     seen[n].add(v)
                     axes[n].append(v)
 
-    axes = {k: v for k, v in axes.items() if v}
+    axes = {k: _numeric_sort(v) for k, v in axes.items() if v}
     if not axes:
         raise ValueError(f"Could not extract axis values from files matching {template!r}")
     return axes
@@ -428,7 +439,7 @@ def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
                     seen[n].add(v)
                     axes[n].append(v)
 
-    axes = {k: v for k, v in axes.items() if v}
+    axes = {k: _numeric_sort(v) for k, v in axes.items() if v}
     if not axes:
         raise ValueError(f"No files on remote match template {template!r}")
     return axes
