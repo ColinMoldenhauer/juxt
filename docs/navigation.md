@@ -16,6 +16,8 @@ These bindings work identically regardless of which mode is active.
 |---|---|
 | `←` / `→` | Cycle the primary axis (most recently focused) |
 | `↑` / `↓` | Cycle the secondary axis (second most recently focused) |
+| Scroll wheel | Step forward / backward on the primary axis |
+| `Shift` + scroll wheel | Step backward / forward on the primary axis |
 | `Space` | Toggle between current and previous position — the main comparison tool |
 | `Home` / `End` | Jump to first / last value on the primary axis |
 | `1` – `9` | Jump to the Nth value on the primary axis |
@@ -26,7 +28,7 @@ These bindings work identically regardless of which mode is active.
 |---|---|
 | double-click | Fit image to window |
 | `0` | Reset zoom to 100% |
-| Scroll wheel | Zoom in/out, anchored under the cursor |
+| `Ctrl` + scroll wheel | Zoom in/out, anchored under the cursor |
 | Click + drag | Pan the image |
 | `Enter` | Toggle fullscreen |
 | `Ctrl+H` | Toggle the status bar |

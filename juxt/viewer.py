@@ -614,8 +614,17 @@ class ImageView(QGraphicsView):
         self.fit_image()
 
     def wheelEvent(self, event):
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.scale(factor, factor)
+        mods = event.modifiers()
+        delta = event.angleDelta().y()
+        if mods == Qt.ControlModifier:
+            factor = 1.15 if delta > 0 else 1 / 1.15
+            self.scale(factor, factor)
+        elif mods == Qt.ShiftModifier:
+            if delta != 0:
+                self._navigate(self._h_axis(), -1 if delta > 0 else 1)
+        else:
+            if delta != 0:
+                self._navigate(self._h_axis(), 1 if delta > 0 else -1)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

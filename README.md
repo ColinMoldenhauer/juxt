@@ -129,7 +129,9 @@ Press `:` to open the command bar (vim-style). Tab-completion narrows candidates
 |---|---|
 | double-click | fit image to window |
 | `0` | reset zoom to 100% |
-| scroll wheel | zoom (anchored under cursor) |
+| scroll wheel | step forward / backward on active axis |
+| `Shift` + scroll wheel | step backward / forward on active axis |
+| `Ctrl` + scroll wheel | zoom (anchored under cursor) |
 | drag | pan |
 
 #### View
