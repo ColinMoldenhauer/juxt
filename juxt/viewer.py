@@ -24,6 +24,7 @@ _COMMANDS = [
     "fullscreen",
     "mode",
     "quit",
+    "reload",
     "reload-images",
     "save",
     "switch-last",
@@ -57,7 +58,8 @@ class NavMode(IntEnum):
 class ImageView(QGraphicsView):
     state_changed = Signal()
     toggle_bar = Signal()
-    _poll_result = Signal(object)   # emitted from worker thread; carries dict or Exception
+    _poll_result = Signal(object)    # emitted from poll worker; carries list or Exception
+    _reload_result = Signal(object)  # emitted from reload worker; carries tuple or Exception
 
     def __init__(
         self,
@@ -104,11 +106,13 @@ class ImageView(QGraphicsView):
         self._get_password: object = get_password
         self._poll_interval: int = poll_interval if poll_interval > 0 else 5
         self._poll_in_progress: bool = False
+        self._reload_in_progress: bool = False
         self._remote_conn: list = [None, None]   # [ssh_client, sftp_client], worker-thread only
         self._remote_mtimes: dict = remote_mtimes if remote_mtimes is not None else {}
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._start_poll_worker)
         self._poll_result.connect(self._apply_remote_poll)
+        self._reload_result.connect(self._apply_reload)
 
         # Active incremental-search state (value picker and multi-select).
         # None  = no active selection
@@ -419,6 +423,8 @@ class ImageView(QGraphicsView):
                 self._rebuild_key_to_axis()
                 self._sel = None
                 self.state_changed.emit()
+        elif verb == "reload":
+            self._do_reload()
         elif verb == "reload-images":
             arg = args[0] if args else ""
             if arg == "false":
@@ -619,6 +625,134 @@ class ImageView(QGraphicsView):
                 self.pixmaps[key] = pm if not pm.isNull() else _error_pixmap(local_path)
         if any(tuple(self.pos) == key for key, _ in changed):
             self._refresh()
+
+    # ── reload ────────────────────────────────────────────────────────────────
+
+    def _do_reload(self):
+        """Re-detect axes and download new files, then rebuild viewer state."""
+        if self._reload_in_progress:
+            return
+        self._reload_in_progress = True
+        # Pause polling for the duration of the reload
+        if self._watching and self.config.remote is not None:
+            self._poll_timer.stop()
+
+        conn = self._remote_conn
+        tmpdir = self._remote_tmpdir
+        mtimes = self._remote_mtimes
+        get_pw = self._get_password
+        config = self.config
+
+        def _worker():
+            try:
+                if config.remote is not None:
+                    # Reconnect if the session is dead
+                    if conn[1] is None:
+                        from .loader import _connect_sftp
+                        conn[0], conn[1] = _connect_sftp(config.remote, get_pw)
+                    from .detect import _axes_from_sftp_template
+                    new_axes = _axes_from_sftp_template(config.template, conn[1])
+                    # Download only new/changed files; skip unchanged via mtimes
+                    from .loader import poll_remote_with_sftp
+                    poll_remote_with_sftp(
+                        config.template, new_axes, tmpdir, conn[1], mtimes)
+                    # Build key→local-path map for main-thread pixmap decoding
+                    from itertools import product as _product
+                    from pathlib import Path, PurePosixPath
+                    axis_names = list(new_axes.keys())
+                    axis_values = list(new_axes.values())
+                    key_to_path = {}
+                    for combo in _product(*axis_values):
+                        mapping = dict(zip(axis_names, combo))
+                        rpath = config.template.format(**mapping)
+                        lpath = str(Path(tmpdir) / PurePosixPath(rpath.lstrip("/")))
+                        key = tuple(vals.index(v) for vals, v in zip(axis_values, combo))
+                        key_to_path[key] = lpath
+                else:
+                    from .detect import _axes_from_local_template
+                    new_axes = _axes_from_local_template(config.template)
+                    from itertools import product as _product
+                    axis_names = list(new_axes.keys())
+                    axis_values = list(new_axes.values())
+                    key_to_path = {}
+                    for combo in _product(*axis_values):
+                        mapping = dict(zip(axis_names, combo))
+                        key_to_path[
+                            tuple(vals.index(v) for vals, v in zip(axis_values, combo))
+                        ] = config.template.format(**mapping)
+
+                from .config import Config
+                new_config = Config(
+                    template=config.template,
+                    axes=new_axes,
+                    keys=config.keys,
+                    mode=config.mode,
+                    remote=config.remote,
+                )
+                self._reload_result.emit((new_config, key_to_path))
+            except Exception as e:
+                if config.remote is not None:
+                    conn[0], conn[1] = None, None
+                self._reload_result.emit(e)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_reload(self, result: object):
+        self._reload_in_progress = False
+        if isinstance(result, Exception):
+            self._flash(f"reload failed: {result}")
+            if self._watching and self.config.remote is not None:
+                self._poll_timer.start(self._poll_interval * 1000)
+            return
+
+        new_config, key_to_path = result
+
+        # Decode pixmaps on the main thread (Qt requirement)
+        from .loader import _error_pixmap
+        new_pixmaps: dict[tuple, QPixmap] = {}
+        for key, local_path in key_to_path.items():
+            pm = QPixmap(local_path)
+            new_pixmaps[key] = pm if not pm.isNull() else _error_pixmap(local_path)
+
+        # Preserve position by axis value name where possible
+        old_names = self.axis_names
+        old_values = self.axis_values
+        old_pos = self.pos
+        new_axis_names = list(new_config.axes.keys())
+        new_axis_values = list(new_config.axes.values())
+        new_pos = []
+        for name, vals in zip(new_axis_names, new_axis_values):
+            if name in old_names:
+                old_i = old_names.index(name)
+                old_val = old_values[old_i][old_pos[old_i]]
+                new_pos.append(vals.index(old_val) if old_val in vals else 0)
+            else:
+                new_pos.append(0)
+
+        self.config = new_config
+        self.pixmaps = new_pixmaps
+        self.axis_names = new_axis_names
+        self.axis_values = new_axis_values
+        self.n_axes = len(new_axis_names)
+        self.pos = new_pos
+        self.prev = None
+        self.focus_stack = list(range(self.n_axes))
+        self._rebuild_key_to_axis()
+
+        # Restart poll timer / rebuild local watcher with updated paths
+        if self._watching:
+            if self.config.remote is None:
+                if self._watcher is not None:
+                    self._watcher.fileChanged.disconnect(self._on_file_changed)
+                    self._watcher.deleteLater()
+                self._path_to_key = self._build_path_to_key()
+                self._watcher = QFileSystemWatcher(list(self._path_to_key.keys()), self)
+                self._watcher.fileChanged.connect(self._on_file_changed)
+            else:
+                self._poll_timer.start(self._poll_interval * 1000)
+
+        self._flash("reloaded")
+        self._refresh()
 
     # ── public ────────────────────────────────────────────────────────────────
 

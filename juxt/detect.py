@@ -379,18 +379,14 @@ def _axes_from_local_template(template: str) -> dict[str, list[str]]:
     return axes
 
 
-def _axes_from_remote_template(
-    template: str,
-    remote: RemoteConfig,
-    get_password: Callable[[str], str | None] | None = None,
-) -> dict[str, list[str]]:
-    """Connect via SFTP and detect axis values from files matching the remote template.
+def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
+    """Detect axis values from files matching *template* using an already-open SFTP client.
 
     Walks the remote directory tree starting at the fixed prefix before the
     first placeholder, then matches every file against the template pattern.
+    The caller owns the SFTP session and is responsible for keeping it alive.
     """
     import stat
-    from .loader import _connect_sftp
 
     names = re.findall(r'\{(\w+)\}', template)
     if not names:
@@ -406,25 +402,20 @@ def _axes_from_remote_template(
         for i, s in enumerate(segs)
     )
 
-    client, sftp = _connect_sftp(remote, get_password)
-    try:
-        remote_files: list[str] = []
-        stack = [base_dir]
-        while stack:
-            path = stack.pop()
-            try:
-                entries = sftp.listdir_attr(path)
-            except IOError:
-                continue
-            for entry in entries:
-                full = f"{path}/{entry.filename}"
-                if stat.S_ISDIR(entry.st_mode):
-                    stack.append(full)
-                else:
-                    remote_files.append(full)
-    finally:
-        sftp.close()
-        client.close()
+    remote_files: list[str] = []
+    stack = [base_dir]
+    while stack:
+        path = stack.pop()
+        try:
+            entries = sftp.listdir_attr(path)
+        except IOError:
+            continue
+        for entry in entries:
+            full = f"{path}/{entry.filename}"
+            if stat.S_ISDIR(entry.st_mode):
+                stack.append(full)
+            else:
+                remote_files.append(full)
 
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
@@ -441,3 +432,18 @@ def _axes_from_remote_template(
     if not axes:
         raise ValueError(f"No files on remote match template {template!r}")
     return axes
+
+
+def _axes_from_remote_template(
+    template: str,
+    remote: RemoteConfig,
+    get_password: Callable[[str], str | None] | None = None,
+) -> dict[str, list[str]]:
+    """Connect via SFTP and detect axis values from files matching the remote template."""
+    from .loader import _connect_sftp
+    client, sftp = _connect_sftp(remote, get_password)
+    try:
+        return _axes_from_sftp_template(template, sftp)
+    finally:
+        sftp.close()
+        client.close()
