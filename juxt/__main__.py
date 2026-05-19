@@ -235,6 +235,8 @@ def main():
     progress.setWindowModality(Qt.ApplicationModal)
     progress.setMinimumDuration(0)
     progress.setValue(0)
+    app.processEvents()
+    _force_focus(progress)
 
     def on_progress(i: int, n: int):
         if is_remote and i == n_images:
