@@ -155,7 +155,7 @@ def test_preload_remote(ssh_remote, remote_plot_dir, qtbot):
 
     remote_base, axes = remote_plot_dir
     template = f"{remote_base}/{{sensor}}_{{date}}.png"
-    pixmaps = preload_remote(template, axes, ssh_remote)
+    pixmaps, _tmpdir, _mtimes = preload_remote(template, axes, ssh_remote)
     assert len(pixmaps) == 4
     assert all(not pm.isNull() for pm in pixmaps.values())
 
@@ -169,7 +169,7 @@ def test_preload_remote_missing_file_uses_error_pixmap(ssh_remote, remote_plot_d
     # Include a value that has no corresponding file on the server
     axes = {"sensor": ["A", "B", "MISSING"], "date": ["d1"]}
     template = f"{remote_base}/{{sensor}}_{{date}}.png"
-    pixmaps = preload_remote(template, axes, ssh_remote)
+    pixmaps, _tmpdir, _mtimes = preload_remote(template, axes, ssh_remote)
     assert len(pixmaps) == 3
     # The MISSING entry must be the error-pixmap (480 wide)
     missing_key = (2, 0)  # index 2 for "MISSING", index 0 for "d1"
