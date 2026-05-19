@@ -102,7 +102,7 @@ class ImageView(QGraphicsView):
 
         self._remote_tmpdir: str | None = remote_tmpdir
         self._get_password: object = get_password
-        self._poll_interval: int = poll_interval if poll_interval > 0 else 20
+        self._poll_interval: int = poll_interval if poll_interval > 0 else 5
         self._poll_in_progress: bool = False
         self._remote_conn: list = [None, None]   # [ssh_client, sftp_client], worker-thread only
         self._remote_mtimes: dict = remote_mtimes if remote_mtimes is not None else {}

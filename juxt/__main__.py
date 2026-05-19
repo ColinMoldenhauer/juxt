@@ -99,7 +99,7 @@ def _print_help() -> None:
       --max-depth N           max subdirectory search depth
       --save PATH             save resolved config to PATH after detection
       --no-watch              disable automatic file watching (local only)
-      --watch-interval SEC    poll remote for changes every SEC seconds
+      --watch-interval SEC    poll remote for changes every SEC seconds (default: 5, 0 to disable)
   -h, --help                  show this message and exit
 
   navigation modes (switch with :mode)
@@ -127,7 +127,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--max-depth", type=int, default=None, metavar="N")
     p.add_argument("--save", metavar="PATH")
     p.add_argument("--no-watch", action="store_true", default=False)
-    p.add_argument("--watch-interval", type=int, default=0, metavar="SEC")
+    p.add_argument("--watch-interval", type=int, default=5, metavar="SEC")
     p.add_argument("-h", "--help", action=_HelpAction)
     return p.parse_args()
 
