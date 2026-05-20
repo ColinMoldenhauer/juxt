@@ -724,10 +724,18 @@ class ImageView(QGraphicsView):
         def _worker():
             try:
                 if config.remote is not None:
-                    # Reconnect if the session is dead
-                    if conn[1] is None:
-                        from .loader import _connect_sftp
-                        conn[0], conn[1] = _connect_sftp(config.remote, get_pw)
+                    # Always open a fresh connection for reload so that
+                    # directory listings are not stale and we don't race
+                    # with a concurrent poll worker on the shared conn.
+                    from .loader import _connect_sftp
+                    try:
+                        if conn[1] is not None:
+                            conn[1].close()
+                        if conn[0] is not None:
+                            conn[0].close()
+                    except Exception:
+                        pass
+                    conn[0], conn[1] = _connect_sftp(config.remote, get_pw)
                     from .detect import _axes_from_sftp_template
                     new_axes = _axes_from_sftp_template(config.template, conn[1])
                     # Download only new/changed files; skip unchanged via mtimes
@@ -1072,7 +1080,7 @@ class MainWindow(QMainWindow):
             self._status_label.setText(v._flash_msg)
             return
 
-        mode_str = f"[{v.nav_mode.label}{'  ●' if v._watching else ''}]"
+        mode_str = f"[{v.nav_mode.label}]{'  ●' if v._watching else ''}"
 
         if v._cmd is not None:
             candidates = v._cmd_candidates()
