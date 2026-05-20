@@ -28,6 +28,7 @@ _COMMANDS = [
     "fit-width",
     "fullscreen",
     "mode",
+    "pattern",
     "quit",
     "reload",
     "save",
@@ -48,10 +49,14 @@ _CMD_ARGS: dict[str, list[str]] = {
     "axis-h": [],
     "axis-v": [],
     "mode": ["tap", "seek", "pin"],
+    "pattern": [],  # free-text path / template
     "watch": ["true", "false"],
-    "save": [],   # free-text path; empty → file dialog
+    "save": [],     # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
 }
+
+# Commands whose argument is free-text — preserve case when the user types it.
+_FREE_TEXT_ARGS = {"pattern", "save"}
 
 _COMMAND_HELP: dict[str, str] = {
     "axis-auto":   "restore dynamic axis-to-arrow assignment",
@@ -62,6 +67,7 @@ _COMMAND_HELP: dict[str, str] = {
     "fit-width":   "fit image width to viewport",
     "fullscreen":  "toggle fullscreen",
     "mode":        "switch navigation mode  (tap / seek / pin)",
+    "pattern":     "change the template / source path without restarting",
     "quit":        "quit juxt",
     "reload":      "re-detect axes and reload images",
     "save":        "save current config to a YAML file",
@@ -70,6 +76,18 @@ _COMMAND_HELP: dict[str, str] = {
     "watch":       "enable / disable / configure file watching",
     "zoom":        "set zoom level  (e.g. zoom 150)",
 }
+
+
+def _cmd_query_display(query: str, caret: int, max_visible: int = 55) -> str:
+    """Return a viewport into *query* with ▌ at *caret*, scrolling to keep it visible."""
+    if len(query) <= max_visible:
+        return query[:caret] + "▌" + query[caret:]
+    # Keep caret roughly centred in the window
+    start = max(0, min(caret - max_visible // 2, len(query) - max_visible))
+    end = start + max_visible
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(query) else ""
+    return f"{prefix}{query[start:caret]}▌{query[caret:end]}{suffix}"
 
 
 class _ElidingLabel(QLabel):
@@ -118,8 +136,10 @@ class NavMode(IntEnum):
 class ImageView(QGraphicsView):
     state_changed = Signal()
     toggle_bar = Signal()
-    _poll_result = Signal(object)    # emitted from poll worker; carries list or Exception
-    _reload_result = Signal(object)  # emitted from reload worker; carries tuple or Exception
+    _poll_result = Signal(object)       # emitted from poll worker; carries list or Exception
+    _reload_result = Signal(object)     # emitted from reload worker; carries tuple or Exception
+    _pattern_result = Signal(object)    # emitted from pattern worker; carries dict or Exception
+    _pattern_progress = Signal(int, int, str)  # value, total, label
 
     def __init__(
         self,
@@ -175,6 +195,9 @@ class ImageView(QGraphicsView):
         self._poll_timer.timeout.connect(self._start_poll_worker)
         self._poll_result.connect(self._apply_remote_poll)
         self._reload_result.connect(self._apply_reload)
+        self._pattern_result.connect(self._apply_pattern)
+        self._pattern_progress.connect(self._on_pattern_progress)
+        self._pattern_dlg = None
         self._initial_fit_done = False
         self._locked_h: int | None = self.axis_names.index(axis_h) if axis_h and axis_h in self.axis_names else None
         self._locked_v: int | None = self.axis_names.index(axis_v) if axis_v and axis_v in self.axis_names else None
@@ -369,6 +392,8 @@ class ImageView(QGraphicsView):
     def _cmd_handle_key(self, event: QKeyEvent) -> bool:
         """Handle input while command mode is active. Returns True if consumed."""
         k = event.key()
+        is_free = (self._cmd.get("phase") == "arg"
+                   and self._cmd.get("verb") in _FREE_TEXT_ARGS)
 
         if k == Qt.Key_Escape:
             self._cmd = None
@@ -376,33 +401,74 @@ class ImageView(QGraphicsView):
             return True
 
         if k == Qt.Key_Backspace:
-            if self._cmd["query"]:
-                self._cmd["query"] = self._cmd["query"][:-1]
+            q = self._cmd["query"]
+            if is_free:
+                caret = self._cmd.get("caret", len(q))
+                if caret > 0:
+                    self._cmd["query"] = q[:caret - 1] + q[caret:]
+                    self._cmd["caret"] = caret - 1
+                    self.state_changed.emit()
+            elif q:
+                self._cmd["query"] = q[:-1]
                 self._cmd["cursor"] = -1 if (not self._cmd["query"] and self._cmd["phase"] == "verb") else 0
+                self.state_changed.emit()
             elif self._cmd["phase"] == "arg":
                 verb = self._cmd["verb"]
                 self._cmd = {"phase": "verb", "query": verb, "cursor": 0}
                 candidates = self._cmd_candidates()
                 if verb in candidates:
                     self._cmd["cursor"] = candidates.index(verb)
+                self.state_changed.emit()
             else:
                 self._cmd = None
-            self.state_changed.emit()
-            return True
-
-        if k == Qt.Key_Right:
-            candidates = self._cmd_candidates()
-            if candidates:
-                cur = self._cmd["cursor"]
-                self._cmd["cursor"] = 0 if cur < 0 else (cur + 1) % len(candidates)
                 self.state_changed.emit()
             return True
 
+        if k == Qt.Key_Delete:
+            if is_free:
+                q = self._cmd["query"]
+                caret = self._cmd.get("caret", len(q))
+                if caret < len(q):
+                    self._cmd["query"] = q[:caret] + q[caret + 1:]
+                    self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Right:
+            if is_free:
+                q = self._cmd["query"]
+                caret = self._cmd.get("caret", len(q))
+                self._cmd["caret"] = min(caret + 1, len(q))
+                self.state_changed.emit()
+            else:
+                candidates = self._cmd_candidates()
+                if candidates:
+                    cur = self._cmd["cursor"]
+                    self._cmd["cursor"] = 0 if cur < 0 else (cur + 1) % len(candidates)
+                    self.state_changed.emit()
+            return True
+
         if k == Qt.Key_Left:
-            candidates = self._cmd_candidates()
-            if candidates:
-                cur = self._cmd["cursor"]
-                self._cmd["cursor"] = len(candidates) - 1 if cur < 0 else (cur - 1) % len(candidates)
+            if is_free:
+                caret = self._cmd.get("caret", len(self._cmd["query"]))
+                self._cmd["caret"] = max(caret - 1, 0)
+                self.state_changed.emit()
+            else:
+                candidates = self._cmd_candidates()
+                if candidates:
+                    cur = self._cmd["cursor"]
+                    self._cmd["cursor"] = len(candidates) - 1 if cur < 0 else (cur - 1) % len(candidates)
+                    self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Home:
+            if is_free:
+                self._cmd["caret"] = 0
+                self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_End:
+            if is_free:
+                self._cmd["caret"] = len(self._cmd["query"])
                 self.state_changed.emit()
             return True
 
@@ -419,7 +485,9 @@ class ImageView(QGraphicsView):
                     return True
                 verb = candidates[min(self._cmd["cursor"], len(candidates) - 1)]
                 if verb in _CMD_ARGS:
-                    self._cmd = {"phase": "arg", "verb": verb, "query": "", "cursor": 0}
+                    initial = self._pattern_str() if verb == "pattern" else ""
+                    self._cmd = {"phase": "arg", "verb": verb, "query": initial,
+                                 "cursor": 0, "caret": len(initial)}
                     self.state_changed.emit()
                 else:
                     self._cmd = None
@@ -439,7 +507,13 @@ class ImageView(QGraphicsView):
 
         ch = event.text()
         if ch and ch.isprintable():
-            self._cmd["query"] += ch.lower()
+            if is_free:
+                q = self._cmd["query"]
+                caret = self._cmd.get("caret", len(q))
+                self._cmd["query"] = q[:caret] + ch + q[caret:]
+                self._cmd["caret"] = caret + 1
+            else:
+                self._cmd["query"] += ch.lower()
             self._cmd["cursor"] = 0
             self.state_changed.emit()
             return True
@@ -521,6 +595,12 @@ class ImageView(QGraphicsView):
                 )
                 if path_str:
                     self._do_save(path_str)
+        elif verb == "pattern":
+            raw_arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            if raw_arg:
+                self._do_pattern(raw_arg)
+            else:
+                self._flash("usage: pattern <path-or-template>")
         elif verb == "axis-h":
             if args:
                 name = args[0]
@@ -864,6 +944,236 @@ class ImageView(QGraphicsView):
         self._flash("reloaded")
         self._refresh()
 
+    # ── pattern change ────────────────────────────────────────────────────────
+
+    def _on_pattern_progress(self, value: int, total: int, label: str):
+        dlg = self._pattern_dlg
+        if dlg is None:
+            return
+        if label:
+            dlg.setLabelText(label)
+        if dlg.maximum() != total:
+            dlg.setMaximum(total)
+        dlg.setValue(value)
+
+    def _pattern_str(self) -> str:
+        """Reconstruct the full pattern string for the current config."""
+        if self.config.remote is not None:
+            rc = self.config.remote
+            prefix = f"{rc.user}@{rc.host}" if rc.user else rc.host
+            return f"{prefix}:{self.config.template}"
+        return self.config.template
+
+    def _do_pattern(self, raw: str):
+        """Change the template/source entirely without restarting juxt."""
+        if self._reload_in_progress:
+            self._flash("reload already in progress")
+            return
+        self._reload_in_progress = True
+        if self._watching and self.config.remote is not None:
+            self._poll_timer.stop()
+
+        get_pw = self._get_password
+
+        from PySide6.QtWidgets import QProgressDialog
+        dlg = QProgressDialog("Detecting axes…", None, 0, 0, self.window())
+        dlg.setWindowTitle("juxt")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        self._pattern_dlg = dlg
+
+        def _worker():
+            try:
+                from pathlib import Path, PurePosixPath
+                from itertools import product as _product
+                from .detect import (
+                    _is_remote_pattern, _parse_remote_pattern,
+                    _axes_from_sftp_template, _axes_from_local_template,
+                    detect_config,
+                )
+                from .config import Config, _auto_keys, load_config
+
+                new_conn: list = [None, None]
+                new_tmpdir: str | None = None
+                new_mtimes: dict = {}
+
+                if _is_remote_pattern(raw):
+                    remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
+                    if '{' not in remote_tmpl:
+                        raise ValueError(
+                            "remote directory detection not supported via :pattern; "
+                            "use a template with {placeholders}"
+                        )
+                    self._pattern_progress.emit(0, 0, "Connecting…")
+                    from .loader import _connect_sftp
+                    new_conn[0], new_conn[1] = _connect_sftp(remote_cfg, get_pw)
+                    self._pattern_progress.emit(0, 0, "Detecting axes…")
+                    new_axes = _axes_from_sftp_template(remote_tmpl, new_conn[1])
+                    n = 1
+                    for vs in new_axes.values():
+                        n *= len(vs)
+                    new_config = Config(
+                        template=remote_tmpl, axes=new_axes,
+                        keys=_auto_keys(new_axes), remote=remote_cfg,
+                    )
+                    import tempfile
+                    new_tmpdir = tempfile.mkdtemp(prefix="juxt_")
+                    self._pattern_progress.emit(0, n, "Downloading images…")
+                    from .loader import poll_remote_with_sftp
+                    poll_remote_with_sftp(
+                        remote_tmpl, new_axes, new_tmpdir, new_conn[1], new_mtimes,
+                        on_progress=lambda i, _n: self._pattern_progress.emit(i + 1, n, ""),
+                    )
+                    axis_names = list(new_axes.keys())
+                    axis_values = list(new_axes.values())
+                    key_to_path = {}
+                    for combo in _product(*axis_values):
+                        mapping = dict(zip(axis_names, combo))
+                        rpath = remote_tmpl.format(**mapping)
+                        lpath = str(Path(new_tmpdir) / PurePosixPath(rpath.lstrip("/")))
+                        key_to_path[tuple(vals.index(v) for vals, v in zip(axis_values, combo))] = lpath
+
+                elif Path(raw).is_dir():
+                    new_config, _ = detect_config(Path(raw), None, None)
+                    axis_names = list(new_config.axes.keys())
+                    axis_values = list(new_config.axes.values())
+                    n = 1
+                    for vs in axis_values:
+                        n *= len(vs)
+                    self._pattern_progress.emit(0, n, "Loading images…")
+                    key_to_path = {
+                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
+                        new_config.template.format(**dict(zip(axis_names, combo)))
+                        for combo in _product(*axis_values)
+                    }
+
+                elif raw.lower().endswith((".yaml", ".yml")):
+                    new_config = load_config(raw)
+                    axis_names = list(new_config.axes.keys())
+                    axis_values = list(new_config.axes.values())
+                    n = 1
+                    for vs in axis_values:
+                        n *= len(vs)
+                    self._pattern_progress.emit(0, n, "Loading images…")
+                    key_to_path = {
+                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
+                        new_config.template.format(**dict(zip(axis_names, combo)))
+                        for combo in _product(*axis_values)
+                    }
+
+                elif '{' in raw:
+                    new_axes = _axes_from_local_template(raw)
+                    if not new_axes:
+                        raise ValueError(f"no images found for pattern {raw!r}")
+                    new_config = Config(template=raw, axes=new_axes, keys=_auto_keys(new_axes))
+                    axis_names = list(new_axes.keys())
+                    axis_values = list(new_axes.values())
+                    n = 1
+                    for vs in axis_values:
+                        n *= len(vs)
+                    self._pattern_progress.emit(0, n, "Loading images…")
+                    key_to_path = {
+                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
+                        raw.format(**dict(zip(axis_names, combo)))
+                        for combo in _product(*axis_values)
+                    }
+
+                else:
+                    raise ValueError(
+                        f"{raw!r} is not a directory, YAML config, "
+                        "template pattern, or remote path"
+                    )
+
+                self._pattern_result.emit({
+                    "config": new_config,
+                    "key_to_path": key_to_path,
+                    "conn": new_conn,
+                    "tmpdir": new_tmpdir,
+                    "mtimes": new_mtimes,
+                    "n_images": n,
+                })
+            except Exception as e:
+                self._pattern_result.emit(e)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_pattern(self, result: object):
+        self._reload_in_progress = False
+        if isinstance(result, Exception):
+            if self._pattern_dlg is not None:
+                self._pattern_dlg.close()
+                self._pattern_dlg = None
+            self._flash(f"pattern failed: {result}")
+            if self._watching and self.config.remote is not None:
+                self._poll_timer.start(self._poll_interval * 1000)
+            return
+
+        payload = result
+        new_config = payload["config"]
+        key_to_path = payload["key_to_path"]
+        new_conn: list = payload["conn"]
+        new_tmpdir: str | None = payload["tmpdir"]
+        new_mtimes: dict = payload["mtimes"]
+        n_images: int = payload.get("n_images", len(key_to_path))
+
+        from .loader import _error_pixmap
+        new_pixmaps: dict[tuple, QPixmap] = {}
+        for i, (key, local_path) in enumerate(key_to_path.items()):
+            self._pattern_progress.emit(i, n_images, "")
+            pm = QPixmap(local_path)
+            new_pixmaps[key] = pm if not pm.isNull() else _error_pixmap(local_path)
+
+        if self._pattern_dlg is not None:
+            self._pattern_dlg.close()
+            self._pattern_dlg = None
+
+        # Stop current watching before replacing state
+        if self._watching:
+            if self.config.remote is None:
+                if self._watcher is not None:
+                    self._watcher.fileChanged.disconnect(self._on_file_changed)
+                    self._watcher.deleteLater()
+                    self._watcher = None
+                self._path_to_key = {}
+            else:
+                self._poll_timer.stop()
+            self._watching = False
+
+        # Replace remote connection/tmpdir
+        try:
+            if self._remote_conn[1] is not None:
+                self._remote_conn[1].close()
+            if self._remote_conn[0] is not None:
+                self._remote_conn[0].close()
+        except Exception:
+            pass
+        self._remote_conn = new_conn
+        self._remote_tmpdir = new_tmpdir
+        self._remote_mtimes = new_mtimes
+
+        # Full viewer state reset (axes may be completely different)
+        self.config = new_config
+        self.pixmaps = new_pixmaps
+        self.axis_names = list(new_config.axes.keys())
+        self.axis_values = list(new_config.axes.values())
+        self.n_axes = len(self.axis_names)
+        self.pos = [0] * self.n_axes
+        self.prev = None
+        self.focus_stack = list(range(self.n_axes))
+        self._locked_h = None
+        self._locked_v = None
+        self._rebuild_key_to_axis()
+
+        # Restart watching with the new config
+        if new_config.remote is not None and new_tmpdir is not None:
+            self._start_watching(silent=True)
+        elif new_config.remote is None:
+            self._start_watching(silent=True)
+
+        self._flash("pattern updated")
+        self._refresh()
+
     # ── public ────────────────────────────────────────────────────────────────
 
     def fit_image(self):
@@ -1119,7 +1429,12 @@ class MainWindow(QMainWindow):
                 hlit = candidates[min(cursor, len(candidates) - 1)] if candidates and cursor >= 0 else None
                 desc = _COMMAND_HELP.get(hlit, "") if hlit else ""
             else:
-                prompt = f":{v._cmd['verb']} {query}▌"
+                verb = v._cmd["verb"]
+                if verb in _FREE_TEXT_ARGS:
+                    caret = v._cmd.get("caret", len(query))
+                    prompt = f":{verb} {_cmd_query_display(query, caret)}"
+                else:
+                    prompt = f":{verb} {query}▌"
                 desc = _COMMAND_HELP.get(v._cmd["verb"], "")
             if desc:
                 self._help_label.setText(f"( {desc} )")

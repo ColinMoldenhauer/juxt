@@ -167,6 +167,7 @@ def poll_remote_with_sftp(
     tmpdir: str,
     sftp: "paramiko.SFTPClient",
     mtimes: dict[tuple[int, ...], float],
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[tuple[tuple[int, ...], str]]:
     """Check for changed files and download only those whose remote mtime differs.
 
@@ -179,7 +180,9 @@ def poll_remote_with_sftp(
     combos = list(product(*axis_values))
 
     changed: list[tuple[tuple[int, ...], str | None]] = []
-    for combo in combos:
+    for i, combo in enumerate(combos):
+        if on_progress:
+            on_progress(i, len(combos))
         mapping = dict(zip(axis_names, combo))
         remote_path = template.format(**mapping)
         key = tuple(values.index(v) for values, v in zip(axis_values, combo))
