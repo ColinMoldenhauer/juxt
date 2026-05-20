@@ -241,7 +241,7 @@ def main():
 
     is_remote = config.remote is not None
     total_steps = n_images * 2 if is_remote else n_images
-    first_label = "Downloading images…" if is_remote else "Loading images…"
+    first_label = f"Downloading {n_images} image{'s' if n_images != 1 else ''}…" if is_remote else f"Loading {n_images} image{'s' if n_images != 1 else ''}…"
 
     # Reliable Ctrl+C in any nested Qt event loop (loading, dialogs, etc.).
     # set_wakeup_fd writes a byte to wsock when SIGINT arrives; QSocketNotifier
@@ -254,7 +254,7 @@ def main():
     _signotifier = QSocketNotifier(_rsock.fileno(), QSocketNotifier.Type.Read)
     _signotifier.activated.connect(lambda *_: (_rsock.recv(4096), app.quit()))
 
-    progress = QProgressDialog(first_label, None, 0, total_steps)
+    progress = QProgressDialog(first_label, "Cancel", 0, total_steps)
     progress.setWindowTitle("juxt")
     progress.setWindowModality(Qt.ApplicationModal)
     progress.setMinimumDuration(0)
@@ -268,8 +268,10 @@ def main():
     _force_focus(progress)
 
     def on_progress(i: int, n: int):
+        if progress.wasCanceled():
+            sys.exit(0)
         if is_remote and i == n_images:
-            progress.setLabelText("Loading images…")
+            progress.setLabelText(f"Loading {n_images} image{'s' if n_images != 1 else ''}…")
         progress.setValue(i)
         app.processEvents()
 

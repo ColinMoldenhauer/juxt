@@ -123,6 +123,10 @@ class _ElidingLabel(QLabel):
             super().setText(fm.elidedText(self._full_plain, Qt.TextElideMode.ElideRight, w))
 
 
+class _Cancelled(BaseException):
+    """Raised inside a pattern worker to signal user-initiated cancellation."""
+
+
 class NavMode(IntEnum):
     TAP = 0
     SEEK = 1
@@ -1084,14 +1088,21 @@ class ImageView(QGraphicsView):
         get_pw = self._get_password
 
         from PySide6.QtWidgets import QProgressDialog
-        dlg = QProgressDialog("Detecting axes…", None, 0, 0, self.window())
+        dlg = QProgressDialog("Detecting axes…", "Cancel", 0, 0, self.window())
         dlg.setWindowTitle("juxt")
         dlg.setWindowModality(Qt.WindowModal)
         dlg.setMinimumDuration(0)
         dlg.setValue(0)
         self._pattern_dlg = dlg
 
+        cancel_event = threading.Event()
+        dlg.canceled.connect(cancel_event.set)
+
         def _worker():
+            def _check():
+                if cancel_event.is_set():
+                    raise _Cancelled()
+
             try:
                 from pathlib import Path, PurePosixPath
                 from itertools import product as _product
@@ -1114,9 +1125,11 @@ class ImageView(QGraphicsView):
                             "use a template with {placeholders}"
                         )
                     self._pattern_progress.emit(0, 0, "Connecting…")
+                    _check()
                     from .loader import _connect_sftp
                     new_conn[0], new_conn[1] = _connect_sftp(remote_cfg, get_pw)
                     self._pattern_progress.emit(0, 0, "Detecting axes…")
+                    _check()
                     new_axes = _axes_from_sftp_template(remote_tmpl, new_conn[1])
                     n = 1
                     for vs in new_axes.values():
@@ -1127,11 +1140,16 @@ class ImageView(QGraphicsView):
                     )
                     import tempfile
                     new_tmpdir = tempfile.mkdtemp(prefix="juxt_")
-                    self._pattern_progress.emit(0, n, "Downloading images…")
+                    self._pattern_progress.emit(0, n, f"Downloading {n} image{'s' if n != 1 else ''}…")
+
+                    def _dl_progress(i, _n):
+                        _check()
+                        self._pattern_progress.emit(i + 1, n, "")
+
                     from .loader import poll_remote_with_sftp
                     poll_remote_with_sftp(
                         remote_tmpl, new_axes, new_tmpdir, new_conn[1], new_mtimes,
-                        on_progress=lambda i, _n: self._pattern_progress.emit(i + 1, n, ""),
+                        on_progress=_dl_progress,
                     )
                     axis_names = list(new_axes.keys())
                     axis_values = list(new_axes.values())
@@ -1149,7 +1167,8 @@ class ImageView(QGraphicsView):
                     n = 1
                     for vs in axis_values:
                         n *= len(vs)
-                    self._pattern_progress.emit(0, n, "Loading images…")
+                    _check()
+                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
                     key_to_path = {
                         tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
                         new_config.template.format(**dict(zip(axis_names, combo)))
@@ -1163,7 +1182,8 @@ class ImageView(QGraphicsView):
                     n = 1
                     for vs in axis_values:
                         n *= len(vs)
-                    self._pattern_progress.emit(0, n, "Loading images…")
+                    _check()
+                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
                     key_to_path = {
                         tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
                         new_config.template.format(**dict(zip(axis_names, combo)))
@@ -1180,7 +1200,8 @@ class ImageView(QGraphicsView):
                     n = 1
                     for vs in axis_values:
                         n *= len(vs)
-                    self._pattern_progress.emit(0, n, "Loading images…")
+                    _check()
+                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
                     key_to_path = {
                         tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
                         raw.format(**dict(zip(axis_names, combo)))
@@ -1201,6 +1222,8 @@ class ImageView(QGraphicsView):
                     "mtimes": new_mtimes,
                     "n_images": n,
                 })
+            except _Cancelled:
+                self._pattern_result.emit(None)
             except Exception as e:
                 self._pattern_result.emit(e)
 
@@ -1208,10 +1231,20 @@ class ImageView(QGraphicsView):
 
     def _apply_pattern(self, result: object):
         self._reload_in_progress = False
-        if isinstance(result, Exception):
+
+        def _close_dlg():
             if self._pattern_dlg is not None:
                 self._pattern_dlg.close()
                 self._pattern_dlg = None
+
+        if result is None:  # cancelled by user
+            _close_dlg()
+            if self._watching and self.config.remote is not None:
+                self._poll_timer.start(self._poll_interval * 1000)
+            return
+
+        if isinstance(result, Exception):
+            _close_dlg()
             self._flash(f"pattern failed: {result}")
             if self._watching and self.config.remote is not None:
                 self._poll_timer.start(self._poll_interval * 1000)
@@ -1228,13 +1261,16 @@ class ImageView(QGraphicsView):
         from .loader import _error_pixmap
         new_pixmaps: dict[tuple, QPixmap] = {}
         for i, (key, local_path) in enumerate(key_to_path.items()):
+            if self._pattern_dlg is not None and self._pattern_dlg.wasCanceled():
+                _close_dlg()
+                if self._watching and self.config.remote is not None:
+                    self._poll_timer.start(self._poll_interval * 1000)
+                return
             self._pattern_progress.emit(i, n_images, "")
             pm = QPixmap(local_path)
             new_pixmaps[key] = pm if not pm.isNull() else _error_pixmap(local_path)
 
-        if self._pattern_dlg is not None:
-            self._pattern_dlg.close()
-            self._pattern_dlg = None
+        _close_dlg()
 
         # Stop current watching before replacing state
         if self._watching:
