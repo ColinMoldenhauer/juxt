@@ -53,6 +53,24 @@ _CMD_ARGS: dict[str, list[str]] = {
     "zoom": ["50", "75", "100", "150", "200"],
 }
 
+_COMMAND_HELP: dict[str, str] = {
+    "axis-auto":   "restore dynamic axis-to-arrow assignment",
+    "axis-h":      "lock ←/→ to a named axis",
+    "axis-v":      "lock ↑/↓ to a named axis",
+    "fit":         "fit image to window",
+    "fit-height":  "fit image height to viewport",
+    "fit-width":   "fit image width to viewport",
+    "fullscreen":  "toggle fullscreen",
+    "mode":        "switch navigation mode  (tap / seek / pin)",
+    "quit":        "quit juxt",
+    "reload":      "re-detect axes and reload images",
+    "save":        "save current config to a YAML file",
+    "swap-axes":   "swap the ←/→ and ↑/↓ axis bindings",
+    "switch-last": "toggle between current and previous position",
+    "watch":       "enable / disable / configure file watching",
+    "zoom":        "set zoom level  (e.g. zoom 150)",
+}
+
 
 class _ElidingLabel(QLabel):
     """QLabel that elides its content (plain text or HTML) to fit the available width."""
@@ -1068,6 +1086,14 @@ class MainWindow(QMainWindow):
         )
         bar.addWidget(self._status_label, 1)
 
+        self._help_label = QLabel()
+        self._help_label.setStyleSheet(
+            "color: #888888; padding: 2px 16px 2px 8px; "
+            "font-family: 'Courier New', monospace; font-size: 9pt; "
+            "white-space: pre;"
+        )
+        bar.addPermanentWidget(self._help_label)
+
         self.view.state_changed.connect(self._update_status)
         self.view.toggle_bar.connect(self._toggle_status_bar)
 
@@ -1075,6 +1101,7 @@ class MainWindow(QMainWindow):
 
     def _update_status(self):
         v = self.view
+        self._help_label.setText("")
 
         if v._flash_msg is not None:
             self._status_label.setText(v._flash_msg)
@@ -1089,17 +1116,20 @@ class MainWindow(QMainWindow):
             cursor = raw if raw < 0 else (min(raw, len(candidates) - 1) if candidates else 0)
             if v._cmd["phase"] == "verb":
                 prompt = f":{query}▌"
-                hide = False
+                hlit = candidates[min(cursor, len(candidates) - 1)] if candidates and cursor >= 0 else None
+                desc = _COMMAND_HELP.get(hlit, "") if hlit else ""
             else:
                 prompt = f":{v._cmd['verb']} {query}▌"
-                hide = False
-            if candidates and not hide:
+                desc = _COMMAND_HELP.get(v._cmd["verb"], "")
+            if desc:
+                self._help_label.setText(f"( {desc} )")
+            if candidates:
                 cand_str = "  ".join(
                     f"[{c}]" if i == cursor else c
                     for i, c in enumerate(candidates)
                 )
                 self._status_label.setText(f"{prompt}  →  {cand_str}")
-            elif not candidates and v._cmd["phase"] == "verb" and query:
+            elif v._cmd["phase"] == "verb" and query:
                 self._status_label.setText(f"{prompt}  (unknown command)")
             else:
                 self._status_label.setText(prompt)
