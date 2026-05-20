@@ -183,6 +183,7 @@ class ImageView(QGraphicsView):
         self._watching = False
         self._watcher: QFileSystemWatcher | None = None
         self._path_to_key: dict[str, tuple] = {}
+        self._tab_matches: list[str] = []
 
         self._remote_tmpdir: str | None = remote_tmpdir
         self._get_password: object = get_password
@@ -397,6 +398,7 @@ class ImageView(QGraphicsView):
 
         if k == Qt.Key_Escape:
             self._cmd = None
+            self._tab_matches = []
             self.state_changed.emit()
             return True
 
@@ -407,6 +409,7 @@ class ImageView(QGraphicsView):
                 if caret > 0:
                     self._cmd["query"] = q[:caret - 1] + q[caret:]
                     self._cmd["caret"] = caret - 1
+                    self._tab_matches = []
                     self.state_changed.emit()
             elif q:
                 self._cmd["query"] = q[:-1]
@@ -430,7 +433,13 @@ class ImageView(QGraphicsView):
                 caret = self._cmd.get("caret", len(q))
                 if caret < len(q):
                     self._cmd["query"] = q[:caret] + q[caret + 1:]
+                    self._tab_matches = []
                     self.state_changed.emit()
+            return True
+
+        if k == Qt.Key_Tab:
+            if is_free:
+                self._complete_path()
             return True
 
         if k == Qt.Key_Right:
@@ -512,6 +521,7 @@ class ImageView(QGraphicsView):
                 caret = self._cmd.get("caret", len(q))
                 self._cmd["query"] = q[:caret] + ch + q[caret:]
                 self._cmd["caret"] = caret + 1
+                self._tab_matches = []
             else:
                 self._cmd["query"] += ch.lower()
             self._cmd["cursor"] = 0
@@ -955,6 +965,104 @@ class ImageView(QGraphicsView):
         if dlg.maximum() != total:
             dlg.setMaximum(total)
         dlg.setValue(value)
+
+    def _complete_path(self):
+        """Tab-complete the path portion of a free-text command argument."""
+        import os as _os
+        query = self._cmd["query"]
+        caret = self._cmd.get("caret", len(query))
+        prefix = query[:caret]
+        suffix = query[caret:]
+
+        from .detect import _is_remote_pattern, _parse_remote_pattern
+        if _is_remote_pattern(prefix):
+            self._complete_path_remote(prefix, suffix, _parse_remote_pattern)
+        else:
+            self._complete_path_local(prefix, suffix)
+
+    def _complete_path_local(self, prefix: str, suffix: str):
+        import glob as _glob, os as _os
+
+        expanded = _os.path.expanduser(prefix)
+        raw_matches = sorted(_glob.glob(expanded + "*"))
+        if not raw_matches:
+            self._tab_matches = []
+            self.state_changed.emit()
+            return
+
+        home = _os.path.expanduser("~")
+        use_tilde = prefix.startswith("~") and expanded.startswith(home)
+
+        def _fmt(p: str) -> str:
+            s = ("~" + p[len(home):]) if use_tilde else p
+            return s + ("/" if _os.path.isdir(p) else "")
+
+        if len(raw_matches) == 1:
+            new_prefix = _fmt(raw_matches[0])
+            self._tab_matches = []
+        else:
+            lcp = _os.path.commonprefix(raw_matches)
+            new_prefix = ("~" + lcp[len(home):]) if use_tilde else lcp
+            self._tab_matches = [
+                _os.path.basename(m.rstrip("/")) + ("/" if _os.path.isdir(m) else "")
+                for m in raw_matches
+            ]
+
+        self._cmd["query"] = new_prefix + suffix
+        self._cmd["caret"] = len(new_prefix)
+        self.state_changed.emit()
+
+    def _complete_path_remote(self, prefix: str, suffix: str, _parse_remote_pattern):
+        if self.config.remote is None or self._remote_conn[1] is None:
+            return
+        try:
+            remote_cfg, remote_path = _parse_remote_pattern(prefix)
+        except Exception:
+            return
+        # Only use the existing connection if the host matches
+        rc = self.config.remote
+        if remote_cfg.host != rc.host:
+            return
+
+        import posixpath, stat as _stat
+        # Split into the directory to list and the partial filename to filter by
+        if remote_path.endswith("/") or not remote_path:
+            parent, partial = remote_path or "/", ""
+        else:
+            parent, partial = posixpath.split(remote_path)
+            parent = parent or "/"
+
+        host_prefix = f"{rc.user}@{rc.host}" if rc.user else rc.host
+
+        try:
+            entries = self._remote_conn[1].listdir_attr(parent)
+        except Exception:
+            return
+
+        matched = sorted((e for e in entries if e.filename.startswith(partial)),
+                         key=lambda e: e.filename)
+        if not matched:
+            self._tab_matches = []
+            self.state_changed.emit()
+            return
+
+        def _is_dir(e) -> bool:
+            return e.st_mode is not None and _stat.S_ISDIR(e.st_mode)
+
+        raw_paths = [posixpath.join(parent, e.filename) + ("/" if _is_dir(e) else "")
+                     for e in matched]
+
+        if len(matched) == 1:
+            new_prefix = f"{host_prefix}:{raw_paths[0]}"
+            self._tab_matches = []
+        else:
+            lcp = posixpath.commonprefix(raw_paths)
+            new_prefix = f"{host_prefix}:{lcp}"
+            self._tab_matches = [e.filename + ("/" if _is_dir(e) else "") for e in matched]
+
+        self._cmd["query"] = new_prefix + suffix
+        self._cmd["caret"] = len(new_prefix)
+        self.state_changed.emit()
 
     def _pattern_str(self) -> str:
         """Reconstruct the full pattern string for the current config."""
@@ -1436,7 +1544,9 @@ class MainWindow(QMainWindow):
                 else:
                     prompt = f":{verb} {query}▌"
                 desc = _COMMAND_HELP.get(v._cmd["verb"], "")
-            if desc:
+            if v._tab_matches:
+                self._help_label.setText("  ".join(v._tab_matches))
+            elif desc:
                 self._help_label.setText(f"( {desc} )")
             if candidates:
                 cand_str = "  ".join(
