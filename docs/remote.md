@@ -105,3 +105,19 @@ The `remote` field accepts several string formats:
 4. The temporary directory is deleted automatically when juxt exits.
 
 `remote` cannot be combined with `discover` in a YAML config — use a template instead, or pass the remote directory path directly on the command line.
+
+---
+
+## Live updates and re-detection
+
+### Polling for new files
+
+Pass `--watch-interval SEC` (default 5) to poll the remote server for changed or new files. The watch indicator `●` in the status bar shows when polling is active. Use `:watch false` to disable or `:watch N` to change the interval at runtime.
+
+### Picking up new axis values
+
+If you add files on the server that introduce a new axis value, juxt won't see them automatically — polling only checks the known axis space. Run **`:reload`** to re-detect axes from the current template and download any new files.
+
+### Changing the remote path at runtime
+
+**`:pattern PATH`** lets you switch to a different remote template (or any other source) without restarting juxt and re-entering credentials. The argument is pre-filled with the current template; edit it and press `Enter`. The existing SFTP connection is reused when the host matches, and `Tab` completes remote paths using that connection.
