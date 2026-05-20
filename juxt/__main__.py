@@ -7,7 +7,7 @@ import warnings
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSocketNotifier, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QCursor, QIcon
 from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QProgressDialog
 
 from .config import Config, _auto_keys, dump_config, load_config
@@ -147,6 +147,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("juxt")
+    _startup_screen = app.screenAt(QCursor.pos()) or app.primaryScreen()
     _logo = Path(__file__).parent / "assets" / "logo_transparent.ico"
     if not _logo.exists():  # fallback for editable installs
         _logo = Path(__file__).parent.parent / "docs" / "assets" / "logo_transparent.ico"
@@ -172,6 +173,8 @@ def main():
         dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
         if not app_icon.isNull():
             QTimer.singleShot(0, lambda: dlg.setWindowIcon(app_icon))
+        QTimer.singleShot(0, lambda: dlg.move(
+            _startup_screen.geometry().center() - dlg.rect().center()))
         QTimer.singleShot(0, lambda: _force_focus(dlg))
         ok = dlg.exec()
         _pw_cache[0] = dlg.textValue() if ok else None
@@ -257,6 +260,8 @@ def main():
     progress.setMinimumDuration(0)
     progress.setValue(0)
     app.processEvents()
+    _sg = _startup_screen.geometry()
+    progress.move(_sg.center() - progress.rect().center())
     if not app_icon.isNull():
         progress.setWindowIcon(app_icon)
         app.processEvents()
@@ -283,6 +288,8 @@ def main():
             dlg.setTextEchoMode(QLineEdit.EchoMode.Password)
             if not app_icon.isNull():
                 QTimer.singleShot(0, lambda: dlg.setWindowIcon(app_icon))
+            QTimer.singleShot(0, lambda: dlg.move(
+                _startup_screen.geometry().center() - dlg.rect().center()))
             QTimer.singleShot(0, lambda: _force_focus(dlg))
             ok = dlg.exec()
             progress.setWindowModality(Qt.ApplicationModal)
@@ -313,6 +320,7 @@ def main():
         axis_h=args.axis_h,
         axis_v=args.axis_v,
     )
+    window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()
     app.processEvents()
     if not app_icon.isNull():
