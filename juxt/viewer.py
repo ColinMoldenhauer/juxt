@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as _html
+import logging
 import re as _re
 import threading
 from enum import IntEnum
@@ -21,6 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from .config import Config
+
+log = logging.getLogger(__name__)
 
 _COMMANDS = [
     "axis-auto",
@@ -838,8 +841,9 @@ class ImageView(QGraphicsView):
             self._watcher = QFileSystemWatcher(list(self._path_to_key.keys()), self)
             self._watcher.fileChanged.connect(self._on_file_changed)
             self._watching = True
+            n = len(self._path_to_key)
+            log.info("Watching %d local file%s", n, "s" if n != 1 else "")
             if not silent:
-                n = len(self._path_to_key)
                 self._flash(f"watching {n} file{'s' if n != 1 else ''}")
         else:
             if self._remote_tmpdir is None:
@@ -847,6 +851,7 @@ class ImageView(QGraphicsView):
                 return
             self._poll_timer.start(self._poll_interval * 1000)
             self._watching = True
+            log.info("Polling remote every %ds", self._poll_interval)
             if not silent:
                 self._flash(f"polling every {self._poll_interval}s")
 
@@ -860,6 +865,7 @@ class ImageView(QGraphicsView):
         else:
             self._poll_timer.stop()
         self._watching = False
+        log.info("File watching stopped")
         self._flash("file watching disabled")
 
     def _on_file_changed(self, path: str):
@@ -916,12 +922,15 @@ class ImageView(QGraphicsView):
     def _apply_remote_poll(self, result: object):
         self._poll_in_progress = False
         if isinstance(result, Exception):
+            log.warning("Remote poll failed: %s", result)
             self._flash(f"poll failed: {result}")
             return
         # result is list[(key, local_path|None)] for changed files only.
         # local_path is None when the remote file was deleted or moved.
         # Decode QPixmaps here on the main thread (Qt requirement).
         changed: list = result
+        if changed:
+            log.debug("Remote poll: %d file(s) changed", len(changed))
         for key, local_path in changed:
             if local_path is None:
                 from .loader import _error_pixmap
@@ -1019,6 +1028,7 @@ class ImageView(QGraphicsView):
     def _apply_reload(self, result: object):
         self._reload_in_progress = False
         if isinstance(result, Exception):
+            log.warning("Reload failed: %s", result)
             self._flash(f"reload failed: {result}")
             if self._watching and self.config.remote is not None:
                 self._poll_timer.start(self._poll_interval * 1000)
@@ -1076,6 +1086,7 @@ class ImageView(QGraphicsView):
             else:
                 self._poll_timer.start(self._poll_interval * 1000)
 
+        log.info("Reload complete: %s", self.config.template)
         self._flash("reloaded")
         self._refresh()
         self.config_changed.emit()
@@ -1476,6 +1487,7 @@ class ImageView(QGraphicsView):
             return
 
         if isinstance(result, Exception):
+            log.warning("Pattern change failed: %s", result)
             _close_dlg()
             self._flash(f"pattern failed: {result}")
             if self._watching and self.config.remote is not None:
@@ -1547,6 +1559,7 @@ class ImageView(QGraphicsView):
         elif new_config.remote is None:
             self._start_watching(silent=True)
 
+        log.info("Pattern changed to %s", self.config.template)
         self._flash("pattern updated")
         self._refresh()
         self.config_changed.emit()

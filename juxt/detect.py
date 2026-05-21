@@ -1,6 +1,8 @@
 """Auto-detect image axes from a directory, local template, or remote path."""
 from __future__ import annotations
+
 import glob as _glob_mod
+import logging
 import math
 import re
 import sys
@@ -8,6 +10,8 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
 
 from .config import Config, RemoteConfig, _auto_keys
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     pass

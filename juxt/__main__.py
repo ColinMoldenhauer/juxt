@@ -1,9 +1,10 @@
 from __future__ import annotations
+
 import argparse
+import logging
 import signal
 import socket
 import sys
-import warnings
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSocketNotifier, QTimer
@@ -23,6 +24,38 @@ from .detect import (
 )
 from .loader import preload, preload_remote
 from .viewer import MainWindow
+
+log = logging.getLogger(__name__)
+
+
+def _setup_logging(level: str, log_file: str | None = None) -> None:
+    fmt = "%(asctime)s  %(levelname)-8s  %(name)-24s  %(message)s"
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    logging.basicConfig(
+        level=getattr(logging, level, logging.WARNING),
+        format=fmt,
+        datefmt="%H:%M:%S",
+        handlers=handlers,
+        force=True,
+    )
+    logging.getLogger("paramiko").setLevel(logging.WARNING)
+    try:
+        from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+        _qt_log = logging.getLogger("qt")
+        _qt_levels = {
+            QtMsgType.QtDebugMsg:    logging.DEBUG,
+            QtMsgType.QtInfoMsg:     logging.INFO,
+            QtMsgType.QtWarningMsg:  logging.WARNING,
+            QtMsgType.QtCriticalMsg: logging.ERROR,
+            QtMsgType.QtFatalMsg:    logging.CRITICAL,
+        }
+        def _qt_handler(t, _, msg):
+            _qt_log.log(_qt_levels.get(t, logging.WARNING), msg)
+        qInstallMessageHandler(_qt_handler)
+    except Exception:
+        pass
 
 
 def _force_focus(window):
@@ -142,6 +175,12 @@ def _parse_args() -> argparse.Namespace:
 
 def main():
     args = _parse_args()
+    import os
+    _setup_logging(
+        os.environ.get("JUXT_LOG_LEVEL", "WARNING").upper(),
+        os.environ.get("JUXT_LOG_FILE"),
+    )
+    log.debug("args: %s", args)
 
     if sys.platform == "win32" and Path(sys.executable).stem.lower() in ("python", "pythonw"):
         import ctypes
@@ -157,11 +196,11 @@ def main():
     if _logo.exists():
         app_icon = QIcon(str(_logo))
         if app_icon.isNull():
-            warnings.warn(f"Icon file found but failed to load: {_logo}")
+            log.warning("Icon file found but failed to load: %s", _logo)
         else:
             app.setWindowIcon(app_icon)
     else:
-        warnings.warn(f"No logo file found at {_logo}")
+        log.warning("No logo file found at %s", _logo)
 
     _pw_cache: list[str | None] = [None]
 

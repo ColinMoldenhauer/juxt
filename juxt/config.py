@@ -1,7 +1,12 @@
 from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
 import yaml
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,6 +70,7 @@ def _auto_keys(axes: dict[str, list[str]]) -> dict[str, str]:
 
 
 def load_config(path: str) -> Config:
+    log.debug("Loading config from %s", path)
     with open(path) as f:
         data = yaml.safe_load(f)
 
@@ -124,6 +130,7 @@ _MODE_NAMES = {0: "tap", 1: "seek", 2: "pin"}
 
 def dump_config(config: Config, path: str) -> None:
     """Serialize *config* to a YAML file at *path* (template mode format)."""
+    log.debug("Saving config to %s", path)
     class _Dumper(yaml.Dumper):
         pass
 

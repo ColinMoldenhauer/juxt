@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import shutil
 import tempfile
 from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
+
+log = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
@@ -69,6 +72,7 @@ def _connect_sftp(
             "    pip install juxt[ssh]"
         )
 
+    log.debug("Connecting to %s@%s:%s", remote.user or "", remote.host, remote.port)
     host, user, port, key = remote.host, remote.user, remote.port, remote.key_path
     ssh_cfg_path = Path("~/.ssh/config").expanduser()
     if ssh_cfg_path.exists():
@@ -105,7 +109,9 @@ def _connect_sftp(
         if pw is None:
             raise paramiko.AuthenticationException("No password provided")
         client = _make_client(password=pw)
-    return client, client.open_sftp()
+    sftp = client.open_sftp()
+    log.info("Connected to %s via SFTP", host)
+    return client, sftp
 
 
 def preload_remote(
@@ -147,7 +153,7 @@ def preload_remote(
             mtimes[key] = attr.st_mtime
             sftp.get(remote_path, str(local_path))
         except OSError:
-            pass  # missing file → error pixmap shown by preload()
+            log.warning("Remote file not found: %s", remote_path)
 
     sftp.close()
     client.close()

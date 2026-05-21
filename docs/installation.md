@@ -40,6 +40,23 @@ mkdocs serve   # live-reloading local preview
 mkdocs build   # build static site to site/
 ```
 
+## Debugging / logging
+
+juxt uses Python's standard `logging` module. To enable diagnostic output, set the `JUXT_LOG_LEVEL` environment variable before launching:
+
+```bash
+JUXT_LOG_LEVEL=DEBUG juxt /path/to/plots/   # Linux / macOS
+$env:JUXT_LOG_LEVEL="DEBUG"; juxt ...       # PowerShell
+```
+
+Valid values are `DEBUG`, `INFO`, `WARNING` (default), `ERROR`, and `CRITICAL`. To capture output to a file as well, set `JUXT_LOG_FILE`:
+
+```bash
+JUXT_LOG_LEVEL=DEBUG JUXT_LOG_FILE=juxt.log juxt /path/to/plots/
+```
+
+---
+
 ## Verifying the install
 
 ```bash
