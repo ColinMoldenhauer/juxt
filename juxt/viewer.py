@@ -110,7 +110,7 @@ class _ElidingLabel(QLabel):
     def setText(self, text: str) -> None:
         if "<" in text:
             self._full_html = text
-            self._full_plain = _re.sub(r"<[^>]+>", "", text)
+            self._full_plain = _html.unescape(_re.sub(r"<[^>]+>", "", text))
         else:
             self._full_html = None
             self._full_plain = text
@@ -204,6 +204,11 @@ class ImageView(QGraphicsView):
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(self._clear_flash)
 
+        self._active_axis: int | None = None
+        self._active_axis_timer = QTimer(self)
+        self._active_axis_timer.setSingleShot(True)
+        self._active_axis_timer.timeout.connect(self._clear_active_axis)
+
         self._watching = False
         self._watcher: QFileSystemWatcher | None = None
         self._path_to_key: dict[str, tuple] = {}
@@ -285,6 +290,8 @@ class ImageView(QGraphicsView):
         n = len(self.axis_values[axis])
         self.prev = list(self.pos)
         self.pos[axis] = (self.pos[axis] + delta) % n
+        self._active_axis = axis
+        self._active_axis_timer.start(1000)
         self._refresh()
 
     def _focus(self, axis: int):
@@ -716,6 +723,10 @@ class ImageView(QGraphicsView):
         self._flash_msg = None
         self.state_changed.emit()
 
+    def _clear_active_axis(self):
+        self._active_axis = None
+        self.state_changed.emit()
+
     def _flash(self, msg: str, ms: int = 2500):
         self._flash_msg = msg
         self._flash_timer.start(ms)
@@ -1010,7 +1021,6 @@ class ImageView(QGraphicsView):
 
     def _complete_path(self):
         """Tab-complete the path portion of a free-text command argument."""
-        import os as _os
         query = self._cmd["query"]
         caret = self._cmd.get("caret", len(query))
         prefix = query[:caret]
@@ -1023,7 +1033,8 @@ class ImageView(QGraphicsView):
             self._complete_path_local(prefix, suffix)
 
     def _complete_path_local(self, prefix: str, suffix: str):
-        import glob as _glob, os as _os
+        import glob as _glob
+        import os as _os
 
         expanded = _os.path.expanduser(prefix)
         raw_matches = sorted(_glob.glob(expanded + "*"))
@@ -1066,7 +1077,8 @@ class ImageView(QGraphicsView):
         if remote_cfg.host != rc.host:
             return
 
-        import posixpath, stat as _stat
+        import posixpath
+        import stat as _stat
         # Split into the directory to list and the partial filename to filter by
         if remote_path.endswith("/") or not remote_path:
             parent, partial = remote_path or "/", ""
@@ -1699,20 +1711,37 @@ class MainWindow(QMainWindow):
         h_idx = v._h_axis()
         v_idx = v._v_axis()
 
-        coord_str = "  ".join(
+        coord_parts = [
             f"{name}={v.axis_values[i][v.pos[i]]:<{max(len(val) for val in v.axis_values[i])}}"
             for i, name in enumerate(v.axis_names)
-        )
+        ]
+        coord_str = "  ".join(coord_parts)
         h_name = v.axis_names[h_idx]
         v_name = v.axis_names[v_idx] if v_idx is not None else "—"
         bind_str = f"→/← {h_name}  ↑/↓ {v_name}"
         sep = "  |  "
+        e = _html.escape
+        sp = lambda s: e(s).replace(" ", "&nbsp;")  # noqa: E731
+        sep_html = "&nbsp;&nbsp;|&nbsp;&nbsp;"
+        active = v._active_axis
+        coord_html = (
+            "&nbsp;&nbsp;".join(
+                f'<span style="color:#6af">{sp(p)}</span>' if i == active else sp(p)
+                for i, p in enumerate(coord_parts)
+            ) if active is not None else None
+        )
         if v.nav_mode == NavMode.SEEK:
             key_hints = "  ".join(v.axis_names)
-            parts = [mode_str, coord_str, bind_str]
-            if key_hints:
-                parts.append(key_hints)
-            self._status_label.setText(sep.join(parts))
+            if coord_html is not None:
+                parts_html = [sp(mode_str), coord_html, sp(bind_str)]
+                if key_hints:
+                    parts_html.append(sp(key_hints))
+                self._status_label.setText(sep_html.join(parts_html))
+            else:
+                parts = [mode_str, coord_str, bind_str]
+                if key_hints:
+                    parts.append(key_hints)
+                self._status_label.setText(sep.join(parts))
         else:
             name_to_ch = {v.axis_names[idx]: ch for ch, idx in v.key_to_axis.items()}
             unbound = [n for n in v.axis_names if n not in name_to_ch]
@@ -1720,15 +1749,15 @@ class MainWindow(QMainWindow):
                 f"[{ch}] {v.axis_names[v.key_to_axis[ch]]}"
                 for ch in sorted(v.key_to_axis)
             ]
-            if unbound:
-                e = _html.escape
-                bound_html = "  ".join(e(b) for b in bound_items)
-                unbound_html = "  ".join(
-                    f'<span style="color:#cc4444">{e(n)}</span>' for n in unbound
+            if unbound or coord_html is not None:
+                bound_html = "&nbsp;&nbsp;".join(sp(b) for b in bound_items)
+                unbound_html = "&nbsp;&nbsp;".join(
+                    f'<span style="color:#cc4444">{sp(n)}</span>' for n in unbound
                 )
-                key_hints_html = "  ".join(filter(None, [bound_html, unbound_html]))
-                parts_html = sep.join(e(p) for p in [mode_str, coord_str, bind_str])
-                label = parts_html + sep + key_hints_html if key_hints_html else parts_html
+                key_hints_html = "&nbsp;&nbsp;".join(filter(None, [bound_html, unbound_html]))
+                c = coord_html if coord_html is not None else sp(coord_str)
+                parts_html = sep_html.join([sp(mode_str), c, sp(bind_str)])
+                label = parts_html + sep_html + key_hints_html if key_hints_html else parts_html
                 self._status_label.setText(label)
             else:
                 key_hints = "  ".join(bound_items)
