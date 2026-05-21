@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from .config import Config
+from .settings import SETTINGS_PATH, load_settings
 
 log = logging.getLogger(__name__)
 
@@ -848,6 +849,18 @@ class ImageView(QGraphicsView):
     def _clear_active_axis(self):
         self._active_axis = None
         self.state_changed.emit()
+
+    def apply_settings(self, settings) -> None:
+        """Apply a freshly loaded Settings object without restarting."""
+        self._seek_greedy = settings.seek_greedy
+        new_kb: dict[tuple[int, int], str] = {}
+        for ks, action in settings.keybindings.items():
+            try:
+                k, m = _parse_key(ks)
+                new_kb[(k, m)] = action
+            except ValueError as e:
+                log.warning("Invalid keybinding %r: %s", ks, e)
+        self._keybindings = new_kb
 
     def _dispatch_action(self, action: str):
         if action == "toggle-statusbar":
@@ -1946,6 +1959,11 @@ class MainWindow(QMainWindow):
         self._spinner_timer.setInterval(100)
         self._spinner_timer.timeout.connect(self._tick_spinner)
 
+        self._settings_watcher = QFileSystemWatcher(self)
+        if SETTINGS_PATH.exists():
+            self._settings_watcher.addPath(str(SETTINGS_PATH))
+        self._settings_watcher.fileChanged.connect(self._on_settings_changed)
+
         self._update_status()
 
     def _tick_spinner(self):
@@ -2120,3 +2138,15 @@ class MainWindow(QMainWindow):
     def _refresh_info_panel(self):
         if self._info_dock.isVisible():
             self._info_panel.refresh(self.view)
+
+    def _on_settings_changed(self, path: str):
+        # Some editors save via a temp-rename; re-add so we keep getting events.
+        if not self._settings_watcher.files():
+            self._settings_watcher.addPath(str(SETTINGS_PATH))
+        settings = load_settings(SETTINGS_PATH)
+        self.view.apply_settings(settings)
+        import juxt.detect as _detect
+        _detect._MAX_VALS = settings.max_vals
+        _detect._MAX_VALS_DISPLAY = settings.max_vals_display
+        log.info("Settings reloaded from %s", path)
+        self.view._flash("settings reloaded")
