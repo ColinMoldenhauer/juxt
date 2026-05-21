@@ -149,7 +149,8 @@ def _window_title(config: "Config", session_name: str | None = None) -> str:
     from pathlib import PurePosixPath
     if session_name:
         return f"juxt | {session_name}"
-    name = PurePosixPath(config.template).name or config.template
+    parts = PurePosixPath(config.template).parts
+    name = "/".join(parts[-2:]) if len(parts) >= 2 else (parts[0] if parts else config.template)
     if config.remote:
         return f"juxt | {config.remote.host}: {name}"
     return f"juxt | {name}"
