@@ -23,6 +23,8 @@ _COMMANDS = [
     "axis-auto",
     "axis-h",
     "axis-v",
+    "copy-image",
+    "copy-path",
     "fit",
     "fit-height",
     "fit-width",
@@ -31,8 +33,8 @@ _COMMANDS = [
     "pattern",
     "quit",
     "reload",
-    "save",
     "watch",
+    "write",
     "swap-axes",
     "switch-last",
     "zoom",
@@ -40,6 +42,7 @@ _COMMANDS = [
 
 _ALIASES: dict[str, str] = {
     "q": "quit",
+    "w": "write",
 }
 
 # Discrete argument options for commands that take a value.
@@ -51,17 +54,19 @@ _CMD_ARGS: dict[str, list[str]] = {
     "mode": ["tap", "seek", "pin"],
     "pattern": [],  # free-text path / template
     "watch": ["true", "false"],
-    "save": [],     # free-text path; empty → file dialog
+    "write": [],    # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
 }
 
 # Commands whose argument is free-text — preserve case when the user types it.
-_FREE_TEXT_ARGS = {"pattern", "save"}
+_FREE_TEXT_ARGS = {"pattern", "write"}
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 _COMMAND_HELP: dict[str, str] = {
     "axis-auto":   "restore dynamic axis-to-arrow assignment",
+    "copy-image":  "copy current image to clipboard",
+    "copy-path":   "copy current image file path to clipboard",
     "axis-h":      "lock ←/→ to a named axis",
     "axis-v":      "lock ↑/↓ to a named axis",
     "fit":         "fit image to window",
@@ -72,7 +77,7 @@ _COMMAND_HELP: dict[str, str] = {
     "pattern":     "change the template / source path without restarting",
     "quit":        "quit juxt",
     "reload":      "re-detect axes and reload images",
-    "save":        "save current config to a YAML file",
+    "write":       "write current config to a YAML file",
     "swap-axes":   "swap the ←/→ and ↑/↓ axis bindings",
     "switch-last": "toggle between current and previous position",
     "watch":       "enable / disable / configure file watching",
@@ -556,6 +561,17 @@ class ImageView(QGraphicsView):
 
         if verb == "quit":
             QApplication.instance().quit()
+        elif verb == "copy-path":
+            path = self._key_to_path(self._key())
+            QApplication.clipboard().setText(path)
+            self._flash(f"copied: {path}")
+        elif verb == "copy-image":
+            pm = self.pixmaps.get(self._key())
+            if pm and not pm.isNull():
+                QApplication.clipboard().setPixmap(pm)
+                self._flash("image copied to clipboard")
+            else:
+                self._flash("no image to copy")
         elif verb == "fit":
             sub = args[0] if args else ""
             if sub in ("height", "h"):
@@ -610,7 +626,7 @@ class ImageView(QGraphicsView):
                 self._start_watching()
             else:
                 self._start_watching()
-        elif verb == "save":
+        elif verb == "write":
             # Reconstruct path from original parts to preserve case
             path_str = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
             if path_str:

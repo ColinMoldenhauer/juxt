@@ -129,7 +129,9 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:axis-auto` | Restore dynamic axis-to-arrow assignment |
 | `:swap-axes` | Swap the `←`/`→` and `↑`/`↓` axis bindings |
 | `:reload` | Re-detect axes and reload images from the current source |
-| `:save [PATH]` | Save the current config to a YAML file; opens a file dialog if PATH is omitted |
+| `:copy-path` | Copy the current image's file path to the clipboard |
+| `:copy-image` | Copy the current image to the clipboard |
+| `:write [PATH]` / `:w [PATH]` | Write the current config to a YAML file; opens a file dialog if PATH is omitted |
 | `:pattern PATH` | Change the template / source path without restarting (see below) |
 | `:watch` / `:watch true` | Enable live file watching / polling |
 | `:watch false` | Disable live file watching / polling |
@@ -139,7 +141,7 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 
 `:pattern` accepts the same forms as the CLI `PATH` argument: a local template with `{placeholders}`, a local directory, a YAML config file, or a remote SSH path. The argument is pre-filled with the current template so you can edit it in place. A progress dialog blocks the window while images are loaded or downloaded.
 
-Free-text arguments (`:pattern`, `:save`) support full cursor editing: `←`/`→` move the caret, `Home`/`End` jump to the ends, `Delete` removes the character at the caret. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session.
+Free-text arguments (`:pattern`, `:write`) support full cursor editing: `←`/`→` move the caret, `Home`/`End` jump to the ends, `Delete` removes the character at the caret. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session.
 
 ---
 
