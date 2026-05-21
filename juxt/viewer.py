@@ -25,6 +25,47 @@ from .config import Config
 
 log = logging.getLogger(__name__)
 
+# ── key-binding parser ────────────────────────────────────────────────────────
+
+_MOD_MAP: dict[str, int] = {
+    "ctrl": Qt.ControlModifier.value, "control": Qt.ControlModifier.value,
+    "shift": Qt.ShiftModifier.value,
+    "alt": Qt.AltModifier.value,
+    "meta": Qt.MetaModifier.value,
+}
+
+_KEY_MAP: dict[str, int] = {
+    "return": Qt.Key_Return, "enter": Qt.Key_Return,
+    "escape": Qt.Key_Escape, "esc": Qt.Key_Escape,
+    "space": Qt.Key_Space, "tab": Qt.Key_Tab,
+    "backspace": Qt.Key_Backspace, "delete": Qt.Key_Delete,
+    "home": Qt.Key_Home, "end": Qt.Key_End,
+    "left": Qt.Key_Left, "right": Qt.Key_Right,
+    "up": Qt.Key_Up, "down": Qt.Key_Down,
+    **{f"f{n}": getattr(Qt, f"Key_F{n}") for n in range(1, 13)},
+    **{str(n): getattr(Qt, f"Key_{n}") for n in range(10)},
+}
+
+
+def _parse_key(s: str) -> tuple[int, int]:
+    """Parse 'Ctrl+Shift+H' → (Qt.Key value, modifier flags int)."""
+    mods = 0
+    key: int | None = None
+    for part in (p.strip() for p in s.split("+")):
+        lower = part.lower()
+        if lower in _MOD_MAP:
+            mods |= _MOD_MAP[lower]
+        elif len(part) == 1 and part.isalpha():
+            key = getattr(Qt, f"Key_{part.upper()}")
+        elif lower in _KEY_MAP:
+            key = _KEY_MAP[lower]
+        else:
+            raise ValueError(f"unknown key token: {part!r}")
+    if key is None:
+        raise ValueError(f"no key in binding: {s!r}")
+    return key, mods
+
+
 _COMMANDS = [
     "axis-auto",
     "axis-h",
@@ -42,6 +83,7 @@ _COMMANDS = [
     "quit",
     "reload",
     "remove-axis",
+    "settings",
     "remove-value",
     "watch",
     "write",
@@ -92,6 +134,7 @@ _COMMAND_HELP: dict[str, str] = {
     "pattern":     "change the template / source path without restarting",
     "quit":        "quit juxt",
     "reload":      "re-detect axes and reload images",
+    "settings":    "open ~/.juxt/settings.yaml in the default editor",
     "remove-axis": "remove an axis (collapses to its current value)",
     "remove-value": "remove a value from an axis  (e.g. remove-value sensor SMAP)",
     "write":       "write current config to a YAML file",
@@ -194,6 +237,8 @@ class ImageView(QGraphicsView):
         remote_mtimes: dict | None = None,
         axis_h: str | None = None,
         axis_v: str | None = None,
+        seek_greedy: bool = True,
+        keybindings: dict[str, str] | None = None,
     ):
         self._scene = QGraphicsScene()
         super().__init__(self._scene, parent)
@@ -232,6 +277,14 @@ class ImageView(QGraphicsView):
         self._tab_matches: list[str] = []
         self._fit: Literal["image", "height", "width"] | None = None
         self._pre_fullscreen_maximized: bool | None = None
+        self._seek_greedy: bool = seek_greedy
+        self._keybindings: dict[tuple[int, int], str] = {}
+        for _ks, _action in (keybindings or {}).items():
+            try:
+                _k, _m = _parse_key(_ks)
+                self._keybindings[(_k, _m)] = _action
+            except ValueError as e:
+                log.warning("Invalid keybinding %r: %s", _ks, e)
 
         self._remote_tmpdir: str | None = remote_tmpdir
         self._get_password: object = get_password
@@ -341,11 +394,10 @@ class ImageView(QGraphicsView):
     def _sel_try_commit(self):
         """Auto-commit when exactly one candidate remains (greedy match).
 
-        NOTE: the greedy auto-confirm behaviour is a candidate for a
-        user-configurable flag (require explicit Enter instead).
+        Controlled by seek.greedy in ~/.juxt/settings.yaml.
         """
         candidates = self._sel_candidates()
-        if len(candidates) == 1:
+        if len(candidates) == 1 and self._seek_greedy:
             self._sel_commit(candidates[0])
         else:
             # Clamp cursor in case the candidate list shrank
@@ -634,6 +686,12 @@ class ImageView(QGraphicsView):
                 self.state_changed.emit()
         elif verb == "reload":
             self._do_reload()
+        elif verb == "settings":
+            from .settings import ensure_settings_file, SETTINGS_PATH
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            path = ensure_settings_file(SETTINGS_PATH)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         elif verb == "watch":
             arg = args[0] if args else ""
             if arg == "false":
@@ -790,6 +848,14 @@ class ImageView(QGraphicsView):
     def _clear_active_axis(self):
         self._active_axis = None
         self.state_changed.emit()
+
+    def _dispatch_action(self, action: str):
+        if action == "toggle-statusbar":
+            self.toggle_bar.emit()
+        elif action == "toggle-info":
+            self.toggle_info.emit()
+        else:
+            self._cmd_execute(action)
 
     def _toggle_fullscreen(self):
         win = self.window()
@@ -1605,13 +1671,10 @@ class ImageView(QGraphicsView):
         k = event.key()
         mods = event.modifiers()
 
-        # Truly global shortcuts — work in every state
-        ctrl_shift = Qt.ControlModifier | Qt.ShiftModifier
-        if k == Qt.Key_H and mods == ctrl_shift:
-            self.toggle_bar.emit()
-            return
-        if k == Qt.Key_I and mods == ctrl_shift:
-            self.toggle_info.emit()
+        # Configurable keybindings — checked first, work in every state
+        bound = self._keybindings.get((k, mods.value))
+        if bound is not None:
+            self._dispatch_action(bound)
             return
         # Ctrl+C cancels any active command or selection mode
         if k == Qt.Key_C and mods == Qt.ControlModifier:
@@ -1808,6 +1871,8 @@ class MainWindow(QMainWindow):
         axis_h: str | None = None,
         axis_v: str | None = None,
         session_name: str | None = None,
+        seek_greedy: bool = True,
+        keybindings: dict[str, str] | None = None,
     ):
         super().__init__()
         self._session_name = session_name
@@ -1821,6 +1886,8 @@ class MainWindow(QMainWindow):
             remote_mtimes=remote_mtimes,
             axis_h=axis_h,
             axis_v=axis_v,
+            seek_greedy=seek_greedy,
+            keybindings=keybindings,
         )
         self.setCentralWidget(self.view)
 

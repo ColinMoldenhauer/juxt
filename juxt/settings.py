@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+log = logging.getLogger(__name__)
+
+SETTINGS_PATH = Path.home() / ".juxt" / "settings.yaml"
+
+_TEMPLATE = """\
+# juxt user settings
+# Edit this file and restart juxt for changes to take effect.
+# All fields are optional; omitted fields fall back to the defaults shown here.
+
+# Seek / value-picker behaviour
+seek:
+  greedy: true      # auto-confirm when exactly one candidate remains
+                    # set to false to always require Enter
+
+# Display options used in the axis-detection dialogue
+display:
+  max_vals: 3       # max values shown inline in the path preview  (e.g. {AM|PM|…})
+  max_vals_display: 10  # max values listed per axis in the naming dialogue
+
+# Key bindings — map a key chord to an action name.
+# Action names match any :command (fit, zoom, fullscreen, reload, …) plus the
+# two UI toggles: toggle-statusbar  toggle-info
+# Modifiers: Ctrl  Shift  Alt  Meta
+# Keys: any letter, Return, Escape, Space, Tab, Backspace, Delete,
+#       Home, End, Left, Right, Up, Down, F1–F12, 0–9
+keybindings:
+  Ctrl+Shift+H: toggle-statusbar   # toggle the status bar
+  Ctrl+Shift+I: toggle-info        # toggle the info sidebar
+  # F11: fullscreen                # example: bind F11 to fullscreen
+"""
+
+_SECTION_TEMPLATES: dict[str, str] = {
+    "seek": """
+# Seek / value-picker behaviour
+seek:
+  greedy: true      # auto-confirm when exactly one candidate remains (false = require Enter)
+""",
+    "display": """
+# Display options used in the axis-detection dialogue
+display:
+  max_vals: 3       # max values shown inline in the path preview  (e.g. {AM|PM|…})
+  max_vals_display: 10  # max values listed per axis in the naming dialogue
+""",
+    "keybindings": """
+# Key bindings — map a key chord to an action name.
+# Action names match any :command plus: toggle-statusbar  toggle-info
+# Modifiers: Ctrl  Shift  Alt  Meta
+# Keys: any letter, Return, Escape, Space, Tab, Backspace, Delete,
+#       Home, End, Left, Right, Up, Down, F1–F12, 0–9
+keybindings:
+  Ctrl+Shift+H: toggle-statusbar
+  Ctrl+Shift+I: toggle-info
+  # F11: fullscreen
+""",
+}
+
+_EXPECTED_SECTIONS = set(_SECTION_TEMPLATES)
+
+_DEFAULT_KEYBINDINGS: dict[str, str] = {
+    "Ctrl+Shift+H": "toggle-statusbar",
+    "Ctrl+Shift+I": "toggle-info",
+}
+
+
+@dataclass
+class Settings:
+    seek_greedy: bool = True
+    max_vals: int = 3
+    max_vals_display: int = 10
+    keybindings: dict[str, str] = field(
+        default_factory=lambda: dict(_DEFAULT_KEYBINDINGS)
+    )
+
+
+def _write_missing_sections(path: Path, missing: set[str]) -> None:
+    """Append commented blocks for any missing sections to an existing file."""
+    additions = "".join(_SECTION_TEMPLATES[s] for s in sorted(missing))
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(additions)
+    log.info("Added missing settings sections to %s: %s", path, sorted(missing))
+
+
+def load_settings(path: Path = SETTINGS_PATH) -> Settings:
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_TEMPLATE, encoding="utf-8")
+        log.info("Created default settings file at %s", path)
+        return Settings()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        s = Settings()
+        seek = data.get("seek") or {}
+        if isinstance(seek, dict) and "greedy" in seek:
+            s.seek_greedy = bool(seek["greedy"])
+        display = data.get("display") or {}
+        if isinstance(display, dict):
+            if "max_vals" in display:
+                s.max_vals = int(display["max_vals"])
+            if "max_vals_display" in display:
+                s.max_vals_display = int(display["max_vals_display"])
+        kb = data.get("keybindings") or {}
+        if isinstance(kb, dict):
+            s.keybindings = {**_DEFAULT_KEYBINDINGS, **{str(k): str(v) for k, v in kb.items()}}
+        log.debug("Loaded settings from %s: %s", path, s)
+        missing = _EXPECTED_SECTIONS - data.keys()
+        if missing:
+            _write_missing_sections(path, missing)
+        return s
+    except Exception as e:
+        log.warning("Could not load settings from %s: %s", path, e)
+        return Settings()
+
+
+def ensure_settings_file(path: Path = SETTINGS_PATH) -> Path:
+    """Ensure the settings file exists, creating it with defaults if needed."""
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_TEMPLATE, encoding="utf-8")
+        log.info("Created default settings file at %s", path)
+    return path

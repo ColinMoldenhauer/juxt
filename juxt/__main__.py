@@ -23,6 +23,7 @@ from .detect import (
     prompt_rename,
 )
 from .loader import preload, preload_remote
+from .settings import load_settings
 from .viewer import MainWindow
 
 log = logging.getLogger(__name__)
@@ -181,6 +182,11 @@ def main():
         os.environ.get("JUXT_LOG_FILE"),
     )
     log.debug("args: %s", args)
+
+    settings = load_settings()
+    import juxt.detect as _detect
+    _detect._MAX_VALS = settings.max_vals
+    _detect._MAX_VALS_DISPLAY = settings.max_vals_display
 
     if sys.platform == "win32" and Path(sys.executable).stem.lower() in ("python", "pythonw"):
         import ctypes
@@ -363,6 +369,8 @@ def main():
         axis_h=args.axis_h,
         axis_v=args.axis_v,
         session_name=args.name,
+        seek_greedy=settings.seek_greedy,
+        keybindings=settings.keybindings,
     )
     window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()
