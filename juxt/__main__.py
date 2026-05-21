@@ -103,6 +103,7 @@ def _print_help() -> None:
       --axis-h NAME           lock ←/→ to this axis on startup
       --axis-v NAME           lock ↑/↓ to this axis on startup
       --squeeze               drop axes with only one value
+      --name NAME             session name shown in window title (default: template basename)
   -h, --help                  show this message and exit
 
   navigation modes (switch with :mode)
@@ -134,6 +135,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--axis-h", metavar="NAME", default=None)
     p.add_argument("--axis-v", metavar="NAME", default=None)
     p.add_argument("--squeeze", action="store_true", default=False)
+    p.add_argument("--name", metavar="NAME", default=None)
     p.add_argument("-h", "--help", action=_HelpAction)
     return p.parse_args()
 
@@ -321,6 +323,7 @@ def main():
         remote_mtimes=remote_mtimes,
         axis_h=args.axis_h,
         axis_v=args.axis_v,
+        session_name=args.name,
     )
     window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()

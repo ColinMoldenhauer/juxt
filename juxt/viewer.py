@@ -139,9 +139,20 @@ class NavMode(IntEnum):
         return ("tap", "seek", "pin")[self]
 
 
+def _window_title(config: "Config", session_name: str | None = None) -> str:
+    from pathlib import PurePosixPath
+    if session_name:
+        return f"juxt | {session_name}"
+    name = PurePosixPath(config.template).name or config.template
+    if config.remote:
+        return f"juxt | {config.remote.host}: {name}"
+    return f"juxt | {name}"
+
+
 class ImageView(QGraphicsView):
     state_changed = Signal()
     toggle_bar = Signal()
+    config_changed = Signal()           # emitted after reload/pattern successfully replaces config
     _poll_result = Signal(object)       # emitted from poll worker; carries list or Exception
     _reload_result = Signal(object)     # emitted from reload worker; carries tuple or Exception
     _pattern_result = Signal(object)    # emitted from pattern worker; carries dict or Exception
@@ -964,6 +975,7 @@ class ImageView(QGraphicsView):
 
         self._flash("reloaded")
         self._refresh()
+        self.config_changed.emit()
 
     # ── pattern change ────────────────────────────────────────────────────────
 
@@ -1330,6 +1342,7 @@ class ImageView(QGraphicsView):
 
         self._flash("pattern updated")
         self._refresh()
+        self.config_changed.emit()
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -1523,9 +1536,11 @@ class MainWindow(QMainWindow):
         remote_mtimes: dict | None = None,
         axis_h: str | None = None,
         axis_v: str | None = None,
+        session_name: str | None = None,
     ):
         super().__init__()
-        self.setWindowTitle("juxt")
+        self._session_name = session_name
+        self.setWindowTitle(_window_title(config, session_name))
         self.view = ImageView(
             config, pixmaps, self,
             watch=watch,
@@ -1563,6 +1578,9 @@ class MainWindow(QMainWindow):
 
         self.view.state_changed.connect(self._update_status)
         self.view.toggle_bar.connect(self._toggle_status_bar)
+        self.view.config_changed.connect(
+            lambda: self.setWindowTitle(_window_title(self.view.config, self._session_name))
+        )
 
         self._spinner_frame = 0
         self._spinner_timer = QTimer(self)
