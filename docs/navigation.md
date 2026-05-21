@@ -31,8 +31,8 @@ These bindings work identically regardless of which mode is active.
 | `Ctrl` + scroll wheel | Zoom in/out, anchored under the cursor |
 | Click + drag | Pan the image |
 | `Enter` | Toggle fullscreen |
-| `Ctrl+H` | Toggle the status bar |
-| `Ctrl+I` | Toggle the info sidebar |
+| `Ctrl+Shift+H` | Toggle the status bar |
+| `Ctrl+Shift+I` | Toggle the info sidebar |
 
 ### Other
 
@@ -158,4 +158,4 @@ The status bar at the bottom shows:
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode; description of the highlighted command shown right-aligned
 
-Toggle the status bar with `Ctrl+H`. Toggle the info sidebar with `Ctrl+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted.
+Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted.

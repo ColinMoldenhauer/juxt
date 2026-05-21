@@ -1584,10 +1584,11 @@ class ImageView(QGraphicsView):
         mods = event.modifiers()
 
         # Truly global shortcuts — work in every state
-        if k == Qt.Key_H and mods == Qt.ControlModifier:
+        ctrl_shift = Qt.ControlModifier | Qt.ShiftModifier
+        if k == Qt.Key_H and mods == ctrl_shift:
             self.toggle_bar.emit()
             return
-        if k == Qt.Key_I and mods == Qt.ControlModifier:
+        if k == Qt.Key_I and mods == ctrl_shift:
             self.toggle_info.emit()
             return
         # Ctrl+C cancels any active command or selection mode
