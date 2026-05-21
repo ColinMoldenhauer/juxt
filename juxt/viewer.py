@@ -58,6 +58,8 @@ _CMD_ARGS: dict[str, list[str]] = {
 # Commands whose argument is free-text — preserve case when the user types it.
 _FREE_TEXT_ARGS = {"pattern", "save"}
 
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 _COMMAND_HELP: dict[str, str] = {
     "axis-auto":   "restore dynamic axis-to-arrow assignment",
     "axis-h":      "lock ←/→ to a named axis",
@@ -823,6 +825,7 @@ class ImageView(QGraphicsView):
         if self._reload_in_progress:
             return
         self._reload_in_progress = True
+        self.state_changed.emit()
         # Pause polling for the duration of the reload
         if self._watching and self.config.remote is not None:
             self._poll_timer.stop()
@@ -1551,11 +1554,32 @@ class MainWindow(QMainWindow):
         self.view.state_changed.connect(self._update_status)
         self.view.toggle_bar.connect(self._toggle_status_bar)
 
+        self._spinner_frame = 0
+        self._spinner_timer = QTimer(self)
+        self._spinner_timer.setInterval(100)
+        self._spinner_timer.timeout.connect(self._tick_spinner)
+
+        self._update_status()
+
+    def _tick_spinner(self):
+        self._spinner_frame += 1
         self._update_status()
 
     def _update_status(self):
         v = self.view
         self._help_label.setText("")
+
+        if v._reload_in_progress:
+            if not self._spinner_timer.isActive():
+                self._spinner_timer.start()
+            self._status_label.setText(
+                f"{_SPINNER[self._spinner_frame % len(_SPINNER)]}  reloading…"
+            )
+            return
+
+        if self._spinner_timer.isActive():
+            self._spinner_timer.stop()
+            self._spinner_frame = 0
 
         if v._flash_msg is not None:
             self._status_label.setText(v._flash_msg)
