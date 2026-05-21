@@ -1850,6 +1850,12 @@ class MainWindow(QMainWindow):
             lambda: self.setWindowTitle(_window_title(self.view.config, self._session_name))
         )
 
+        self._bar_auto_shown = False
+        self._bar_hide_timer = QTimer(self)
+        self._bar_hide_timer.setSingleShot(True)
+        self._bar_hide_timer.setInterval(50)
+        self._bar_hide_timer.timeout.connect(self._auto_hide_bar)
+
         self._spinner_frame = 0
         self._spinner_timer = QTimer(self)
         self._spinner_timer.setInterval(100)
@@ -1863,6 +1869,15 @@ class MainWindow(QMainWindow):
 
     def _update_status(self):
         v = self.view
+        sb = self.statusBar()
+        interactive = v._cmd is not None or v._sel is not None
+        if interactive:
+            self._bar_hide_timer.stop()
+            if not sb.isVisible():
+                self._bar_auto_shown = True
+                sb.show()
+        elif self._bar_auto_shown and not self._bar_hide_timer.isActive():
+            self._bar_hide_timer.start()
         self._help_label.setText("")
 
         if v._reload_in_progress:
@@ -2002,7 +2017,13 @@ class MainWindow(QMainWindow):
 
     def _toggle_status_bar(self):
         sb = self.statusBar()
+        self._bar_auto_shown = False
+        self._bar_hide_timer.stop()
         sb.setVisible(not sb.isVisible())
+
+    def _auto_hide_bar(self):
+        self._bar_auto_shown = False
+        self.statusBar().hide()
 
     def _toggle_info_panel(self):
         if self._info_dock.isVisible():
