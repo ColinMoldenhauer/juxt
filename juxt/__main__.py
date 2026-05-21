@@ -331,6 +331,7 @@ def main():
     if not app_icon.isNull():
         window.setWindowIcon(app_icon)
     _force_focus(window)
+    window.view.fit_image()     # start app with image fit to screen
 
     # QTimer import kept for other uses; no polling timer needed for SIGINT.
     sys.exit(app.exec())

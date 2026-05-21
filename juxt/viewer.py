@@ -4,6 +4,7 @@ import html as _html
 import re as _re
 import threading
 from enum import IntEnum
+from typing import Literal
 
 from PySide6.QtCore import Qt, QFileSystemWatcher, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
@@ -206,6 +207,7 @@ class ImageView(QGraphicsView):
         self._watcher: QFileSystemWatcher | None = None
         self._path_to_key: dict[str, tuple] = {}
         self._tab_matches: list[str] = []
+        self._fit: Literal["image", "height", "width"] | None = None
 
         self._remote_tmpdir: str | None = remote_tmpdir
         self._get_password: object = get_password
@@ -1364,6 +1366,7 @@ class ImageView(QGraphicsView):
 
     def fit_image(self):
         self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        self._fit = "image"
 
     def fit_height(self):
         pm = self._item.pixmap()
@@ -1373,6 +1376,7 @@ class ImageView(QGraphicsView):
         self.resetTransform()
         self.scale(factor, factor)
         self.centerOn(self._scene.sceneRect().center())
+        self._fit = "height"
 
     def fit_width(self):
         pm = self._item.pixmap()
@@ -1382,11 +1386,14 @@ class ImageView(QGraphicsView):
         self.resetTransform()
         self.scale(factor, factor)
         self.centerOn(self._scene.sceneRect().center())
+        self._fit = "width"
 
     def reset_zoom(self):
+        self._fit = None
         self.resetTransform()
 
     def set_zoom(self, pct: float):
+        self._fit = None
         self.resetTransform()
         self.scale(pct / 100.0, pct / 100.0)
 
@@ -1528,6 +1535,7 @@ class ImageView(QGraphicsView):
         if mods == Qt.ControlModifier:
             factor = 1.15 if delta > 0 else 1 / 1.15
             self.scale(factor, factor)
+            self._fit = None    # reset _fit state
         elif mods == Qt.ShiftModifier:
             v = self._v_axis()
             if delta != 0 and v is not None:
@@ -1538,6 +1546,9 @@ class ImageView(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self._fit is not None:
+            _fitter = getattr(self, f"fit_{self._fit}")
+            _fitter()   # keep fit state after resize
 
 
 class MainWindow(QMainWindow):
