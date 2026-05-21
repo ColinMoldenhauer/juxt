@@ -24,6 +24,7 @@ _COMMANDS = [
     "axis-auto",
     "axis-h",
     "axis-v",
+    "change-key",
     "copy-image",
     "copy-path",
     "fit",
@@ -34,6 +35,8 @@ _COMMANDS = [
     "pattern",
     "quit",
     "reload",
+    "remove-axis",
+    "remove-value",
     "watch",
     "write",
     "swap-axes",
@@ -52,20 +55,24 @@ _ALIASES: dict[str, str] = {
 _CMD_ARGS: dict[str, list[str]] = {
     "axis-h": [],
     "axis-v": [],
+    "change-key": [],
     "mode": ["tap", "seek", "pin"],
     "pattern": [],  # free-text path / template
+    "remove-axis": [],
+    "remove-value": [],
     "watch": ["true", "false"],
     "write": [],    # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
 }
 
 # Commands whose argument is free-text — preserve case when the user types it.
-_FREE_TEXT_ARGS = {"pattern", "write"}
+_FREE_TEXT_ARGS = {"change-key", "pattern", "remove-axis", "remove-value", "write"}
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 _COMMAND_HELP: dict[str, str] = {
     "axis-auto":   "restore dynamic axis-to-arrow assignment",
+    "change-key":  "assign a key letter to an axis  (e.g. change-key sensor x)",
     "copy-image":  "copy current image to clipboard",
     "copy-path":   "copy current image file path to clipboard",
     "axis-h":      "lock ←/→ to a named axis",
@@ -78,6 +85,8 @@ _COMMAND_HELP: dict[str, str] = {
     "pattern":     "change the template / source path without restarting",
     "quit":        "quit juxt",
     "reload":      "re-detect axes and reload images",
+    "remove-axis": "remove an axis (collapses to its current value)",
+    "remove-value": "remove a value from an axis  (e.g. remove-value sensor SMAP)",
     "write":       "write current config to a YAML file",
     "swap-axes":   "swap the ←/→ and ↑/↓ axis bindings",
     "switch-last": "toggle between current and previous position",
@@ -419,7 +428,7 @@ class ImageView(QGraphicsView):
             pool = _COMMANDS
         else:
             verb = self._cmd["verb"]
-            pool = list(self.axis_names) if verb in ("axis-h", "axis-v") else _CMD_ARGS.get(verb, [])
+            pool = list(self.axis_names) if verb in ("axis-h", "axis-v", "remove-axis") else _CMD_ARGS.get(verb, [])
         return [c for c in pool if c.startswith(q)] if q else list(pool)
 
     def _cmd_handle_key(self, event: QKeyEvent) -> bool:
@@ -686,6 +695,54 @@ class ImageView(QGraphicsView):
             if self.prev is not None:
                 self.pos, self.prev = self.prev, list(self.pos)
                 self._refresh()
+        elif verb == "remove-axis":
+            name = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            if not name:
+                name = self.axis_names[self._h_axis()]
+            if name not in self.axis_names:
+                self._flash(f"unknown axis: {name!r}")
+            elif len(self.axis_names) <= 1:
+                self._flash("cannot remove the only axis")
+            else:
+                self._do_remove_axis(self.axis_names.index(name))
+        elif verb == "remove-value":
+            raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            axis_name = next((n for n in self.axis_names
+                              if raw == n or raw.startswith(n + " ")), None)
+            if axis_name is None:
+                self._flash("usage: remove-value AXIS VALUE")
+                return
+            val_str = raw[len(axis_name):].strip()
+            if not val_str:
+                self._flash(f"usage: remove-value {axis_name} VALUE")
+                return
+            axis_idx = self.axis_names.index(axis_name)
+            vals = self.axis_values[axis_idx]
+            if val_str not in vals:
+                self._flash(f"unknown value: {val_str!r}")
+            elif len(vals) <= 1:
+                self._flash("cannot remove the only value in an axis")
+            else:
+                self._do_remove_value(axis_idx, vals.index(val_str))
+        elif verb == "change-key":
+            raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            tokens = raw.rsplit(None, 1)
+            if len(tokens) == 2:
+                axis_name, letter = tokens
+                if axis_name not in self.axis_names:
+                    self._flash(f"unknown axis: {axis_name!r}")
+                elif not (len(letter) == 1 and letter.isalpha()):
+                    self._flash("letter must be a single a–z character")
+                else:
+                    self._do_change_key(axis_name, letter.lower())
+            elif len(tokens) == 1:
+                axis_name = tokens[0]
+                if axis_name not in self.axis_names:
+                    self._flash(f"unknown axis: {axis_name!r}")
+                else:
+                    self._do_change_key(axis_name, None)
+            else:
+                self._flash("usage: change-key AXIS LETTER")
 
     # ── key assignment ───────────────────────────────────────────────────────
 
@@ -1006,6 +1063,109 @@ class ImageView(QGraphicsView):
         self._flash("reloaded")
         self._refresh()
         self.config_changed.emit()
+
+    # ── in-place config edits ─────────────────────────────────────────────────
+
+    def _apply_axes_change(self, new_config, new_pixmaps: dict):
+        """Apply a modified config+pixmaps in-place, preserving position by value name."""
+        old_names = self.axis_names
+        new_axis_names = list(new_config.axes.keys())
+        new_axis_values = list(new_config.axes.values())
+        new_pos = []
+        for name, vals in zip(new_axis_names, new_axis_values):
+            if name in old_names:
+                old_i = old_names.index(name)
+                old_val = self.axis_values[old_i][self.pos[old_i]]
+                new_pos.append(vals.index(old_val) if old_val in vals else 0)
+            else:
+                new_pos.append(0)
+        old_h_name = old_names[self._locked_h] if self._locked_h is not None and self._locked_h < len(old_names) else None
+        old_v_name = old_names[self._locked_v] if self._locked_v is not None and self._locked_v < len(old_names) else None
+        self.config = new_config
+        self.pixmaps = new_pixmaps
+        self.axis_names = new_axis_names
+        self.axis_values = new_axis_values
+        self.n_axes = len(new_axis_names)
+        self.pos = new_pos
+        self.prev = None
+        self.focus_stack = list(range(self.n_axes))
+        self._locked_h = new_axis_names.index(old_h_name) if old_h_name in new_axis_names else None
+        self._locked_v = new_axis_names.index(old_v_name) if old_v_name in new_axis_names else None
+        self._sel = None
+        self._rebuild_key_to_axis()
+        if self._watching and self.config.remote is None:
+            if self._watcher is not None:
+                self._watcher.fileChanged.disconnect(self._on_file_changed)
+                self._watcher.deleteLater()
+            self._path_to_key = self._build_path_to_key()
+            self._watcher = QFileSystemWatcher(list(self._path_to_key.keys()), self)
+            self._watcher.fileChanged.connect(self._on_file_changed)
+        self._refresh()
+
+    def _do_remove_axis(self, axis_idx: int):
+        j = axis_idx
+        v = self.pos[j]
+        removed_name = self.axis_names[j]
+        new_pixmaps = {
+            key[:j] + key[j + 1:]: pm
+            for key, pm in self.pixmaps.items()
+            if key[j] == v
+        }
+        new_axes = {
+            name: vals
+            for i, (name, vals) in enumerate(zip(self.axis_names, self.axis_values))
+            if i != j
+        }
+        from .config import Config
+        new_config = Config(
+            template=self.config.template,
+            axes=new_axes,
+            keys={k: n for k, n in self.config.keys.items() if n != removed_name},
+            mode=self.config.mode,
+            remote=self.config.remote,
+        )
+        self._apply_axes_change(new_config, new_pixmaps)
+        self._flash(f"removed axis {removed_name!r}")
+
+    def _do_remove_value(self, axis_idx: int, val_idx: int):
+        j, v = axis_idx, val_idx
+        axis_name = self.axis_names[j]
+        removed_val = self.axis_values[j][v]
+        new_pixmaps = {}
+        for key, pm in self.pixmaps.items():
+            if key[j] == v:
+                continue
+            new_j = key[j] - 1 if key[j] > v else key[j]
+            new_pixmaps[key[:j] + (new_j,) + key[j + 1:]] = pm
+        new_axes = dict(self.config.axes)
+        new_axes[axis_name] = self.axis_values[j][:v] + self.axis_values[j][v + 1:]
+        from .config import Config
+        new_config = Config(
+            template=self.config.template,
+            axes=new_axes,
+            keys=self.config.keys,
+            mode=self.config.mode,
+            remote=self.config.remote,
+        )
+        self._apply_axes_change(new_config, new_pixmaps)
+        self._flash(f"removed {axis_name}={removed_val}")
+
+    def _do_change_key(self, axis_name: str, letter: str | None):
+        new_keys = {k: n for k, n in self.config.keys.items()
+                    if n != axis_name and k != letter}
+        if letter is not None:
+            new_keys[letter] = axis_name
+        from .config import Config
+        self.config = Config(
+            template=self.config.template,
+            axes=self.config.axes,
+            keys=new_keys,
+            mode=self.config.mode,
+            remote=self.config.remote,
+        )
+        self._rebuild_key_to_axis()
+        self.state_changed.emit()
+        self._flash(f"{letter} → {axis_name}" if letter else f"removed key for {axis_name!r}")
 
     # ── pattern change ────────────────────────────────────────────────────────
 
