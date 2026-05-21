@@ -853,6 +853,8 @@ class ImageView(QGraphicsView):
                     conn[0], conn[1] = _connect_sftp(config.remote, get_pw)
                     from .detect import _axes_from_sftp_template
                     new_axes = _axes_from_sftp_template(config.template, conn[1])
+                    if not new_axes:
+                        raise ValueError("no images found for current template")
                     # Download only new/changed files; skip unchanged via mtimes
                     from .loader import poll_remote_with_sftp
                     poll_remote_with_sftp(
@@ -872,6 +874,8 @@ class ImageView(QGraphicsView):
                 else:
                     from .detect import _axes_from_local_template
                     new_axes = _axes_from_local_template(config.template)
+                    if not new_axes:
+                        raise ValueError("no images found for current template")
                     from itertools import product as _product
                     axis_names = list(new_axes.keys())
                     axis_values = list(new_axes.values())
@@ -1134,6 +1138,8 @@ class ImageView(QGraphicsView):
                     self._pattern_progress.emit(0, 0, "Detecting axes…")
                     _check()
                     new_axes = _axes_from_sftp_template(remote_tmpl, new_conn[1])
+                    if not new_axes:
+                        raise ValueError(f"no images found for pattern {remote_tmpl!r}")
                     n = 1
                     for vs in new_axes.values():
                         n *= len(vs)
@@ -1165,6 +1171,8 @@ class ImageView(QGraphicsView):
 
                 elif Path(raw).is_dir():
                     new_config, _ = detect_config(Path(raw), None, None)
+                    if not new_config.axes:
+                        raise ValueError(f"no images found in directory {raw!r}")
                     axis_names = list(new_config.axes.keys())
                     axis_values = list(new_config.axes.values())
                     n = 1
@@ -1180,6 +1188,8 @@ class ImageView(QGraphicsView):
 
                 elif raw.lower().endswith((".yaml", ".yml")):
                     new_config = load_config(raw)
+                    if not new_config.axes:
+                        raise ValueError(f"no axes defined in config {raw!r}")
                     axis_names = list(new_config.axes.keys())
                     axis_values = list(new_config.axes.values())
                     n = 1
