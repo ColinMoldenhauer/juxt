@@ -32,6 +32,7 @@ These bindings work identically regardless of which mode is active.
 | Click + drag | Pan the image |
 | `Enter` | Toggle fullscreen |
 | `Ctrl+H` | Toggle the status bar |
+| `Ctrl+I` | Toggle the info sidebar |
 
 ### Other
 
@@ -136,6 +137,7 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:watch` / `:watch true` | Enable live file watching / polling |
 | `:watch false` | Disable live file watching / polling |
 | `:watch N` | Set remote poll interval to N seconds |
+| `:info` | Toggle the info sidebar |
 
 ### :pattern — changing the source at runtime
 
@@ -156,4 +158,4 @@ The status bar at the bottom shows:
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode; description of the highlighted command shown right-aligned
 
-Toggle the status bar with `Ctrl+H`.
+Toggle the status bar with `Ctrl+H`. Toggle the info sidebar with `Ctrl+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted.

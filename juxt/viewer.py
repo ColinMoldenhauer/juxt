@@ -10,12 +10,14 @@ from PySide6.QtCore import Qt, QFileSystemWatcher, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QDockWidget,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
     QLabel,
     QMainWindow,
     QSizePolicy,
+    QTextEdit,
 )
 
 from .config import Config
@@ -31,6 +33,7 @@ _COMMANDS = [
     "fit-height",
     "fit-width",
     "fullscreen",
+    "info",
     "mode",
     "pattern",
     "quit",
@@ -81,6 +84,7 @@ _COMMAND_HELP: dict[str, str] = {
     "fit-height":  "fit image height to viewport",
     "fit-width":   "fit image width to viewport",
     "fullscreen":  "toggle fullscreen",
+    "info":        "toggle the info sidebar",
     "mode":        "switch navigation mode  (tap / seek / pin)",
     "pattern":     "change the template / source path without restarting",
     "quit":        "quit juxt",
@@ -168,6 +172,7 @@ def _window_title(config: "Config", session_name: str | None = None) -> str:
 class ImageView(QGraphicsView):
     state_changed = Signal()
     toggle_bar = Signal()
+    toggle_info = Signal()
     config_changed = Signal()           # emitted after reload/pattern successfully replaces config
     _poll_result = Signal(object)       # emitted from poll worker; carries list or Exception
     _reload_result = Signal(object)     # emitted from reload worker; carries tuple or Exception
@@ -695,6 +700,8 @@ class ImageView(QGraphicsView):
             if self.prev is not None:
                 self.pos, self.prev = self.prev, list(self.pos)
                 self._refresh()
+        elif verb == "info":
+            self.toggle_info.emit()
         elif verb == "remove-axis":
             name = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
             if not name:
@@ -1580,6 +1587,9 @@ class ImageView(QGraphicsView):
         if k == Qt.Key_H and mods == Qt.ControlModifier:
             self.toggle_bar.emit()
             return
+        if k == Qt.Key_I and mods == Qt.ControlModifier:
+            self.toggle_info.emit()
+            return
         # Ctrl+C cancels any active command or selection mode
         if k == Qt.Key_C and mods == Qt.ControlModifier:
             if self._cmd is not None or self._sel is not None:
@@ -1699,7 +1709,7 @@ class ImageView(QGraphicsView):
             else:
                 super().keyPressEvent(event)
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, _event):
         self.fit_image()
 
     def wheelEvent(self, event):
@@ -1722,6 +1732,48 @@ class ImageView(QGraphicsView):
         if self._fit is not None:
             _fitter = getattr(self, f"fit_{self._fit}")
             _fitter()   # keep fit state after resize
+
+
+class InfoPanel(QTextEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setMinimumWidth(180)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet(
+            "QTextEdit { background: #111; color: #ddd; "
+            "font-family: 'Courier New', monospace; font-size: 9pt; "
+            "border: none; padding: 8px; }"
+        )
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        w = self.window()
+        if hasattr(w, "view"):
+            w.view.setFocus()
+
+    def refresh(self, view: "ImageView"):
+        e = _html.escape
+        path = view._key_to_path(view._key())
+        parts = [
+            f"<span style='color:#888'>path</span><br>"
+            f"{e(path)}<br><br>"
+        ]
+        for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
+            cur = view.pos[i]
+            val_html = "&nbsp;&nbsp;".join(
+                f'<span style="color:#6af">{e(v)}</span>' if j == cur else e(v)
+                for j, v in enumerate(vals)
+            )
+            parts.append(
+                f"<span style='color:#888'>{e(name)}</span><br>{val_html}<br><br>"
+            )
+        self.setHtml(
+            "<html><body style='font-family:\"Courier New\",monospace; "
+            "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+            + "".join(parts)
+            + "</body></html>"
+        )
 
 
 class MainWindow(QMainWindow):
@@ -1776,8 +1828,23 @@ class MainWindow(QMainWindow):
         )
         bar.addPermanentWidget(self._help_label)
 
+        self._info_panel = InfoPanel()
+        self._info_dock = QDockWidget("Info", self)
+        self._info_dock.setWidget(self._info_panel)
+        self._info_dock.setAllowedAreas(
+            Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.LeftDockWidgetArea
+        )
+        self._info_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetClosable |
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._info_dock)
+        self._info_dock.hide()
+
         self.view.state_changed.connect(self._update_status)
+        self.view.state_changed.connect(self._refresh_info_panel)
         self.view.toggle_bar.connect(self._toggle_status_bar)
+        self.view.toggle_info.connect(self._toggle_info_panel)
         self.view.config_changed.connect(
             lambda: self.setWindowTitle(_window_title(self.view.config, self._session_name))
         )
@@ -1935,3 +2002,14 @@ class MainWindow(QMainWindow):
     def _toggle_status_bar(self):
         sb = self.statusBar()
         sb.setVisible(not sb.isVisible())
+
+    def _toggle_info_panel(self):
+        if self._info_dock.isVisible():
+            self._info_dock.hide()
+        else:
+            self._info_panel.refresh(self.view)
+            self._info_dock.show()
+
+    def _refresh_info_panel(self):
+        if self._info_dock.isVisible():
+            self._info_panel.refresh(self.view)
