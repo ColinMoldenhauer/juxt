@@ -228,6 +228,7 @@ class ImageView(QGraphicsView):
         self._path_to_key: dict[str, tuple] = {}
         self._tab_matches: list[str] = []
         self._fit: Literal["image", "height", "width"] | None = None
+        self._pre_fullscreen_maximized: bool | None = None
 
         self._remote_tmpdir: str | None = remote_tmpdir
         self._get_password: object = get_password
@@ -615,11 +616,7 @@ class ImageView(QGraphicsView):
                 except ValueError:
                     pass
         elif verb == "fullscreen":
-            win = self.window()
-            if win.isFullScreen():
-                win.showMaximized()
-            else:
-                win.showFullScreen()
+            self._toggle_fullscreen()
         elif verb == "mode":
             if args:
                 arg = args[0]
@@ -790,6 +787,18 @@ class ImageView(QGraphicsView):
     def _clear_active_axis(self):
         self._active_axis = None
         self.state_changed.emit()
+
+    def _toggle_fullscreen(self):
+        win = self.window()
+        if win.isFullScreen():
+            if self._pre_fullscreen_maximized:
+                win.showMaximized()
+            else:
+                win.showNormal()
+            self._pre_fullscreen_maximized = None
+        else:
+            self._pre_fullscreen_maximized = win.isMaximized()
+            win.showFullScreen()
 
     def _flash(self, msg: str, ms: int = 2500):
         self._flash_msg = msg
@@ -1664,16 +1673,12 @@ class ImageView(QGraphicsView):
                 self._refresh()
             return
         if k in (Qt.Key_Return, Qt.Key_Enter):
-            win = self.window()
-            if win.isFullScreen():
-                win.showMaximized()
-            else:
-                win.showFullScreen()
+            self._toggle_fullscreen()
             return
         if k == Qt.Key_Escape:
             win = self.window()
             if win.isFullScreen():
-                win.showMaximized()
+                self._toggle_fullscreen()
             return
 
         # Mode-specific letter handling
