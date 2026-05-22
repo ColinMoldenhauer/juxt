@@ -67,6 +67,67 @@ def _parse_key(s: str) -> tuple[int, int]:
     return key, mods
 
 
+def _chord_str(key: int, mods: int) -> str:
+    """Reconstruct a human-readable chord like 'Ctrl+Shift+H' from parsed values."""
+    parts = []
+    if mods & Qt.ControlModifier.value:
+        parts.append("Ctrl")
+    if mods & Qt.ShiftModifier.value:
+        parts.append("Shift")
+    if mods & Qt.AltModifier.value:
+        parts.append("Alt")
+    if mods & Qt.MetaModifier.value:
+        parts.append("Meta")
+    if Qt.Key_A <= key <= Qt.Key_Z:
+        parts.append(chr(key - Qt.Key_A + ord('A')))
+    else:
+        for name, val in _KEY_MAP.items():
+            if val == key and not name[0].isdigit():
+                parts.append(name.capitalize())
+                break
+        else:
+            parts.append(f"0x{key:x}")
+    return "+".join(parts) if parts else "?"
+
+
+def _keybinding_conflicts(
+    parsed_bindings: dict[tuple[int, int], str],
+    axis_letters: set[str],
+) -> list[str]:
+    """Return one human-readable description per binding that shadows navigation.
+
+    Conflicts per mode (key type → affected modes):
+      bare letter       → seek always; tap + pin if the letter is an axis key
+      Shift+letter      → tap if letter is an axis key (navigate -1)
+      Ctrl+letter       → tap + pin if letter is an axis key (value picker)
+    """
+    ctrl = Qt.ControlModifier.value
+    shift = Qt.ShiftModifier.value
+    conflicts = []
+    for (key, mods), action in sorted(parsed_bindings.items()):
+        if not (Qt.Key_A <= key <= Qt.Key_Z):
+            continue
+        letter = chr(key - Qt.Key_A + ord('a'))
+        clashing = []
+        if mods == 0:
+            clashing.append("seek")
+            if letter in axis_letters:
+                clashing += ["tap", "pin"]
+        elif mods == shift:
+            if letter in axis_letters:
+                clashing.append("tap")
+        elif mods == ctrl:
+            if letter in axis_letters:
+                clashing += ["tap", "pin"]
+        if clashing:
+            axis_note = f" (axis key '{letter}')" if letter in axis_letters else ""
+            conflicts.append(
+                f"{_chord_str(key, mods)} → {action!r}: shadows "
+                f"{'/'.join(clashing)} mode{axis_note}"
+            )
+    return conflicts
+
+
 _COMMANDS = [
     "axis-auto",
     "axis-h",
@@ -1965,6 +2026,7 @@ class MainWindow(QMainWindow):
         self._settings_watcher.fileChanged.connect(self._on_settings_changed)
 
         self._update_status()
+        self._warn_keybinding_conflicts(flash=False)
 
     def _tick_spinner(self):
         self._spinner_frame += 1
@@ -2139,6 +2201,21 @@ class MainWindow(QMainWindow):
         if self._info_dock.isVisible():
             self._info_panel.refresh(self.view)
 
+    def _warn_keybinding_conflicts(self, *, flash: bool = True) -> bool:
+        """Log (and optionally flash) warnings for bindings that shadow navigation."""
+        axis_letters = set(self.view.key_to_axis.keys())
+        conflicts = _keybinding_conflicts(self.view._keybindings, axis_letters)
+        for msg in conflicts:
+            log.warning("Keybinding conflict: %s", msg)
+        if flash and conflicts:
+            if len(conflicts) == 1:
+                self.view._flash(f"keybinding conflict: {conflicts[0]}", ms=4000)
+            else:
+                self.view._flash(
+                    f"{len(conflicts)} keybinding conflict(s) — see log", ms=4000
+                )
+        return bool(conflicts)
+
     def _on_settings_changed(self, path: str):
         # Some editors save via a temp-rename; re-add so we keep getting events.
         if not self._settings_watcher.files():
@@ -2149,4 +2226,6 @@ class MainWindow(QMainWindow):
         _detect._MAX_VALS = settings.max_vals
         _detect._MAX_VALS_DISPLAY = settings.max_vals_display
         log.info("Settings reloaded from %s", path)
-        self.view._flash("settings reloaded")
+        had_conflicts = self._warn_keybinding_conflicts()
+        if not had_conflicts:
+            self.view._flash("settings reloaded")

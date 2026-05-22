@@ -31,6 +31,11 @@ display:
 # Modifiers: Ctrl  Shift  Alt  Meta
 # Keys: any letter, Return, Escape, Space, Tab, Backspace, Delete,
 #       Home, End, Left, Right, Up, Down, F1–F12, 0–9
+#
+# Conflict warning: bare letters (e.g. H) shadow seek mode for all letters,
+# and tap/pin mode for any letter that is an axis key.  Ctrl+letter and
+# Shift+letter axis keys shadow tap/pin in the same way.
+# juxt logs a warning and flashes a notice when conflicts are detected.
 keybindings:
   Ctrl+Shift+H: toggle-statusbar   # toggle the status bar
   Ctrl+Shift+I: toggle-info        # toggle the info sidebar
@@ -55,6 +60,8 @@ display:
 # Modifiers: Ctrl  Shift  Alt  Meta
 # Keys: any letter, Return, Escape, Space, Tab, Backspace, Delete,
 #       Home, End, Left, Right, Up, Down, F1–F12, 0–9
+# Warning: bare letters shadow seek mode; bare/Ctrl/Shift+letter axis keys
+# also shadow tap/pin mode.  juxt warns on startup and settings reload.
 keybindings:
   Ctrl+Shift+H: toggle-statusbar
   Ctrl+Shift+I: toggle-info

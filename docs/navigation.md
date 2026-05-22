@@ -159,3 +159,24 @@ The status bar at the bottom shows:
 - Command being typed in command mode; description of the highlighted command shown right-aligned
 
 Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted.
+
+### Custom keybindings
+
+Any action (including every `:command` plus `toggle-statusbar` and `toggle-info`) can be bound to a key chord in `~/.juxt/settings.yaml`:
+
+```yaml
+keybindings:
+  Ctrl+Shift+H: toggle-statusbar
+  F11: fullscreen
+  Ctrl+R: reload
+```
+
+**Conflict warning.** Navigation keys are mode-specific:
+
+| Chord type | Conflicts with |
+|---|---|
+| Bare letter (e.g. `H`) | seek mode always (any letter starts a search); tap + pin if the letter is an axis key |
+| `Shift+letter` axis key | tap mode (uppercase = navigate −1) |
+| `Ctrl+letter` axis key | tap + pin mode (opens value picker) |
+
+When juxt detects a conflict it logs a warning and flashes a notice in the status bar — both at startup and whenever the settings file is saved. The binding still takes effect; the warning is advisory.
