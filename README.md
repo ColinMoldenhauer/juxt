@@ -4,6 +4,12 @@
 
 # juxt
 
+[![PyPI version](https://img.shields.io/pypi/v/juxt.svg)](https://pypi.org/project/juxt/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/juxt.svg)](https://pypi.org/project/juxt/)
+[![Tests](https://github.com/ColinMoldenhauer/juxt/actions/workflows/tests.yml/badge.svg)](https://github.com/ColinMoldenhauer/juxt/actions/workflows/tests.yml)
+[![Docs](https://readthedocs.org/projects/juxt/badge/?version=latest)](https://juxt.readthedocs.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 `juxt` is a fast desktop tool for visually comparing plots across multiple parameter axes. Define axes (model, date, data source, ...) and flip through the resulting image hypercube with keyboard navigation.
 
 *juxt* comes from *juxtapose* — placing things side by side to compare. That's the whole idea: flip through congruent plots fast enough to visually identify differences.
