@@ -38,6 +38,7 @@ At startup juxt preloads all images into memory (target use case: ~100 plots, ~2
 
 | Page | What's there |
 |---|---|
+| [UI overview](ui.md) | Annotated screenshots of the main window, status bar states, and info sidebar |
 | [Installation](installation.md) | pip, extras, requirements |
 | [Configuration](configuration.md) | Template mode, auto-discover, all config keys |
 | [Navigation](navigation.md) | All key bindings, all three modes, command mode |
