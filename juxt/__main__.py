@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QSocketNotifier, QTimer
 from PySide6.QtGui import QCursor, QIcon
-from PySide6.QtWidgets import QApplication, QInputDialog, QLineEdit, QProgressDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLineEdit, QProgressDialog
 
 from .config import Config, _auto_keys, dump_config, load_config
 from .detect import (
@@ -126,7 +126,7 @@ def _print_help() -> None:
     host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
     host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
     config.yaml               explicit YAML config file
-    (default: current directory)
+    (default: opens a directory picker)
 
   -s, --separator SEP [...]   separator(s) for auto-detection
   -a, --auto                  skip axis naming prompt
@@ -159,7 +159,7 @@ class _HelpAction(argparse.Action):
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="juxt", add_help=False)
-    p.add_argument("path", nargs="?", default=".", metavar="PATH")
+    p.add_argument("path", nargs="?", default=None, metavar="PATH")
     p.add_argument("-s", "--separator", metavar="SEP", nargs="+")
     p.add_argument("-a", "--auto", action="store_true")
     p.add_argument("--max-depth", type=int, default=None, metavar="N")
@@ -226,6 +226,19 @@ def main():
         ok = dlg.exec()
         _pw_cache[0] = dlg.textValue() if ok else None
         return _pw_cache[0]
+
+    if args.path is None:
+        dlg = QFileDialog(None, "Select image directory", str(Path.home()))
+        dlg.setFileMode(QFileDialog.FileMode.Directory)
+        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        if not app_icon.isNull():
+            dlg.setWindowIcon(app_icon)
+        QTimer.singleShot(0, lambda: _force_focus(dlg))
+        chosen = dlg.selectedFiles()[0] if dlg.exec() else ""
+        if not chosen:
+            sys.exit(0)
+        args.path = chosen
 
     try:
         raw = args.path
