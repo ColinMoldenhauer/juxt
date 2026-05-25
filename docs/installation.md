@@ -1,6 +1,27 @@
 # Installation
 
-## Requirements
+## Standalone binary (no Python required)
+
+Pre-built binaries are attached to every [GitHub Release](https://github.com/ColinMoldenhauer/juxt/releases).
+Download the archive for your platform, extract it, and run — no Python or pip needed.
+
+| Platform | File | Run |
+|---|---|---|
+| Windows | `juxt-windows.zip` | Extract, then double-click `juxt\juxt.exe` or run it from a command prompt |
+| Linux | `juxt-linux.zip` | Extract, then `./juxt/juxt path/to/config.yaml` |
+| macOS | `juxt-macos.zip` | Extract, then `open juxt.app` — **built for Apple Silicon (arm64), untested** |
+
+**macOS only:** macOS Gatekeeper will block the unsigned app on first launch.
+Right-click the app → Open → Open to bypass, or run once from the terminal:
+```
+xattr -cr juxt.app && open juxt.app
+```
+
+SSH support (remote image directories) is included in all binaries.
+
+---
+
+## Requirements (pip install)
 
 - Python 3.10 or newer
 - A working Qt installation is bundled with PySide6 — no separate Qt install needed
