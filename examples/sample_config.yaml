@@ -1,4 +1,4 @@
-template: "sample_plots/{sensor}_{date}_{overpass}_{source}.png"
+template: "examples/sample_plots/{sensor}_{date}_{overpass}_{source}.png"
 axes:
   sensor:   [ASCAT, SMAP, SMOS]
   date:     [2024-03-15, 2024-03-16]

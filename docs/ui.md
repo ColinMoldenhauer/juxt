@@ -73,7 +73,7 @@ Use the bundled sample config for a reproducible axis layout:
 ```bash
 git clone https://github.com/ColinMoldenhauer/juxt
 cd juxt
-juxt sample_config.yaml
+juxt examples/sample_config.yaml
 ```
 
 Axes: `sensor` (ASCAT, SMAP, SMOS) × `date` (2 values) × `overpass` (AM, PM) × `source` (L2, L3).

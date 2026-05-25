@@ -89,5 +89,5 @@ You should see the usage box. To open the bundled sample config immediately:
 ```bash
 git clone https://github.com/ColinMoldenhauer/juxt
 cd juxt
-juxt sample_config.yaml
+juxt examples/sample_config.yaml
 ```

@@ -24,7 +24,7 @@ try {
 
     Write-Host ""
     Write-Host "==> Launching binary -- close the window when done."
-    .\dist\juxt\juxt.exe sample_config.yaml
+    .\dist\juxt\juxt.exe examples/sample_config.yaml
 } finally {
     Write-Host ""
     Write-Host "==> Removing conda environment '$ENV_NAME'..."

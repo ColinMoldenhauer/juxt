@@ -20,3 +20,6 @@ juxt/_version.py
 
 # mkdocs build output
 site/
+
+# example data
+examples/sample_plot*

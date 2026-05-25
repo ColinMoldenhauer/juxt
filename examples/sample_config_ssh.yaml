@@ -1,0 +1,41 @@
+# ── Remote (SSH) config ────────────────────────────────────────────────────────
+#
+# Requires paramiko:  pip install juxt[ssh]
+#
+# Auth is attempted in order:
+#   1. SSH agent (e.g. ssh-agent / Pageant / 1Password SSH agent)
+#   2. Default key files (~/.ssh/id_ed25519, ~/.ssh/id_rsa, …)
+#   3. Explicit key_path (see extended form below)
+#
+# Simple form — "user@host" string:
+
+remote: cmoldenh
+# remote: cmoldenh@localhost:9922
+
+# Extended form — uncomment to use instead:
+# remote:
+#   host: myserver.example.com
+#   user: colin
+#   port: 22               # optional, default 22
+#   key_path: ~/.ssh/id_ed25519   # optional, falls back to agent/defaults
+
+# ── Template and axes ─────────────────────────────────────────────────────────
+#
+# template is the *remote* path on the server.
+# Use absolute paths to avoid ambiguity.
+
+# template: "/data/plots/{sensor}_{date}_{overpass}_{source}.png"
+template: "/home/cmoldenh/shares/home/code/dev/organic_soils/img_diff_volumetric_conversion/retrieval_diff_{sensor}_{date}_{band}_55.0_{source}.png"
+axes:
+  sensor:   [AMSR2]
+  band:     [C1, C2]
+  date:     [20200715]
+  source:   [soilgrids, legacy-soilgrids]
+keys:
+  s: sensor
+  b: band
+  d: date
+  r: source
+
+# Files are downloaded to a temporary directory at startup and deleted on exit.
+# Navigation after loading is identical to local use — no per-keypress latency.

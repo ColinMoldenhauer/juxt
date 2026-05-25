@@ -32,4 +32,4 @@ echo ""
 echo "==> Launching binary — close the window when done."
 # Run the binary inside the .app directly so CLI args work.
 # If macOS Gatekeeper blocks it, run: xattr -cr dist/juxt.app
-./dist/juxt.app/Contents/MacOS/juxt sample_config.yaml
+./dist/juxt.app/Contents/MacOS/juxt examples/sample_config.yaml

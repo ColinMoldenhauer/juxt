@@ -1,4 +1,4 @@
-"""Generate synthetic test PNGs for sample_config.yaml (uses only PySide6)."""
+"""Generate synthetic test PNGs for examples/sample_config.yaml (uses only PySide6)."""
 from __future__ import annotations
 import colorsys
 import random
@@ -78,7 +78,7 @@ def make_image(sensor: str, date: str, overpass: str, source: str) -> QPixmap:
 def main():
     NESTED = True
 
-    out = Path("sample_plots_nested") if NESTED else Path("sample_plots")
+    out = Path("examples/sample_plots_nested") if NESTED else Path("examples/sample_plots")
     combos = list(product(SENSORS, DATES, OVERPASSES, SOURCES))
     for sensor, date, overpass, source in combos:
 
@@ -94,8 +94,8 @@ def main():
         pm.save(str(path))
         print(f"  {path}")
     print(f"\n{len(combos)} images -> {out}/")
-    print("Run:  juxt sample_config.yaml")
-    print("  or: python -m juxt sample_config.yaml")
+    print("Run:  juxt examples/sample_config.yaml")
+    print("  or: python -m juxt examples/sample_config.yaml")
 
 
 if __name__ == "__main__":

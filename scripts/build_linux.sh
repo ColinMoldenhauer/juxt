@@ -30,4 +30,4 @@ conda run --no-capture-output -n "$ENV_NAME" python make_sample.py
 
 echo ""
 echo "==> Launching binary — close the window when done."
-./dist/juxt/juxt sample_config.yaml
+./dist/juxt/juxt examples/sample_config.yaml

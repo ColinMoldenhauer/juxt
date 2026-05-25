@@ -76,5 +76,5 @@ include = [
     "juxt/",
     "README.md",
     "pyproject.toml",
-    "sample_config.yaml",
+    "examples/sample_config.yaml",
 ]

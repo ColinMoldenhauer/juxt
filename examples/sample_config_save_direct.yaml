@@ -1,0 +1,11 @@
+template: examples/sample_plots/{sens}_{dat}_{ov}_{lev}.png
+axes:
+  sens: [ASCAT, SMAP, SMOS]
+  dat: ['2024-03-15', '2024-03-16']
+  ov: [AM, PM]
+  lev: [L2, L3]
+keys:
+  s: sens
+  d: dat
+  o: ov
+  l: lev
