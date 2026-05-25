@@ -18,7 +18,7 @@ conda create -y -n "$ENV_NAME" python=3.12 -c conda-forge
 
 echo ""
 echo "==> Installing package and PyInstaller..."
-conda run --no-capture-output -n "$ENV_NAME" pip install pyinstaller ".[ssh]"
+conda run --no-capture-output -n "$ENV_NAME" pip install pyinstaller pillow ".[ssh]"
 
 echo ""
 echo "==> Building with PyInstaller..."

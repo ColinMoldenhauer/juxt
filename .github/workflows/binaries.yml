@@ -19,6 +19,7 @@ jobs:
             artifact: juxt-linux.zip
           - os: macos-latest
             artifact: juxt-macos.zip
+            extra_deps: pillow
 
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +52,7 @@ jobs:
             libfontconfig1
 
       - name: Install dependencies
-        run: pip install pyinstaller ".[ssh]"
+        run: pip install pyinstaller ".[ssh]" ${{ matrix.extra_deps }}
 
       - name: Build with PyInstaller
         run: pyinstaller juxt.spec
