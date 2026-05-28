@@ -76,7 +76,7 @@ def make_image(sensor: str, date: str, overpass: str, source: str) -> QPixmap:
 
 
 def main():
-    NESTED = True
+    NESTED = False
 
     out = Path("examples/sample_plots_nested") if NESTED else Path("examples/sample_plots")
     combos = list(product(SENSORS, DATES, OVERPASSES, SOURCES))

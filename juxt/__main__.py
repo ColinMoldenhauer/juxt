@@ -138,6 +138,13 @@ def _print_help() -> None:
       --axis-v NAME           lock ↑/↓ to this axis on startup
       --squeeze               drop axes with only one value
       --name NAME             session name shown in window title (default: template basename)
+
+  grid view
+      --grid AXIS             enter grid view for AXIS on startup
+      --grid-values VAL ...   show only these values in the grid (requires --grid)
+      --grid-layout NxM       explicit grid layout, e.g. 2x3 (requires --grid)
+      --no-sharex             disable synchronized horizontal pan/zoom in grid view
+      --no-sharey             disable synchronized vertical pan/zoom in grid view
   -h, --help                  show this message and exit
 
   navigation modes (switch with :mode)
@@ -170,6 +177,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--axis-v", metavar="NAME", default=None)
     p.add_argument("--squeeze", action="store_true", default=False)
     p.add_argument("--name", metavar="NAME", default=None)
+
+    g = p.add_argument_group("grid view")
+    g.add_argument("--grid", metavar="AXIS", default=None)
+    g.add_argument("--grid-values", metavar="VAL", nargs="+", default=None)
+    g.add_argument("--grid-layout", metavar="NxM", default=None)
+    g.add_argument("--no-sharex", action="store_true", default=False)
+    g.add_argument("--no-sharey", action="store_true", default=False)
+
     p.add_argument("-h", "--help", action=_HelpAction)
     return p.parse_args()
 
@@ -372,6 +387,25 @@ def main():
         if name and name not in axis_names:
             print(f"Warning: {flag} {name!r} not found in axes {axis_names}", file=sys.stderr)
 
+    grid_layout: tuple[int, int] | None = None
+    if args.grid_layout:
+        import re as _re
+        m = _re.match(r'^(\d+)x(\d+)$', args.grid_layout, _re.IGNORECASE)
+        if not m:
+            print(f"Warning: --grid-layout {args.grid_layout!r} is not a valid NxM layout, ignoring",
+                  file=sys.stderr)
+        else:
+            grid_layout = (int(m.group(1)), int(m.group(2)))
+
+    if args.grid and args.grid not in axis_names:
+        print(f"Warning: --grid {args.grid!r} not found in axes {axis_names}", file=sys.stderr)
+
+    if args.grid_values and not args.grid:
+        print("Warning: --grid-values has no effect without --grid", file=sys.stderr)
+
+    if args.grid_layout and not args.grid:
+        print("Warning: --grid-layout has no effect without --grid", file=sys.stderr)
+
     window = MainWindow(
         config, pixmaps,
         watch=not args.no_watch,
@@ -384,6 +418,11 @@ def main():
         session_name=args.name,
         seek_greedy=settings.seek_greedy,
         keybindings=settings.keybindings,
+        grid=args.grid,
+        grid_values=args.grid_values,
+        grid_layout=grid_layout,
+        grid_sharex=not args.no_sharex,
+        grid_sharey=not args.no_sharey,
     )
     window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()

@@ -129,6 +129,14 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:axis-v NAME` | Lock `↑`/`↓` to a named axis |
 | `:axis-auto` | Restore dynamic axis-to-arrow assignment |
 | `:swap-axes` | Swap the `←`/`→` and `↑`/`↓` axis bindings |
+| `:grid [AXIS]` | Expand an axis into a tiled grid of independent viewports (defaults to the active axis) |
+| `:grid AXIS VAL …` | Same, but show only the listed values |
+| `:grid AXIS NxM` | Same, with an explicit layout (e.g. `:grid sensor 2x2`) |
+| `:grid AXIS VAL … NxM` | Values and explicit layout combined |
+| `:grid-layout NxM` | Change the layout of the current grid without exiting (e.g. `:grid-layout 1x3`) |
+| `:ungrid` | Return to single-image view |
+| `:grid-sharex [on\|off]` | Toggle or set synchronized horizontal pan/zoom across cells (default: on) |
+| `:grid-sharey [on\|off]` | Toggle or set synchronized vertical pan/zoom across cells (default: on) |
 | `:reload` | Re-detect axes and reload images from the current source |
 | `:copy-path` | Copy the current image's file path to the clipboard |
 | `:copy-image` | Copy the current image to the clipboard |
@@ -144,6 +152,42 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 `:pattern` accepts the same forms as the CLI `PATH` argument: a local template with `{placeholders}`, a local directory, a YAML config file, or a remote SSH path. The argument is pre-filled with the current template so you can edit it in place. A progress dialog blocks the window while images are loaded or downloaded.
 
 Free-text arguments (`:pattern`, `:write`) support full cursor editing: `←`/`→` move the caret, `Home`/`End` jump to the ends, `Delete` removes the character at the caret. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session.
+
+---
+
+## Grid view
+
+Grid view tiles all (or a subset of) values from one axis into a grid of independent viewports, letting you compare them side by side without flipping.
+
+```
+:grid sensor              # show all sensor values in a grid
+:grid sensor SMAP SMOS    # show only SMAP and SMOS
+:grid sensor 2x2          # explicit 2×2 layout
+:grid sensor SMAP SMOS 1x2
+:ungrid                   # back to single-image view
+```
+
+The layout is chosen automatically to best match the viewport's aspect ratio given the image dimensions; use `NxM` to override.
+
+**Navigation in grid mode** works the same as normal: arrow keys and letter keys advance all other axes simultaneously — every cell updates together.
+
+**Pan and zoom** are synchronized across all cells by default. Each cell is an independent `QGraphicsView`, so you can also pan/drag within a single cell independently when sync is off.
+
+```
+:grid-sharex off    # allow independent horizontal pan/zoom per cell
+:grid-sharey off    # allow independent vertical pan/zoom per cell
+```
+
+**CLI flags** — open directly in grid view:
+
+```bash
+juxt "plots/{sensor}_{date}.png" --grid sensor
+juxt "plots/{sensor}_{date}.png" --grid sensor --grid-values SMAP SMOS
+juxt "plots/{sensor}_{date}.png" --grid sensor --grid-layout 1x3
+juxt "plots/{sensor}_{date}.png" --grid sensor --no-sharex --no-sharey
+```
+
+The status bar shows the active grid axis in the mode indicator, e.g. `[tap  grid:sensor]`.
 
 ---
 

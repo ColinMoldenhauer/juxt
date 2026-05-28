@@ -15,10 +15,13 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
+    QGridLayout,
     QLabel,
     QMainWindow,
     QSizePolicy,
+    QStackedWidget,
     QTextEdit,
+    QWidget,
 )
 
 from .config import Config
@@ -139,6 +142,10 @@ _COMMANDS = [
     "fit-height",
     "fit-width",
     "fullscreen",
+    "grid",
+    "grid-layout",
+    "grid-sharex",
+    "grid-sharey",
     "info",
     "mode",
     "pattern",
@@ -147,6 +154,7 @@ _COMMANDS = [
     "remove-axis",
     "settings",
     "remove-value",
+    "ungrid",
     "watch",
     "write",
     "swap-axes",
@@ -166,6 +174,10 @@ _CMD_ARGS: dict[str, list[str]] = {
     "axis-h": [],
     "axis-v": [],
     "change-key": [],
+    "grid": [],
+    "grid-layout": [],
+    "grid-sharex": ["on", "off"],
+    "grid-sharey": ["on", "off"],
     "mode": ["tap", "seek", "pin"],
     "pattern": [],  # free-text path / template
     "remove-axis": [],
@@ -181,29 +193,34 @@ _FREE_TEXT_ARGS = {"change-key", "pattern", "remove-axis", "remove-value", "writ
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 _COMMAND_HELP: dict[str, str] = {
-    "axis-auto":   "restore dynamic axis-to-arrow assignment",
-    "change-key":  "assign a key letter to an axis  (e.g. change-key sensor x)",
-    "copy-image":  "copy current image to clipboard",
-    "copy-path":   "copy current image file path to clipboard",
-    "axis-h":      "lock ←/→ to a named axis",
-    "axis-v":      "lock ↑/↓ to a named axis",
-    "fit":         "fit image to window",
-    "fit-height":  "fit image height to viewport",
-    "fit-width":   "fit image width to viewport",
-    "fullscreen":  "toggle fullscreen",
-    "info":        "toggle the info sidebar",
-    "mode":        "switch navigation mode  (tap / seek / pin)",
-    "pattern":     "change the template / source path without restarting",
-    "quit":        "quit juxt",
-    "reload":      "re-detect axes and reload images",
-    "settings":    "open ~/.juxt/settings.yaml in the default editor",
-    "remove-axis": "remove an axis (collapses to its current value)",
+    "axis-auto":    "restore dynamic axis-to-arrow assignment",
+    "change-key":   "assign a key letter to an axis  (e.g. change-key sensor x)",
+    "copy-image":   "copy current image to clipboard",
+    "copy-path":    "copy current image file path to clipboard",
+    "axis-h":       "lock ←/→ to a named axis",
+    "axis-v":       "lock ↑/↓ to a named axis",
+    "fit":          "fit image to window",
+    "fit-height":   "fit image height to viewport",
+    "fit-width":    "fit image width to viewport",
+    "fullscreen":   "toggle fullscreen",
+    "grid":         "expand an axis into a tiled grid  (e.g. grid sensor  /  grid sensor SMAP SMOS  /  grid sensor 2x2)",
+    "grid-layout":  "change the grid layout without exiting  (e.g. grid-layout 2x3)",
+    "grid-sharex":  "toggle or set synchronized horizontal pan/zoom  (on / off)",
+    "grid-sharey":  "toggle or set synchronized vertical pan/zoom  (on / off)",
+    "info":         "toggle the info sidebar",
+    "mode":         "switch navigation mode  (tap / seek / pin)",
+    "pattern":      "change the template / source path without restarting",
+    "quit":         "quit juxt",
+    "reload":       "re-detect axes and reload images",
+    "settings":     "open ~/.juxt/settings.yaml in the default editor",
+    "remove-axis":  "remove an axis (collapses to its current value)",
     "remove-value": "remove a value from an axis  (e.g. remove-value sensor SMAP)",
-    "write":       "write current config to a YAML file",
-    "swap-axes":   "swap the ←/→ and ↑/↓ axis bindings",
-    "switch-last": "toggle between current and previous position",
-    "watch":       "enable / disable / configure file watching",
-    "zoom":        "set zoom level  (e.g. zoom 150)",
+    "ungrid":       "return to single-image view",
+    "write":        "write current config to a YAML file",
+    "swap-axes":    "swap the ←/→ and ↑/↓ axis bindings",
+    "switch-last":  "toggle between current and previous position",
+    "watch":        "enable / disable / configure file watching",
+    "zoom":         "set zoom level  (e.g. zoom 150)",
 }
 
 
@@ -277,11 +294,228 @@ def _window_title(config: "Config", session_name: str | None = None) -> str:
     return f"juxt | {name}"
 
 
+class _CellView(QGraphicsView):
+    """Single-image viewport used inside GridWidget."""
+
+    zoomed = Signal(object)  # emits self.transform() after a wheel-zoom
+
+    def __init__(self, label: str, parent=None):
+        scene = QGraphicsScene()
+        super().__init__(scene, parent)
+        self._scene = scene
+        self._item = QGraphicsPixmapItem()
+        self._item.setTransformationMode(Qt.SmoothTransformation)
+        scene.addItem(self._item)
+        self._fit: Literal["image", "height", "width"] | None = None
+        self._label_text = label
+
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setBackgroundBrush(QColor(25, 25, 25))
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+
+    def set_pixmap(self, pm: QPixmap):
+        self._item.setPixmap(pm)
+        self._scene.setSceneRect(QRectF(pm.rect()))
+        if self._fit is not None:
+            getattr(self, f"fit_{self._fit}")()
+
+    def fit_image(self):
+        self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        self._fit = "image"
+
+    def fit_height(self):
+        pm = self._item.pixmap()
+        if pm.isNull():
+            return
+        self.resetTransform()
+        self.scale(self.viewport().height() / pm.height(),
+                   self.viewport().height() / pm.height())
+        self.centerOn(self._scene.sceneRect().center())
+        self._fit = "height"
+
+    def fit_width(self):
+        pm = self._item.pixmap()
+        if pm.isNull():
+            return
+        self.resetTransform()
+        self.scale(self.viewport().width() / pm.width(),
+                   self.viewport().width() / pm.width())
+        self.centerOn(self._scene.sceneRect().center())
+        self._fit = "width"
+
+    def set_zoom(self, pct: float):
+        self._fit = None
+        self.resetTransform()
+        self.scale(pct / 100.0, pct / 100.0)
+
+    def reset_zoom(self):
+        self._fit = None
+        self.resetTransform()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            factor = 1.15 ** (event.angleDelta().y() / 120)
+            self.scale(factor, factor)
+            self._fit = None
+            self.zoomed.emit(self.transform())
+        else:
+            super().wheelEvent(event)
+
+    def drawForeground(self, painter: QPainter, _rect):
+        if not self._label_text:
+            return
+        painter.save()
+        painter.resetTransform()   # switch to viewport pixel coordinates
+        fm = painter.fontMetrics()
+        pad_x, pad_y, margin = 5, 2, 4
+        text_w = fm.horizontalAdvance(self._label_text)
+        text_h = fm.height()
+        bg = QRectF(margin, margin, text_w + 2 * pad_x, text_h + 2 * pad_y)
+        painter.fillRect(bg, QColor(0, 0, 0, 160))
+        painter.setPen(QColor(224, 224, 224))
+        painter.drawText(
+            int(bg.x() + pad_x),
+            int(bg.y() + pad_y + text_h - fm.descent()),
+            self._label_text,
+        )
+        painter.restore()
+
+    def mouseDoubleClickEvent(self, _event):
+        self.fit_image()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._fit is not None:
+            getattr(self, f"fit_{self._fit}")()
+
+
+class GridWidget(QWidget):
+    """Grid of independent image viewports with optional scroll/zoom sync."""
+
+    def __init__(
+        self,
+        image_view: "ImageView",
+        rows: int,
+        cols: int,
+        labels: list[str],
+        sharex: bool,
+        sharey: bool,
+    ):
+        super().__init__()
+        self._image_view = image_view
+        self._sharex = sharex
+        self._sharey = sharey
+        self._syncing = False
+
+        layout = QGridLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._cells: list[_CellView] = []
+
+        for i, label in enumerate(labels):
+            row, col = i // cols, i % cols
+            cell = _CellView(label)
+            layout.addWidget(cell, row, col)
+            self._cells.append(cell)
+            cell.horizontalScrollBar().valueChanged.connect(
+                lambda val, c=cell: self._on_hscroll(val, c)
+            )
+            cell.verticalScrollBar().valueChanged.connect(
+                lambda val, c=cell: self._on_vscroll(val, c)
+            )
+            cell.zoomed.connect(lambda t, c=cell: self._on_zoom(t, c))
+
+    # ── sync handlers ─────────────────────────────────────────────────────────
+
+    def _on_hscroll(self, val: int, source: _CellView):
+        if self._syncing or not self._sharex:
+            return
+        self._syncing = True
+        for cell in self._cells:
+            if cell is not source:
+                cell.horizontalScrollBar().setValue(val)
+        self._syncing = False
+
+    def _on_vscroll(self, val: int, source: _CellView):
+        if self._syncing or not self._sharey:
+            return
+        self._syncing = True
+        for cell in self._cells:
+            if cell is not source:
+                cell.verticalScrollBar().setValue(val)
+        self._syncing = False
+
+    def _on_zoom(self, transform, source: _CellView):
+        if self._syncing or (not self._sharex and not self._sharey):
+            return
+        self._syncing = True
+        h = source.horizontalScrollBar().value()
+        v = source.verticalScrollBar().value()
+        for cell in self._cells:
+            if cell is not source:
+                cell.setTransform(transform)
+                if self._sharex:
+                    cell.horizontalScrollBar().setValue(h)
+                if self._sharey:
+                    cell.verticalScrollBar().setValue(v)
+        self._syncing = False
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def update_cells(self, base_pos: list, axis_idx: int, indices: list[int], pixmaps: dict):
+        for grid_i, vi in enumerate(indices):
+            if grid_i >= len(self._cells):
+                break
+            key = list(base_pos)
+            key[axis_idx] = vi
+            pm = pixmaps.get(tuple(key))
+            if pm and not pm.isNull():
+                self._cells[grid_i].set_pixmap(pm)
+
+    def fit_image(self):
+        for cell in self._cells:
+            cell.fit_image()
+
+    def fit_height(self):
+        for cell in self._cells:
+            cell.fit_height()
+
+    def fit_width(self):
+        for cell in self._cells:
+            cell.fit_width()
+
+    def set_zoom(self, pct: float):
+        for cell in self._cells:
+            cell.set_zoom(pct)
+
+    def reset_zoom(self):
+        for cell in self._cells:
+            cell.reset_zoom()
+
+    def set_sharex(self, val: bool):
+        self._sharex = val
+
+    def set_sharey(self, val: bool):
+        self._sharey = val
+
+    def keyPressEvent(self, event):
+        self._image_view.keyPressEvent(event)
+
+    def mouseDoubleClickEvent(self, _event):
+        self.fit_image()
+
+
 class ImageView(QGraphicsView):
     state_changed = Signal()
     toggle_bar = Signal()
     toggle_info = Signal()
     config_changed = Signal()           # emitted after reload/pattern successfully replaces config
+    grid_mode_changed = Signal(object)  # emits GridWidget on enter, None on exit
     _poll_result = Signal(object)       # emitted from poll worker; carries list or Exception
     _reload_result = Signal(object)     # emitted from reload worker; carries tuple or Exception
     _pattern_result = Signal(object)    # emitted from pattern worker; carries dict or Exception
@@ -301,6 +535,11 @@ class ImageView(QGraphicsView):
         axis_v: str | None = None,
         seek_greedy: bool = True,
         keybindings: dict[str, str] | None = None,
+        grid: str | None = None,
+        grid_values: list[str] | None = None,
+        grid_layout: tuple[int, int] | None = None,
+        grid_sharex: bool = True,
+        grid_sharey: bool = True,
     ):
         self._scene = QGraphicsScene()
         super().__init__(self._scene, parent)
@@ -390,7 +629,25 @@ class ImageView(QGraphicsView):
         self._item.setTransformationMode(Qt.SmoothTransformation)
         self._scene.addItem(self._item)
 
+        # Grid-view state
+        self._grid_axis: int | None = None
+        self._grid_filter: list[int] | None = None   # None = all values
+        self._grid_layout: tuple[int, int] | None = None  # explicit (rows, cols)
+        self._grid_sharex: bool = grid_sharex
+        self._grid_sharey: bool = grid_sharey
+        self._grid_widget: GridWidget | None = None
+
         self._refresh()
+
+        if grid and grid in self.axis_names:
+            axis_idx = self.axis_names.index(grid)
+            filter_indices: list[int] | None = None
+            if grid_values:
+                vals = self.axis_values[axis_idx]
+                filter_indices = [i for i, v in enumerate(vals) if v in grid_values] or None
+            log.debug("startup grid: axis=%r filter=%r layout=%r", grid, filter_indices, grid_layout)
+            # Defer until the event loop starts so MainWindow has connected grid_mode_changed
+            QTimer.singleShot(0, lambda: self._enter_grid(axis_idx, filter_indices, grid_layout))
 
         if watch:
             if config.remote is None:
@@ -404,12 +661,74 @@ class ImageView(QGraphicsView):
         return tuple(self.pos)
 
     def _refresh(self):
+        if self._grid_axis is not None:
+            self._refresh_grid()
+            return
         pm = self.pixmaps.get(self._key())
         if pm:
             self._item.setPixmap(pm)
             self._scene.setSceneRect(QRectF(pm.rect()))
         self.viewport().update()
         self.state_changed.emit()
+
+    def _refresh_grid(self):
+        if self._grid_widget is None:
+            log.debug("_refresh_grid: no grid widget, skipping")
+            return
+        indices = (self._grid_filter if self._grid_filter is not None
+                   else list(range(len(self.axis_values[self._grid_axis]))))
+        log.debug("_refresh_grid: axis=%d indices=%s pos=%s", self._grid_axis, indices, self.pos)
+        self._grid_widget.update_cells(self.pos, self._grid_axis, indices, self.pixmaps)
+        self.state_changed.emit()
+
+    def _enter_grid(self, axis_idx: int, filter_indices: list[int] | None, layout: tuple[int, int] | None):
+        import math
+        self._grid_axis = axis_idx
+        self._grid_filter = filter_indices
+        self._grid_layout = layout
+
+        all_vals = self.axis_values[axis_idx]
+        indices = filter_indices if filter_indices is not None else list(range(len(all_vals)))
+        n = len(indices)
+        log.debug("_enter_grid: axis=%r n=%d filter=%r layout=%r", self.axis_names[axis_idx], n, filter_indices, layout)
+
+        # Sample image dimensions for aspect-ratio-aware auto layout
+        img_w, img_h = 800, 600
+        for vi in indices:
+            key = list(self.pos)
+            key[axis_idx] = vi
+            pm = self.pixmaps.get(tuple(key))
+            if pm and not pm.isNull():
+                img_w, img_h = pm.width(), pm.height()
+                break
+        log.debug("_enter_grid: image size %dx%d", img_w, img_h)
+
+        if layout is not None:
+            rows, cols = layout
+        else:
+            vp = self.viewport()
+            vp_ar = vp.width() / max(1, vp.height())
+            cols, rows = min(
+                ((c, math.ceil(n / c)) for c in range(1, n + 1)),
+                key=lambda cr: abs((cr[0] * img_w) / max(1, cr[1] * img_h) - vp_ar),
+            )
+        log.info("grid: axis=%r  %d cells  layout=%dx%d  sharex=%s  sharey=%s",
+                 self.axis_names[axis_idx], n, rows, cols, self._grid_sharex, self._grid_sharey)
+
+        labels = [all_vals[vi] for vi in indices]
+        gw = GridWidget(self, rows, cols, labels, self._grid_sharex, self._grid_sharey)
+        self._grid_widget = gw
+        self._refresh_grid()
+        self.grid_mode_changed.emit(gw)
+
+    def _exit_grid(self):
+        log.info("grid: exiting grid mode (was axis=%r)", self.axis_names[self._grid_axis] if self._grid_axis is not None else None)
+        self._grid_axis = None
+        self._grid_filter = None
+        self._grid_layout = None
+        self._grid_widget = None
+        self.grid_mode_changed.emit(None)
+        self._refresh()
 
     def _h_axis(self) -> int:
         return self._locked_h if self._locked_h is not None else self.focus_stack[0]
@@ -820,6 +1139,80 @@ class ImageView(QGraphicsView):
             if self.prev is not None:
                 self.pos, self.prev = self.prev, list(self.pos)
                 self._refresh()
+        elif verb == "grid":
+            raw_args = parts[1:] if len(parts) > 1 else []
+
+            # Optional first token: axis name (case-insensitive)
+            axis_idx = self._h_axis()
+            if raw_args and raw_args[0].lower() in [n.lower() for n in self.axis_names]:
+                axis_idx = next(i for i, n in enumerate(self.axis_names) if n.lower() == raw_args[0].lower())
+                raw_args = raw_args[1:]
+
+            # Optional last token: NxM layout override
+            layout: tuple[int, int] | None = None
+            if raw_args and _re.match(r'^\d+x\d+$', raw_args[-1], _re.IGNORECASE):
+                nr, nc = map(int, raw_args[-1].lower().split('x'))
+                if nr < 1 or nc < 1:
+                    self._flash("layout rows and cols must be ≥ 1")
+                    return
+                layout = (nr, nc)
+                raw_args = raw_args[:-1]
+
+            # Remaining tokens: value subset (original-case match, case-insensitive)
+            filter_indices: list[int] | None = None
+            if raw_args:
+                all_vals = self.axis_values[axis_idx]
+                filter_indices = []
+                for v in raw_args:
+                    match = next((i for i, val in enumerate(all_vals) if val.lower() == v.lower()), None)
+                    if match is None:
+                        self._flash(f"unknown value: {v!r}")
+                        return
+                    if match not in filter_indices:
+                        filter_indices.append(match)
+
+            self._enter_grid(axis_idx, filter_indices, layout)
+        elif verb == "ungrid":
+            if self._grid_axis is not None:
+                self._exit_grid()
+        elif verb == "grid-layout":
+            if not args:
+                self._flash("usage: grid-layout NxM  (e.g. grid-layout 2x3)")
+                return
+            m = _re.match(r'^(\d+)x(\d+)$', args[0], _re.IGNORECASE)
+            if not m:
+                self._flash(f"invalid layout: {args[0]!r}  (expected NxM)")
+                return
+            nr, nc = int(m.group(1)), int(m.group(2))
+            if nr < 1 or nc < 1:
+                self._flash("rows and cols must be ≥ 1")
+                return
+            if self._grid_axis is None:
+                self._flash("not in grid mode")
+                return
+            self._enter_grid(self._grid_axis, self._grid_filter, (nr, nc))
+        elif verb == "grid-sharex":
+            if not args:
+                self._grid_sharex = not self._grid_sharex
+            elif args[0] == "on":
+                self._grid_sharex = True
+            elif args[0] == "off":
+                self._grid_sharex = False
+            if self._grid_widget is not None:
+                self._grid_widget.set_sharex(self._grid_sharex)
+            self._flash(f"sharex {'on' if self._grid_sharex else 'off'}")
+            self.state_changed.emit()
+        elif verb == "grid-sharey":
+            if not args:
+                self._grid_sharey = not self._grid_sharey
+            elif args[0] == "on":
+                self._grid_sharey = True
+            elif args[0] == "off":
+                self._grid_sharey = False
+            if self._grid_widget is not None:
+                self._grid_widget.set_sharey(self._grid_sharey)
+            self._flash(f"sharey {'on' if self._grid_sharey else 'off'}")
+            self.state_changed.emit()
         elif verb == "info":
             self.toggle_info.emit()
         elif verb == "remove-axis":
@@ -1202,6 +1595,10 @@ class ImageView(QGraphicsView):
         old_locked_h_name = old_names[self._locked_h] if self._locked_h is not None and self._locked_h < len(old_names) else None
         old_locked_v_name = old_names[self._locked_v] if self._locked_v is not None and self._locked_v < len(old_names) else None
 
+        # Exit grid mode before replacing axes (axis indices will shift)
+        if self._grid_axis is not None:
+            self._exit_grid()
+
         self.config = new_config
         self.pixmaps = new_pixmaps
         self.axis_names = new_axis_names
@@ -1248,6 +1645,8 @@ class ImageView(QGraphicsView):
                 new_pos.append(0)
         old_h_name = old_names[self._locked_h] if self._locked_h is not None and self._locked_h < len(old_names) else None
         old_v_name = old_names[self._locked_v] if self._locked_v is not None and self._locked_v < len(old_names) else None
+        if self._grid_axis is not None:
+            self._exit_grid()
         self.config = new_config
         self.pixmaps = new_pixmaps
         self.axis_names = new_axis_names
@@ -1681,6 +2080,8 @@ class ImageView(QGraphicsView):
         self._remote_mtimes = new_mtimes
 
         # Full viewer state reset (axes may be completely different)
+        if self._grid_axis is not None:
+            self._exit_grid()
         self.config = new_config
         self.pixmaps = new_pixmaps
         self.axis_names = list(new_config.axes.keys())
@@ -1707,10 +2108,16 @@ class ImageView(QGraphicsView):
     # ── public ────────────────────────────────────────────────────────────────
 
     def fit_image(self):
+        if self._grid_widget is not None:
+            self._grid_widget.fit_image()
+            return
         self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
         self._fit = "image"
 
     def fit_height(self):
+        if self._grid_widget is not None:
+            self._grid_widget.fit_height()
+            return
         pm = self._item.pixmap()
         if pm.isNull():
             return
@@ -1721,6 +2128,9 @@ class ImageView(QGraphicsView):
         self._fit = "height"
 
     def fit_width(self):
+        if self._grid_widget is not None:
+            self._grid_widget.fit_width()
+            return
         pm = self._item.pixmap()
         if pm.isNull():
             return
@@ -1731,10 +2141,16 @@ class ImageView(QGraphicsView):
         self._fit = "width"
 
     def reset_zoom(self):
+        if self._grid_widget is not None:
+            self._grid_widget.reset_zoom()
+            return
         self._fit = None
         self.resetTransform()
 
     def set_zoom(self, pct: float):
+        if self._grid_widget is not None:
+            self._grid_widget.set_zoom(pct)
+            return
         self._fit = None
         self.resetTransform()
         self.scale(pct / 100.0, pct / 100.0)
@@ -1947,6 +2363,11 @@ class MainWindow(QMainWindow):
         session_name: str | None = None,
         seek_greedy: bool = True,
         keybindings: dict[str, str] | None = None,
+        grid: str | None = None,
+        grid_values: list[str] | None = None,
+        grid_layout: tuple[int, int] | None = None,
+        grid_sharex: bool = True,
+        grid_sharey: bool = True,
     ):
         super().__init__()
         self._session_name = session_name
@@ -1962,8 +2383,15 @@ class MainWindow(QMainWindow):
             axis_v=axis_v,
             seek_greedy=seek_greedy,
             keybindings=keybindings,
+            grid=grid,
+            grid_values=grid_values,
+            grid_layout=grid_layout,
+            grid_sharex=grid_sharex,
+            grid_sharey=grid_sharey,
         )
-        self.setCentralWidget(self.view)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self.view)
+        self.setCentralWidget(self._stack)
 
         bar = self.statusBar()
         bar.setStyleSheet(
@@ -2008,6 +2436,7 @@ class MainWindow(QMainWindow):
         self.view.config_changed.connect(
             lambda: self.setWindowTitle(_window_title(self.view.config, self._session_name))
         )
+        self.view.grid_mode_changed.connect(self._on_grid_mode_changed)
 
         self._bar_auto_shown = False
         self._bar_hide_timer = QTimer(self)
@@ -2061,7 +2490,8 @@ class MainWindow(QMainWindow):
             self._status_label.setText(v._flash_msg)
             return
 
-        mode_str = f"[{v.nav_mode.label}]{'  ●' if v._watching else ''}"
+        grid_str = f"  grid:{v.axis_names[v._grid_axis]}" if v._grid_axis is not None else ""
+        mode_str = f"[{v.nav_mode.label}{grid_str}]{'  ●' if v._watching else ''}"
 
         if v._cmd is not None:
             candidates = v._cmd_candidates()
@@ -2178,6 +2608,21 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         if not self.view._initial_fit_done:
             self.view._initial_fit_done = True
+            QTimer.singleShot(0, self.view.fit_image)
+
+    def _on_grid_mode_changed(self, grid_widget):
+        if grid_widget is not None:
+            self._stack.addWidget(grid_widget)
+            self._stack.setCurrentWidget(grid_widget)
+            grid_widget.setFocus()
+            QTimer.singleShot(0, grid_widget.fit_image)
+        else:
+            old = self._stack.widget(1) if self._stack.count() > 1 else None
+            self._stack.setCurrentWidget(self.view)
+            if old is not None:
+                self._stack.removeWidget(old)
+                old.deleteLater()
+            self.view.setFocus()
             QTimer.singleShot(0, self.view.fit_image)
 
     def _toggle_status_bar(self):

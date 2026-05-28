@@ -126,7 +126,12 @@ Press `:` to open the command bar (vim-style). Tab-completion narrows candidates
 | `:fit height` / `:fit width` | fit to height or width |
 | `:zoom N` | set zoom to N% |
 | `:fullscreen` | toggle fullscreen |
-| `:mode twin\|multi\|case` | switch navigation mode |
+| `:mode tap\|seek\|pin` | switch navigation mode |
+| `:grid [AXIS]` | tile an axis into a grid of viewports |
+| `:grid AXIS VAL …` | grid with a value subset |
+| `:grid-layout NxM` | change grid layout without exiting |
+| `:ungrid` | return to single-image view |
+| `:grid-sharex` / `:grid-sharey` | toggle synchronized pan/zoom |
 
 ## Controls
 
