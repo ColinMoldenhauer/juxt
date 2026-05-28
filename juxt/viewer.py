@@ -7,7 +7,7 @@ import threading
 from enum import IntEnum
 from typing import Literal
 
-from PySide6.QtCore import Qt, QFileSystemWatcher, QRectF, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -617,6 +617,7 @@ class ImageView(QGraphicsView):
         self._cmd: dict | None = None
 
         self.setFocusPolicy(Qt.StrongFocus)
+        QApplication.instance().installEventFilter(self)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -870,8 +871,30 @@ class ImageView(QGraphicsView):
             pool = _COMMANDS
         else:
             verb = self._cmd["verb"]
-            pool = list(self.axis_names) if verb in ("axis-h", "axis-v", "remove-axis") else _CMD_ARGS.get(verb, [])
+            if verb in ("axis-h", "axis-v", "remove-axis"):
+                pool = list(self.axis_names)
+            elif verb == "grid":
+                return self._grid_cmd_candidates(self._cmd["query"])
+            else:
+                pool = _CMD_ARGS.get(verb, [])
         return [c for c in pool if c.startswith(q)] if q else list(pool)
+
+    def _grid_cmd_candidates(self, query: str) -> list[str]:
+        """Multi-token candidate list for the :grid arg phase (axis [val …] [NxM])."""
+        if " " not in query:
+            return [n for n in self.axis_names if n.lower().startswith(query.lower())] if query else list(self.axis_names)
+        tokens = query.split(" ")
+        axis_name = tokens[0]
+        axis_idx = next((i for i, n in enumerate(self.axis_names) if n.lower() == axis_name.lower()), None)
+        if axis_idx is None:
+            return []
+        all_vals = [str(v) for v in self.axis_values[axis_idx]]
+        partial = "" if query.endswith(" ") else tokens[-1]
+        used = set(t.lower() for t in (tokens[1:-1] if not query.endswith(" ") else tokens[1:]) if t)
+        remaining = [v for v in all_vals if v.lower() not in used]
+        if partial:
+            remaining = [v for v in remaining if v.lower().startswith(partial.lower())]
+        return remaining
 
     def _cmd_handle_key(self, event: QKeyEvent) -> bool:
         """Handle input while command mode is active. Returns True if consumed."""
@@ -921,8 +944,24 @@ class ImageView(QGraphicsView):
             return True
 
         if k == Qt.Key_Tab:
+            log.debug("_cmd_handle_key: Tab  is_free=%s cmd=%s", is_free, self._cmd)
             if is_free:
                 self._complete_path()
+            elif self._cmd.get("phase") == "arg" and self._cmd.get("verb") == "grid":
+                q = self._cmd["query"]
+                candidates = self._cmd_candidates()
+                cur = min(self._cmd["cursor"], len(candidates) - 1) if candidates else -1
+                log.debug("  grid tab: q=%r candidates=%s cur=%d", q, candidates, cur)
+                if cur >= 0:
+                    if " " not in q:
+                        self._cmd["query"] = candidates[cur] + " "
+                    elif q.endswith(" "):
+                        self._cmd["query"] = q + candidates[cur] + " "
+                    else:
+                        prefix = q.rsplit(" ", 1)[0]
+                        self._cmd["query"] = prefix + " " + candidates[cur] + " "
+                    self._cmd["cursor"] = 0
+                    self.state_changed.emit()
             return True
 
         if k == Qt.Key_Right:
@@ -987,11 +1026,20 @@ class ImageView(QGraphicsView):
                     self.state_changed.emit()
             else:
                 verb = self._cmd["verb"]
-                arg = (
-                    candidates[min(self._cmd["cursor"], len(candidates) - 1)]
-                    if candidates
-                    else self._cmd["query"]
-                )
+                q = self._cmd["query"]
+                cur = min(self._cmd["cursor"], len(candidates) - 1) if candidates else -1
+                if verb == "grid" and " " in q:
+                    # multi-token: preserve already-typed tokens, complete last partial
+                    if q.endswith(" "):
+                        prefix = q.rstrip()
+                        selected = candidates[cur] if cur >= 0 else ""
+                        arg = f"{prefix} {selected}".strip() if selected else prefix
+                    else:
+                        prefix, partial = q.rsplit(" ", 1)
+                        selected = candidates[cur] if cur >= 0 else partial
+                        arg = f"{prefix} {selected}".strip()
+                else:
+                    arg = candidates[cur] if cur >= 0 else q
                 self._cmd = None
                 self._cmd_execute(f"{verb} {arg}" if arg else verb)
                 self.state_changed.emit()
@@ -2156,6 +2204,19 @@ class ImageView(QGraphicsView):
         self.scale(pct / 100.0, pct / 100.0)
 
     # ── Qt overrides ──────────────────────────────────────────────────────────
+
+    def eventFilter(self, obj, event):
+        # Tab is consumed by Qt's focus traversal before keyPressEvent sees it.
+        # Intercept it at the application level so it reaches _cmd_handle_key
+        # regardless of which widget currently holds focus (e.g. a _CellView in grid mode).
+        # Only intercept during command mode — normal Tab behaviour is preserved elsewhere.
+        if (event.type() == QEvent.Type.KeyPress
+                and event.key() == Qt.Key_Tab
+                and self._cmd is not None):
+            log.debug("eventFilter: Tab intercepted (cmd=%s)", self._cmd)
+            self._cmd_handle_key(event)
+            return True
+        return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event: QKeyEvent):
         k = event.key()

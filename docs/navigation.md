@@ -169,6 +169,22 @@ Grid view tiles all (or a subset of) values from one axis into a grid of indepen
 
 The layout is chosen automatically to best match the viewport's aspect ratio given the image dimensions; use `NxM` to override.
 
+### :grid — interactive completion
+
+`:grid` supports interactive argument completion. After pressing `Enter` to confirm the verb, the status bar shows axis name candidates:
+
+```
+:grid ▌  →  [sensor]  date  overpass  level
+```
+
+Use `←`/`→` to cycle candidates or type a prefix to narrow them. Press **`Tab`** to accept the highlighted axis and move to value selection:
+
+```
+:grid sensor ▌  →  [SMAP]  SMOS  ASCAT
+```
+
+Press **`Tab`** again on each value to append it to the filter list. Press **`Enter`** to execute with the current selection — or just type the arguments manually if you know them.
+
 **Navigation in grid mode** works the same as normal: arrow keys and letter keys advance all other axes simultaneously — every cell updates together.
 
 **Pan and zoom** are synchronized across all cells by default. Each cell is an independent `QGraphicsView`, so you can also pan/drag within a single cell independently when sync is off.
