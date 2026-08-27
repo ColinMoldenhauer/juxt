@@ -61,3 +61,5 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 ![Info sidebar open](assets/screenshots/info-sidebar.png)
 
 Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted.
+
+Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.

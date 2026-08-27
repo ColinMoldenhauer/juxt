@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 
 from juxt.viewer import ImageView, NavMode
 
@@ -270,3 +271,88 @@ class TestFocusStack:
         old_pos = list(image_view.pos)
         qtbot.keyClick(image_view, Qt.Key.Key_Right)
         assert image_view.prev == old_pos
+
+
+# ---------------------------------------------------------------------------
+# Info sidebar: clickable values
+# ---------------------------------------------------------------------------
+
+class TestInfoPanelLinks:
+    def _panel(self, image_view, qtbot):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.value_clicked.connect(image_view.goto_value)
+        panel.refresh(image_view)
+        return panel
+
+    def test_href_roundtrip(self):
+        from juxt.viewer import _parse_value_href, _value_href
+
+        assert _parse_value_href(_value_href(2, 7)) == (2, 7)
+        assert _parse_value_href("https://example.com") is None
+
+    def test_every_value_is_a_link(self, image_view, qtbot):
+        html = self._panel(image_view, qtbot).toHtml()
+        for i, vals in enumerate(image_view.axis_values):
+            for j in range(len(vals)):
+                assert f'href="juxt:value/{i}/{j}"' in html
+
+    def test_click_navigates(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        panel.value_clicked.emit(1, 1)
+        assert image_view.pos == [0, 1]
+
+    def test_click_focuses_axis(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        panel.value_clicked.emit(1, 1)
+        assert image_view.focus_stack[0] == 1
+
+    def test_click_stores_prev(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        old_pos = list(image_view.pos)
+        panel.value_clicked.emit(0, 1)
+        assert image_view.prev == old_pos
+
+    def test_click_on_current_value_keeps_prev(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        panel.value_clicked.emit(0, 0)  # already the current value
+        assert image_view.prev is None
+        assert image_view.pos == [0, 0]
+
+    def test_out_of_range_click_is_ignored(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        panel.value_clicked.emit(0, 99)
+        panel.value_clicked.emit(9, 0)
+        assert image_view.pos == [0, 0]
+
+    def test_current_value_uses_highlight_colour(self, image_view, qtbot):
+        from juxt.viewer import _HL_COLOR
+
+        panel = self._panel(image_view, qtbot)
+        colours = _anchor_colours(panel)
+        cur_hrefs = {
+            f"juxt:value/{i}/{image_view.pos[i]}"
+            for i in range(len(image_view.axis_values))
+        }
+        hl = QColor(_HL_COLOR).name()
+        assert cur_hrefs, "no axes to check"
+        for href, colour in colours.items():
+            expected = hl if href in cur_hrefs else QColor("#ddd").name()
+            assert colour == expected, f"{href}: {colour} != {expected}"
+
+
+def _anchor_colours(panel) -> dict[str, str]:
+    """Map every anchor href in the panel document to its rendered colour."""
+    colours: dict[str, str] = {}
+    block = panel.document().begin()
+    while block.isValid():
+        it = block.begin()
+        while not it.atEnd():
+            fmt = it.fragment().charFormat()
+            if fmt.isAnchor() and fmt.anchorHref():
+                colours[fmt.anchorHref()] = fmt.foreground().color().name()
+            it += 1
+        block = block.next()
+    return colours

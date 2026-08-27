@@ -29,6 +29,26 @@ from .settings import SETTINGS_PATH, load_settings
 
 log = logging.getLogger(__name__)
 
+# Colour used to highlight the current value (info sidebar, status bar).
+_HL_COLOR = "#6af"
+
+# ── info-sidebar links ────────────────────────────────────────────────────────
+
+_VALUE_HREF = "juxt:value/{axis}/{value}"
+_VALUE_HREF_RE = _re.compile(r"^juxt:value/(\d+)/(\d+)$")
+
+
+def _value_href(axis_idx: int, val_idx: int) -> str:
+    """Anchor target encoding one (axis, value) pair for the info sidebar."""
+    return _VALUE_HREF.format(axis=axis_idx, value=val_idx)
+
+
+def _parse_value_href(href: str) -> tuple[int, int] | None:
+    """Inverse of :func:`_value_href`; returns None for foreign hrefs."""
+    m = _VALUE_HREF_RE.match(href)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 # ── key-binding parser ────────────────────────────────────────────────────────
 
 _MOD_MAP: dict[str, int] = {
@@ -751,6 +771,20 @@ class ImageView(QGraphicsView):
         if axis in self.focus_stack:
             self.focus_stack.remove(axis)
         self.focus_stack.insert(0, axis)
+
+    def goto_value(self, axis: int, val_idx: int):
+        """Jump to *val_idx* on *axis* and focus it (info-sidebar clicks)."""
+        if not 0 <= axis < len(self.axis_values):
+            return
+        if not 0 <= val_idx < len(self.axis_values[axis]):
+            return
+        self._focus(axis)
+        self._active_axis = axis
+        self._active_axis_timer.start(1000)
+        if self.pos[axis] != val_idx:
+            self.prev = list(self.pos)
+            self.pos[axis] = val_idx
+        self._refresh()
 
     # ── incremental-search (value picker / multi-select) ─────────────────────
 
@@ -2368,6 +2402,10 @@ class ImageView(QGraphicsView):
 
 
 class InfoPanel(QTextEdit):
+    """Read-only sidebar listing every axis; values are clickable links."""
+
+    value_clicked = Signal(int, int)  # axis index, value index
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
@@ -2378,12 +2416,32 @@ class InfoPanel(QTextEdit):
             "font-family: 'Courier New', monospace; font-size: 9pt; "
             "border: none; padding: 8px; }"
         )
+        # Anchors carry the value links; keep them looking like plain values.
+        self.document().setDefaultStyleSheet(
+            "a { color: #ddd; text-decoration: none; }"
+            f"a.cur {{ color: {_HL_COLOR}; text-decoration: none; }}"
+        )
+        self.viewport().setMouseTracking(True)
 
     def mousePressEvent(self, event):
+        href = self.anchorAt(event.position().toPoint())
         super().mousePressEvent(event)
         w = self.window()
         if hasattr(w, "view"):
             w.view.setFocus()
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        target = _parse_value_href(href)
+        if target is not None:
+            self.value_clicked.emit(*target)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        over_link = _parse_value_href(self.anchorAt(event.position().toPoint()))
+        self.viewport().setCursor(
+            Qt.CursorShape.PointingHandCursor if over_link is not None
+            else Qt.CursorShape.IBeamCursor
+        )
 
     def refresh(self, view: "ImageView"):
         e = _html.escape
@@ -2395,7 +2453,8 @@ class InfoPanel(QTextEdit):
         for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
             cur = view.pos[i]
             val_html = "&nbsp;&nbsp;".join(
-                f'<span style="color:#6af">{e(v)}</span>' if j == cur else e(v)
+                f'<a class="{"cur" if j == cur else "val"}" '
+                f'href="{_value_href(i, j)}">{e(v)}</a>'
                 for j, v in enumerate(vals)
             )
             parts.append(
@@ -2489,6 +2548,7 @@ class MainWindow(QMainWindow):
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._info_dock)
         self._info_dock.hide()
+        self._info_panel.value_clicked.connect(self.view.goto_value)
 
         self.view.state_changed.connect(self._update_status)
         self.view.state_changed.connect(self._refresh_info_panel)
