@@ -39,7 +39,7 @@ Triggered by pressing `:`.
 | # | Element | Description |
 |---|---|---|
 | 1 | **Cursor** | The command being typed, e.g. `:fit▌`. |
-| 2 | **Suggested values** | Prefix-matched command candidates; the selected entry is shown in `[brackets]`. |
+| 2 | **Suggested values** | Prefix-matched command candidates; the selected entry is shown in `[brackets]` and coloured like the highlighted value in the info sidebar. |
 | 3 | **Tooltip** | One-line description of the selected command, right-aligned. |
 
 ### Seek mode
@@ -52,7 +52,7 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 |---|---|---|
 | 1 | **Prompt** | `axis?` while selecting an axis; `<axis-name> ›` while selecting a value on that axis. |
 | 2 | **Cursor** | The query being typed. |
-| 3 | **Candidates** | Matching axes or values; the current selection is shown in `[brackets]`. Automatically confirmed when only one candidate remains (configurable via `seek.greedy` in `~/.juxt/settings.yaml`). |
+| 3 | **Candidates** | Matching axes or values; the current selection is shown in `[brackets]` and coloured like the highlighted value in the info sidebar. Automatically confirmed when only one candidate remains (configurable via `seek.greedy` in `~/.juxt/settings.yaml`). |
 
 ---
 

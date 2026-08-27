@@ -38,6 +38,29 @@ _VALUE_HREF = "juxt:value/{axis}/{value}"
 _VALUE_HREF_RE = _re.compile(r"^juxt:value/(\d+)/(\d+)$")
 
 
+def _sp(text: str) -> str:
+    """Escape *text* for rich text, keeping runs of spaces intact."""
+    return _html.escape(text).replace(" ", "&nbsp;")
+
+
+def _hl(text: str) -> str:
+    """Wrap *text* in the highlight colour used for the current selection."""
+    return f'<span style="color:{_HL_COLOR}">{text}</span>'
+
+
+def _rich(text: str) -> str:
+    """Mark *text* as rich text for _ElidingLabel, even without any tag."""
+    return f"<span>{text}</span>"
+
+
+def _candidate_html(candidates: list[str], cursor: int) -> str:
+    """Render a status-bar candidate list, highlighting the one at *cursor*."""
+    return "&nbsp;&nbsp;".join(
+        _hl(f"[{_sp(c)}]") if i == cursor else _sp(c)
+        for i, c in enumerate(candidates)
+    )
+
+
 def _value_href(axis_idx: int, val_idx: int) -> str:
     """Anchor target encoding one (axis, value) pair for the info sidebar."""
     return _VALUE_HREF.format(axis=axis_idx, value=val_idx)
@@ -2636,15 +2659,16 @@ class MainWindow(QMainWindow):
             elif desc:
                 self._help_label.setText(f"( {desc} )")
             if candidates:
-                cand_str = "  ".join(
-                    f"[{c}]" if i == cursor else c
-                    for i, c in enumerate(candidates)
+                cand_html = _candidate_html(candidates, cursor)
+                self._status_label.setText(
+                    _rich(f"{_sp(prompt)}&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}")
                 )
-                self._status_label.setText(f"{prompt}  →  {cand_str}")
             elif v._cmd["phase"] == "verb" and query:
-                self._status_label.setText(f"{prompt}  (unknown command)")
+                self._status_label.setText(
+                    _rich(f"{_sp(prompt)}&nbsp;&nbsp;(unknown&nbsp;command)")
+                )
             else:
-                self._status_label.setText(prompt)
+                self._status_label.setText(_rich(_sp(prompt)))
             return
 
         if v._sel is not None:
@@ -2657,14 +2681,14 @@ class MainWindow(QMainWindow):
             else:
                 axis_name = v.axis_names[v._sel["axis_idx"]]
                 prompt = f"{axis_name}? {query}▌"
-            if candidates:
-                cand_str = "  ".join(
-                    f"[{c}]" if i == cursor else c
-                    for i, c in enumerate(candidates)
-                )
-            else:
-                cand_str = "(no match)"
-            self._status_label.setText(f"{mode_str}  |  {prompt}  →  {cand_str}")
+            cand_html = (
+                _candidate_html(candidates, cursor) if candidates
+                else _sp("(no match)")
+            )
+            self._status_label.setText(_rich(
+                f"{_sp(mode_str)}&nbsp;&nbsp;|&nbsp;&nbsp;{_sp(prompt)}"
+                f"&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}"
+            ))
             return
 
         h_idx = v._h_axis()
@@ -2679,13 +2703,12 @@ class MainWindow(QMainWindow):
         v_name = v.axis_names[v_idx] if v_idx is not None else "—"
         bind_str = f"→/← {h_name}  ↑/↓ {v_name}"
         sep = "  |  "
-        e = _html.escape
-        sp = lambda s: e(s).replace(" ", "&nbsp;")  # noqa: E731
+        sp = _sp
         sep_html = "&nbsp;&nbsp;|&nbsp;&nbsp;"
         active = v._active_axis
         coord_html = (
             "&nbsp;&nbsp;".join(
-                f'<span style="color:#6af">{sp(p)}</span>' if i == active else sp(p)
+                _hl(sp(p)) if i == active else sp(p)
                 for i, p in enumerate(coord_parts)
             ) if active is not None else None
         )

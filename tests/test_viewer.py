@@ -356,3 +356,70 @@ def _anchor_colours(panel) -> dict[str, str]:
             it += 1
         block = block.next()
     return colours
+
+
+# ---------------------------------------------------------------------------
+# Status bar: candidate highlighting
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def main_window(viewer_config, mini_pixmaps, qtbot):
+    """MainWindow wired to the shared 2x2 test config."""
+    from juxt.viewer import MainWindow
+
+    w = MainWindow(viewer_config, mini_pixmaps, watch=False)
+    qtbot.addWidget(w)
+    w.resize(1400, 800)
+    return w
+
+
+class TestStatusCandidateHighlight:
+    def _status(self, main_window) -> str:
+        main_window._update_status()
+        lbl = main_window._status_label
+        return lbl._full_html if lbl._full_html is not None else lbl._full_plain
+
+    def test_candidate_html_highlights_cursor(self):
+        from juxt.viewer import _HL_COLOR, _candidate_html
+
+        html = _candidate_html(["alpha", "beta"], 1)
+        assert f'<span style="color:{_HL_COLOR}">[beta]</span>' in html
+        assert "[alpha]" not in html
+
+    def test_candidate_html_without_cursor(self):
+        from juxt.viewer import _candidate_html
+
+        html = _candidate_html(["alpha", "beta"], -1)
+        assert html == "alpha&nbsp;&nbsp;beta"
+
+    def test_seek_candidates_use_highlight_colour(self, main_window):
+        from juxt.viewer import _HL_COLOR
+
+        main_window.view._sel = {
+            "phase": "value", "query": "", "axis_idx": 0, "cursor": 1,
+        }
+        status = self._status(main_window)
+        vals = main_window.view.axis_values[0]
+        assert f'<span style="color:{_HL_COLOR}">[{vals[1]}]</span>' in status
+        assert f"[{vals[0]}]" not in status
+
+    def test_command_candidates_use_highlight_colour(self, main_window):
+        from juxt.viewer import _HL_COLOR
+
+        main_window.view._cmd = {"phase": "verb", "query": "fit", "cursor": 0}
+        status = self._status(main_window)
+        assert f'<span style="color:{_HL_COLOR}">[fit]</span>' in status
+
+    def test_spaces_are_preserved_as_nbsp(self, main_window):
+        main_window.view._sel = {
+            "phase": "value", "query": "", "axis_idx": 0, "cursor": 0,
+        }
+        assert "&nbsp;" in self._status(main_window)
+
+    def test_markup_characters_are_escaped(self, main_window):
+        main_window.view._cmd = {
+            "phase": "arg", "verb": "pattern", "query": "a<b>&c",
+            "caret": 6, "cursor": -1,
+        }
+        status = self._status(main_window)
+        assert "a&lt;b&gt;&amp;c" in status
