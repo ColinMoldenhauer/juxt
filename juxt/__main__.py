@@ -7,11 +7,24 @@ import socket
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSocketNotifier, QTimer
-from PySide6.QtGui import QCursor, QIcon
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLineEdit, QProgressDialog
+from .complete import SCRIPT_FLAGS, WORDS_FLAG, normalize_template
+from .complete import main as _complete_main
 
-from .complete import normalize_template
+# Shell completion runs on every Tab press, so answer it here — before Qt is
+# imported — which also lets `juxt` itself back the completion when the
+# standalone binary is all a user has installed.
+if len(sys.argv) > 1 and sys.argv[1] in (*SCRIPT_FLAGS, WORDS_FLAG):
+    sys.exit(_complete_main(sys.argv[1:]))
+
+from PySide6.QtCore import Qt, QSocketNotifier, QTimer  # noqa: E402
+from PySide6.QtGui import QCursor, QIcon  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QFileDialog,
+    QInputDialog,
+    QLineEdit,
+    QProgressDialog,
+)
 from .config import Config, _auto_keys, dump_config, load_config
 from .detect import (
     _axes_from_local_template,
@@ -150,7 +163,7 @@ def _print_help() -> None:
   -h, --help                  show this message and exit
 
   shell completion (bash / zsh)
-    eval "$(juxt-complete --bash)"   complete options and {placeholder} paths
+    eval "$(juxt --bash-completion)"  complete options and {placeholder} paths
 
   navigation modes (switch with :mode)
     tap   letter=+1/LETTER=-1 on that axis (default)

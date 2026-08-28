@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import shutil
 import subprocess
 import sys
@@ -91,6 +92,29 @@ class TestHelperCommand:
         assert main(["--bash"]) == 0
         assert "complete -o nospace -F _juxt_completion juxt" in capsys.readouterr().out
 
+    def test_complete_words_flag(self, in_plot_dir, capsys):
+        assert main(["--complete-words", "", "plot"]) == 0
+        assert capsys.readouterr().out.strip() == "plots/"
+
+    def test_bash_completion_flag_is_an_alias(self, capsys):
+        assert main(["--bash-completion"]) == 0
+        assert capsys.readouterr().out == bash_script()
+
+    def test_juxt_itself_answers_without_importing_qt(self, nested_plot_dir):
+        """The `juxt --complete-words` fast path must stay ahead of the Qt import."""
+        import juxt
+
+        env = {**os.environ,
+               "PYTHONPATH": str(Path(juxt.__file__).resolve().parent.parent)}
+        out = subprocess.run(
+            [sys.executable, "-X", "importtime", "-m", "juxt",
+             "--complete-words", "", "plots/{sensor}/"],
+            cwd=nested_plot_dir.parent, text=True, capture_output=True, env=env,
+        )
+        assert out.returncode == 0
+        assert out.stdout.split() == ["plots/{sensor}/AM/", "plots/{sensor}/PM/"]
+        assert "PySide6" not in out.stderr   # -X importtime lists every import
+
     def test_bash_script_is_the_shipped_file(self):
         assert bash_script() == COMPLETION_BASH.read_text(encoding="utf-8")
 
@@ -103,12 +127,15 @@ bash_required = pytest.mark.skipif(shutil.which("bash") is None,
                                    reason="bash not installed")
 
 
-def _run_completion(cwd: Path, words: list[str], helper: str | None) -> list[str]:
-    """Source completion.bash, complete *words*, and return COMPREPLY."""
-    setup = f'export JUXT_COMPLETE="{helper}"' if helper else 'export PATH=/nonexistent'
+def _run_completion(cwd: Path, words: list[str], setup: str = "") -> list[str]:
+    """Source completion.bash, complete *words*, and return COMPREPLY.
+
+    PATH starts out empty so each test states exactly which helper it offers.
+    """
     quoted = " ".join(f'"{w}"' for w in words)
     script = f'''
         set -u
+        export PATH=/nonexistent
         {setup}
         source "{COMPLETION_BASH}"
         COMP_WORDS=({quoted})
@@ -121,42 +148,72 @@ def _run_completion(cwd: Path, words: list[str], helper: str | None) -> list[str
     return [line for line in out.stdout.split("\n") if line != ""]
 
 
-@pytest.fixture
-def helper(tmp_path):
-    """A stand-in for the installed `juxt-complete` console script."""
-    import juxt
-
-    pkg_parent = Path(juxt.__file__).resolve().parent.parent
-    path = tmp_path / "juxt-complete"
-    path.write_text(
-        f'#!/bin/sh\n'
-        f'PYTHONPATH="{pkg_parent}" exec "{sys.executable}" -m juxt.complete "$@"\n',
-        encoding="utf-8",
-    )
+def _stub(path: Path, body: str) -> str:
+    """Write an executable shell stub and return its path."""
+    path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     path.chmod(0o755)
     return str(path)
 
 
+def _python_stub(path: Path, args: str) -> str:
+    """A stub that runs juxt's completion out of the source tree."""
+    import juxt
+
+    pkg_parent = Path(juxt.__file__).resolve().parent.parent
+    return _stub(path, f'PYTHONPATH="{pkg_parent}" exec "{sys.executable}" '
+                       f'-m juxt.complete {args}"$@"')
+
+
+@pytest.fixture
+def helper(tmp_path):
+    """A stand-in for the installed `juxt-complete` console script."""
+    return _python_stub(tmp_path / "juxt-complete", "")
+
+
 @bash_required
 class TestBashFunction:
+    @staticmethod
+    def _with_helper(helper: str) -> str:
+        return f'export JUXT_COMPLETE="{helper}"'
+
     def test_completes_below_a_placeholder(self, nested_plot_dir, helper):
-        reply = _run_completion(nested_plot_dir.parent,
-                                ["juxt", "plots/{sensor}/"], helper)
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", "plots/{sensor}/"],
+                                self._with_helper(helper))
         assert reply == ["plots/{sensor}/AM/", "plots/{sensor}/PM/"]
 
     def test_directories_do_not_get_a_trailing_space(self, nested_plot_dir, helper):
-        reply = _run_completion(nested_plot_dir.parent, ["juxt", "plot"], helper)
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", "plot"],
+                                self._with_helper(helper))
         assert reply == ["plots/"]
 
     def test_a_finished_word_gets_a_trailing_space(self, nested_plot_dir, helper):
-        reply = _run_completion(nested_plot_dir.parent,
-                                ["juxt", "plots/A/AM/d1"], helper)
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", "plots/A/AM/d1"],
+                                self._with_helper(helper))
         assert reply == ["plots/A/AM/d1.png "]
 
     def test_options_are_completed(self, nested_plot_dir, helper):
-        reply = _run_completion(nested_plot_dir.parent, ["juxt", "--squ"], helper)
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", "--squ"],
+                                self._with_helper(helper))
         assert reply == ["--squeeze "]
 
-    def test_falls_back_to_filenames_without_the_helper(self, nested_plot_dir):
-        reply = _run_completion(nested_plot_dir.parent, ["juxt", "plot"], helper=None)
+    def test_juxt_itself_backs_the_completion(self, nested_plot_dir, tmp_path):
+        """Without juxt-complete on PATH, `juxt --complete-words` is used."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _python_stub(bin_dir / "juxt", "--complete-words ")
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", "plots/{sensor}/"],
+                                f'export PATH="{bin_dir}"')
+        assert reply == ["plots/{sensor}/AM/", "plots/{sensor}/PM/"]
+
+    def test_an_older_juxt_falls_back_to_filenames(self, nested_plot_dir, tmp_path):
+        """A juxt that rejects --complete-words must not swallow Tab."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _stub(bin_dir / "juxt", 'echo "unrecognized arguments" >&2; exit 2')
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", "plot"],
+                                f'export PATH="{bin_dir}"')
+        assert reply == ["plots"]
+
+    def test_falls_back_to_filenames_without_any_helper(self, nested_plot_dir):
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", "plot"])
         assert reply == ["plots"]

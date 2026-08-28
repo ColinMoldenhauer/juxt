@@ -63,18 +63,20 @@ mkdocs build   # build static site to site/
 
 ## Shell completion (bash / zsh)
 
-`pip install juxt` also installs `juxt-complete`, a small helper that backs Tab completion for the `juxt` command. Enable it by adding one line to `~/.bashrc`:
+Add one line to `~/.bashrc`:
 
 ```bash
-eval "$(juxt-complete --bash)"
+eval "$(juxt --bash-completion)"
 ```
 
 zsh can reuse the same function through `bashcompinit`:
 
 ```zsh
 autoload -U bashcompinit && bashcompinit
-eval "$(juxt-complete --bash)"
+eval "$(juxt --bash-completion)"
 ```
+
+Use the `juxt` command itself, as above, and completion follows whichever juxt is on your `PATH` — pip install, standalone binary, or virtualenv. `pip install juxt` additionally installs `juxt-complete`, a helper that never imports Qt and so answers a Tab press in milliseconds; the completion function prefers it whenever it is on `PATH` and falls back to `juxt --complete-words` otherwise.
 
 Completion covers the command-line options and the `PATH` argument — and paths complete with `{placeholders}` left in place, the same way the `:pattern` command bar inside the app does:
 
@@ -88,7 +90,16 @@ plots/{sensor}/2024-03-15.png  plots/{sensor}/2024-03-16.png
 
 Braces need no quoting: bash and zsh only expand them when they contain a comma or a range.
 
-Two limits are worth knowing. Remote `host:/path` arguments are not completed at the shell — that needs a live SFTP session, so use `:pattern` inside the app instead. And the standalone binaries ship no `juxt-complete`; with the helper missing, the function falls back to plain filename completion. Point `JUXT_COMPLETE` at the helper if it lives outside your `PATH`, e.g. in another virtualenv.
+Remote `host:/path` arguments are not completed at the shell — that needs a live SFTP session, so use `:pattern` inside the app instead.
+
+If juxt lives in a virtualenv you do not activate, point `JUXT_COMPLETE` at its helper and the function will use it wherever you are:
+
+```bash
+export JUXT_COMPLETE=~/env/juxt/bin/juxt-complete
+eval "$(juxt-complete --bash)"
+```
+
+When nothing usable is found — no juxt on `PATH`, or a version too old to know the flag — the function falls back to plain filename completion rather than swallowing the keypress.
 
 ## Debugging / logging
 

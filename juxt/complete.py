@@ -355,15 +355,23 @@ def bash_script() -> str:
     return (Path(__file__).parent / "completion.bash").read_text(encoding="utf-8")
 
 
+# Flags understood both by `juxt-complete` and by `juxt` itself, so the shell
+# has something to call whichever of the two is installed.
+SCRIPT_FLAGS = ("--bash", "--zsh", "--bash-completion")
+WORDS_FLAG = "--complete-words"
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point of the `juxt-complete` helper command."""
     import sys
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "--":
         args = args[1:]
-    if args and args[0] in ("--bash", "--zsh"):
+    if args and args[0] in SCRIPT_FLAGS:
         sys.stdout.write(bash_script())
         return 0
+    if args and args[0] == WORDS_FLAG:
+        args = args[1:]
     cur = args[-1] if args else ""
     prev = args[-2] if len(args) > 1 else ""
     for word in cli_complete(cur, prev):
