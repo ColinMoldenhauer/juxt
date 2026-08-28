@@ -115,6 +115,15 @@ class TestHelperCommand:
         assert out.stdout.split() == ["plots/{sensor}/AM/", "plots/{sensor}/PM/"]
         assert "PySide6" not in out.stderr   # -X importtime lists every import
 
+    def test_comments_carry_no_stray_quotes(self):
+        """The script is eval'd, so an odd quote anywhere breaks the parse."""
+        for n, line in enumerate(bash_script().splitlines(), 1):
+            if not line.lstrip().startswith("#"):
+                continue
+            assert "`" not in line, f"backtick in comment on line {n}"
+            assert line.count("'") % 2 == 0, f"unbalanced ' in comment on line {n}"
+            assert line.count('"') % 2 == 0, f'unbalanced " in comment on line {n}'
+
     def test_bash_script_is_the_shipped_file(self):
         assert bash_script() == COMPLETION_BASH.read_text(encoding="utf-8")
 

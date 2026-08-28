@@ -8,13 +8,13 @@
 #     eval "$(juxt --bash-completion)"
 #
 # Path arguments complete with {placeholders} left in place, exactly like the
-# :pattern command bar inside the app: `juxt plots/{sensor}/2<TAB>` lists what
+# :pattern command bar inside the app: juxt plots/{sensor}/2<TAB> lists what
 # every sensor directory holds, so a template can be built top-down.
 #
-# Candidates come from `juxt-complete` when it is on PATH (it starts in
-# milliseconds because it never imports Qt), otherwise from `juxt` itself.
-# Set JUXT_COMPLETE to the helper's path when juxt lives in a virtualenv that
-# is not active.
+# Candidates come from juxt-complete when it is on PATH (it starts in
+# milliseconds because it never imports Qt), otherwise from juxt itself.
+# Set JUXT_COMPLETE to the full path of the helper when juxt lives in a
+# virtualenv that is not active.
 
 _juxt_completion() {
     local cur prev out status line
