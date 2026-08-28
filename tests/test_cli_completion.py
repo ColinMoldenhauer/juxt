@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -177,6 +178,63 @@ def _python_stub(path: Path, args: str) -> str:
 def helper(tmp_path):
     """A stand-in for the installed `juxt-complete` console script."""
     return _python_stub(tmp_path / "juxt-complete", "")
+
+
+def _run_bash(cwd: Path, script: str, check: bool = True) -> str:
+    """Run *script* under bash and return its stdout."""
+    out = subprocess.run(["bash", "-c", script], cwd=cwd, text=True,
+                         capture_output=True, check=check)
+    return out.stdout
+
+
+# Stubs standing in for the parts of the ble.sh API the hook touches.
+BLE_STUBS = r"""
+function ble/complete/cand/yield { printf '%s|%s\n' "$1" "$2"; }
+function ble/complete/action/complete.addtail { printf 'tail=[%s]\n' "$1"; }
+"""
+
+
+@bash_required
+class TestBleShHook:
+    """ble.sh bypasses the compspec, so juxt ships a hook for it as well.
+
+    What matters is that the hook completes the word as typed (COMPS) rather
+    than the brace-mangled value ble.sh derives from it.
+    """
+
+    def _hook(self, cwd: Path, comps: str, helper: str,
+              check: bool = True) -> list[str]:
+        script = f'''
+            set -u
+            export PATH=/nonexistent
+            export JUXT_COMPLETE="{helper}"
+            source "{COMPLETION_BASH}"
+            {BLE_STUBS}
+            COMPS={shlex.quote(comps)}
+            COMPV="brace-mangled-value-the-hook-must-ignore"
+            comp_words=(juxt {shlex.quote(comps)})
+            comp_cword=1
+            ble/cmdinfo/complete:juxt
+        '''
+        return [line for line in _run_bash(cwd, script, check).split("\n") if line]
+
+    def test_completes_the_word_as_typed(self, nested_plot_dir, helper):
+        yielded = self._hook(nested_plot_dir.parent, "plots/{sensor}/", helper)
+        assert yielded == ["juxt|plots/{sensor}/AM/", "juxt|plots/{sensor}/PM/"]
+
+    def test_yields_nothing_when_nothing_matches(self, nested_plot_dir, helper):
+        # The hook returns non-zero so ble.sh falls back to its own sources.
+        assert self._hook(nested_plot_dir.parent, "plots/{sensor}/zz", helper,
+                          check=False) == []
+
+    def test_only_a_finished_word_is_closed_with_a_space(self, nested_plot_dir):
+        script = f'''
+            source "{COMPLETION_BASH}"
+            {BLE_STUBS}
+            CAND="plots/{{sensor}}/"      ble/complete/action:juxt/complete
+            CAND="plots/{{sensor}}/x.png" ble/complete/action:juxt/complete
+        '''
+        assert _run_bash(nested_plot_dir.parent, script).splitlines() == ["tail=[ ]"]
 
 
 @bash_required

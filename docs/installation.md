@@ -90,6 +90,8 @@ plots/{sensor}/2024-03-15.png  plots/{sensor}/2024-03-16.png
 
 Braces need no quoting: bash and zsh only expand them when they contain a comma or a range.
 
+**ble.sh** users are covered too. ble.sh reimplements completion and reads a `{placeholder}` as a brace expansion, so the word it hands to a normal completion function has lost its braces and every candidate gets filtered away again. The snippet therefore also registers a native ble.sh hook, which sees the word as you typed it. Nothing extra to configure, but the `eval` line has to run after ble.sh is loaded.
+
 Remote `host:/path` arguments are not completed at the shell — that needs a live SFTP session, so use `:pattern` inside the app instead.
 
 If juxt lives in a virtualenv you do not activate, point `JUXT_COMPLETE` at its helper and the function will use it wherever you are:
