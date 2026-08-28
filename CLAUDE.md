@@ -65,6 +65,8 @@ Three navigation modes are available. Switch at runtime with `:mode tap|seek|pin
 | `0` | Reset zoom to 100% |
 | `:` | Open command mode (vim-style) |
 | Ctrl+Shift+H | Toggle status bar |
+| Ctrl+Shift+I | Toggle info sidebar |
+| Ctrl+Shift+G | Open the grid builder dialogue |
 | Enter | Toggle fullscreen |
 | Escape | Exit fullscreen / cancel command |
 
@@ -82,6 +84,7 @@ Triggered by `:`. Type a command and press Enter to execute; Escape or Backspace
 | `:fullscreen` | Toggle fullscreen |
 | `:mode tap\|seek\|pin` | Switch navigation mode |
 | `:switch-last` | Toggle between current and previous position (same as Spacebar) |
+| `:grid-dialog` | Open the grid builder dialogue (same as Ctrl+Shift+G) |
 
 ### tap (default)
 

@@ -107,6 +107,7 @@ def _print_help() -> None:
         "Ctrl+C          cancel command / value picker",
         "Ctrl+Shift+H    toggle status bar",
         "Ctrl+Shift+I    toggle info sidebar",
+        "Ctrl+Shift+G    open the grid builder",
         "",
         "view controls",
         None,  # horizontal rule
@@ -166,6 +167,7 @@ def _print_help() -> None:
 
   grid view
       --grid AXIS             enter grid view for AXIS on startup
+                              (or build one in the UI with Ctrl+Shift+G)
       --grid-values VAL ...   show only these values in the grid (requires --grid)
       --grid-layout NxM       explicit grid layout, e.g. 2x3 (requires --grid)
       --no-sharex             disable synchronized horizontal pan/zoom in grid view
@@ -174,7 +176,7 @@ def _print_help() -> None:
 
   commands (press : in the viewer, Tab completes)
     :fit  :fit-width  :fit-height  :zoom N  :fullscreen
-    :grid AXIS [VALUES|NxM]  :grid-layout NxM  :ungrid
+    :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :ungrid
     :grid-sharex on|off  :grid-sharey on|off
     :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes
     :mode tap|seek|pin  :switch-last  :info

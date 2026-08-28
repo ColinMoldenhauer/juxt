@@ -61,3 +61,25 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 ![Info sidebar open](assets/screenshots/info-sidebar.png)
 
 Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted.
+
+---
+
+## Grid builder
+
+![Grid builder dialogue](assets/screenshots/grid-dialog.png)
+
+Open with `Ctrl+Shift+G` or `:grid-dialog` — a point-and-click front end for the
+`:grid` command family.
+
+| Field | Description |
+|---|---|
+| **Axis** | The axis to tile across the grid. Pre-selected to the current grid axis, or the `←`/`→` axis when not yet in grid view. |
+| **Values** | One checkbox per value; only the ticked ones become cells. `All`, `None` and `Invert` set them in bulk. |
+| **Layout** | With `auto` ticked the layout is fitted to the viewport aspect ratio (the spin boxes preview the result); untick it to set rows × cols yourself. |
+| **Sync pan/zoom** | The per-axis equivalents of `:grid-sharex` and `:grid-sharey`. |
+
+The grey line above the buttons previews the outcome — `3 cells → 2×2 (auto)` —
+and warns when an explicit layout has too few slots for the selected values.
+**Show grid** applies the settings, **Exit grid** (shown only while a grid is
+open) is the same as `:ungrid`, and every field is pre-filled from the active
+grid, so the dialogue doubles as an editor for the current view.

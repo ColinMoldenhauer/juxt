@@ -33,6 +33,7 @@ These bindings work identically regardless of which mode is active.
 | `Enter` | Toggle fullscreen |
 | `Ctrl+Shift+H` | Toggle the status bar |
 | `Ctrl+Shift+I` | Toggle the info sidebar |
+| `Ctrl+Shift+G` | Open the grid builder dialogue |
 
 ### Other
 
@@ -133,6 +134,7 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:grid AXIS VAL …` | Same, but show only the listed values |
 | `:grid AXIS NxM` | Same, with an explicit layout (e.g. `:grid sensor 2x2`) |
 | `:grid AXIS VAL … NxM` | Values and explicit layout combined |
+| `:grid-dialog` | Open the grid builder dialogue (same as `Ctrl+Shift+G`) |
 | `:grid-layout NxM` | Change the layout of the current grid without exiting (e.g. `:grid-layout 1x3`) |
 | `:ungrid` | Return to single-image view |
 | `:grid-sharex [on\|off]` | Toggle or set synchronized horizontal pan/zoom across cells (default: on) |
@@ -168,6 +170,27 @@ Grid view tiles all (or a subset of) values from one axis into a grid of indepen
 ```
 
 The layout is chosen automatically to best match the viewport's aspect ratio given the image dimensions; use `NxM` to override.
+
+### The grid builder dialogue
+
+`Ctrl+Shift+G` (or `:grid-dialog`) opens a small dialogue that builds the same
+grid without typing a command — useful when you don't remember the axis or value
+spellings.
+
+| Field | Meaning |
+|---|---|
+| **Axis** | Which axis to tile. Defaults to the current grid axis, or the `←`/`→` axis when not in grid view. |
+| **Values** | Tick the values to show. `All` / `None` / `Invert` set them in bulk. |
+| **Layout** | Leave `auto` ticked to fit the viewport, or untick it and set rows × cols. |
+| **Sync pan/zoom** | The `:grid-sharex` / `:grid-sharey` toggles. |
+
+The line above the buttons previews the result, e.g. `3 cells → 2×2 (auto)`, and
+warns when an explicit layout has fewer slots than selected values. **Show grid**
+applies the settings; when opened from inside grid view the dialogue also offers
+**Exit grid**, equivalent to `:ungrid`.
+
+Opening the dialogue while a grid is active pre-fills every field from that grid,
+so it doubles as an editor for the current view.
 
 ### :grid — interactive completion
 
@@ -227,6 +250,7 @@ Any action (including every `:command` plus `toggle-statusbar` and `toggle-info`
 ```yaml
 keybindings:
   Ctrl+Shift+H: toggle-statusbar
+  Ctrl+Shift+G: grid-dialog
   F11: fullscreen
   Ctrl+R: reload
 ```

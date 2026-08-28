@@ -11,6 +11,7 @@ from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signa
 from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QDockWidget,
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -143,6 +144,7 @@ _COMMANDS = [
     "fit-width",
     "fullscreen",
     "grid",
+    "grid-dialog",
     "grid-layout",
     "grid-sharex",
     "grid-sharey",
@@ -204,6 +206,7 @@ _COMMAND_HELP: dict[str, str] = {
     "fit-width":    "fit image width to viewport",
     "fullscreen":   "toggle fullscreen",
     "grid":         "expand an axis into a tiled grid  (e.g. grid sensor  /  grid sensor SMAP SMOS  /  grid sensor 2x2)",
+    "grid-dialog":  "open the point-and-click grid builder  (Ctrl+Shift+G)",
     "grid-layout":  "change the grid layout without exiting  (e.g. grid-layout 2x3)",
     "grid-sharex":  "toggle or set synchronized horizontal pan/zoom  (on / off)",
     "grid-sharey":  "toggle or set synchronized vertical pan/zoom  (on / off)",
@@ -722,6 +725,43 @@ class ImageView(QGraphicsView):
         self._refresh_grid()
         self.grid_mode_changed.emit(gw)
 
+    def _open_grid_dialog(self):
+        """Point-and-click front end for :grid (Ctrl+Shift+G)."""
+        from .dialogs import GridDialog, auto_layout
+
+        img_w, img_h = 800, 600
+        pm = self.pixmaps.get(tuple(self.pos))
+        if pm and not pm.isNull():
+            img_w, img_h = pm.width(), pm.height()
+        vp = self.viewport()
+        vp_w, vp_h = vp.width(), vp.height()
+
+        dlg = GridDialog(
+            list(self.axis_names),
+            [list(v) for v in self.axis_values],
+            axis=self._grid_axis if self._grid_axis is not None else self._h_axis(),
+            values=self._grid_filter,
+            layout=self._grid_layout,
+            sharex=self._grid_sharex,
+            sharey=self._grid_sharey,
+            in_grid=self._grid_axis is not None,
+            auto_layout_for=lambda n: auto_layout(n, img_w, img_h, vp_w, vp_h),
+            parent=self.window(),
+        )
+        result = dlg.exec()
+        self.setFocus()
+        if result == GridDialog.EXIT:
+            if self._grid_axis is not None:
+                self._exit_grid()
+            return
+        if result != QDialog.DialogCode.Accepted or dlg.spec is None:
+            return
+        spec = dlg.spec
+        self._grid_sharex = spec.sharex
+        self._grid_sharey = spec.sharey
+        self._enter_grid(spec.axis, spec.values, spec.layout)
+        self.state_changed.emit()
+
     def _exit_grid(self):
         log.info("grid: exiting grid mode (was axis=%r)", self.axis_names[self._grid_axis] if self._grid_axis is not None else None)
         self._grid_axis = None
@@ -1220,6 +1260,8 @@ class ImageView(QGraphicsView):
                         filter_indices.append(match)
 
             self._enter_grid(axis_idx, filter_indices, layout)
+        elif verb == "grid-dialog":
+            self._open_grid_dialog()
         elif verb == "ungrid":
             if self._grid_axis is not None:
                 self._exit_grid()
