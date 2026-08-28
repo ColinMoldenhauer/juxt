@@ -4,21 +4,49 @@ on:
   push:
     tags:
       - "v*"
+  # Lets the whole build matrix be exercised without cutting a release tag.
+  workflow_dispatch:
 
 jobs:
   build:
-    name: Build / ${{ matrix.os }}
+    name: Build / ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            artifact: juxt-windows.zip
-          - os: ubuntu-latest
-            artifact: juxt-linux.zip
-          - os: macos-latest
-            artifact: juxt-macos.zip
+          - label: windows-x86_64
+            os: windows-latest
+            artifact: juxt-windows-x86_64.zip
+
+          # ubuntu-latest is 24.04 (glibc 2.39), which makes the binary refuse to
+          # start on anything older: Ubuntu 22.04, Linux Mint 21, Debian 12.
+          # Pinning 22.04 drops the floor to glibc 2.35, the oldest GitHub-hosted
+          # Ubuntu image still available, and covers every newer distro too.
+          # Do not move this to ubuntu-latest; the glibc floor check below guards it.
+          - label: linux-x86_64
+            os: ubuntu-22.04
+            artifact: juxt-linux-x86_64.zip
+            glibc_max: "2.35"
+
+          - label: linux-arm64
+            os: ubuntu-22.04-arm
+            artifact: juxt-linux-arm64.zip
+            glibc_max: "2.35"
+
+          # macos-latest is Apple Silicon only, so an x86_64 leg is required:
+          # Rosetta translates x86_64 -> arm64, never the other way round, so an
+          # arm64-only build simply cannot run on an Intel Mac.  Both legs pin an
+          # explicit OS version so the deployment floor does not drift upward
+          # whenever GitHub moves the -latest label.
+          - label: macos-arm64
+            os: macos-15
+            artifact: juxt-macos-arm64.zip
+            extra_deps: pillow
+
+          - label: macos-x86_64
+            os: macos-15-intel
+            artifact: juxt-macos-x86_64.zip
             extra_deps: pillow
 
     steps:
@@ -55,20 +83,111 @@ jobs:
         run: pip install pyinstaller ".[ssh]" ${{ matrix.extra_deps }}
 
       - name: Build with PyInstaller
+        env:
+          # Keep any locally compiled bit at the same floor as the PySide6 wheels
+          # (macosx_12_0) instead of inheriting the builder's OS version.
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: pyinstaller juxt.spec
+
+      # Fails the build if anything in the bundle needs a newer glibc than the
+      # floor we promise.  Without this, a bump back to ubuntu-latest would
+      # silently ship a binary that cannot start on the distros we target.
+      - name: Check glibc floor (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -u
+          # No pipefail here: objdump exits non-zero on the bundle's non-ELF
+          # files (data, licences, Qt resources), which would abort the pipeline
+          # before a single symbol had been read.
+          required=$(find dist/juxt -type f -print0 \
+            | xargs -0 -r -n1 objdump -T 2>/dev/null \
+            | grep -o 'GLIBC_[0-9][0-9.]*' \
+            | sed 's/^GLIBC_//; s/\.$//' \
+            | sort -V -u) || true
+          if [ -z "$required" ]; then
+            echo "::error::no glibc symbol versions found in dist/juxt - check the bundle layout"
+            exit 1
+          fi
+          echo "glibc versions referenced by the bundle:"
+          echo "$required" | sed 's/^/  /'
+          worst=$(echo "$required" | tail -n1)
+          echo "highest required: glibc $worst (allowed: ${{ matrix.glibc_max }})"
+          if [ "$(printf '%s\n%s\n' "$worst" "${{ matrix.glibc_max }}" | sort -V | tail -n1)" != "${{ matrix.glibc_max }}" ]; then
+            echo "::error::bundle requires glibc $worst but the target floor is ${{ matrix.glibc_max }}"
+            exit 1
+          fi
+
+      # Reported, not enforced: there is no older macOS runner to fall back to,
+      # so surface the real floor in the log instead of guessing in the release notes.
+      - name: Report macOS deployment floor
+        if: runner.os == 'macOS'
+        run: |
+          echo "minimum macOS version per load command:"
+          otool -l dist/juxt.app/Contents/MacOS/juxt | grep -A3 -E 'LC_(BUILD_VERSION|VERSION_MIN_MACOSX)' | grep -E 'minos|version' || true
+
+      # Generate the sample plots the smoke test navigates.
+      - name: Generate sample plots
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python make_sample.py
+
+      # Actually launch the frozen binary.  Importing PySide6 and spinning up a
+      # QApplication is where a glibc / Qt-plugin mismatch shows up, and a build
+      # that cannot start is exactly the failure this workflow exists to prevent.
+      - name: Smoke-test the binary (Linux / macOS)
+        if: runner.os != 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # errexit off on purpose: `wait` on a crashed child returns that
+          # child's status, which would abort the step before it could report
+          # what actually went wrong.
+          set +e
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            bin=dist/juxt.app/Contents/MacOS/juxt
+          else
+            bin=dist/juxt/juxt
+          fi
+          "$bin" examples/sample_config.yaml &
+          pid=$!
+          sleep 25
+          if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            echo "binary started and stayed up"
+          else
+            wait "$pid"
+            echo "::error::binary exited early with status $?"
+            exit 1
+          fi
+
+      - name: Smoke-test the binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $p = Start-Process -FilePath dist\juxt\juxt.exe `
+                             -ArgumentList "examples\sample_config.yaml" -PassThru
+          Start-Sleep -Seconds 25
+          if ($p.HasExited) {
+            Write-Output "::error::binary exited early with status $($p.ExitCode)"
+            exit 1
+          }
+          $p.Kill()
+          Write-Output "binary started and stayed up"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist\juxt -DestinationPath juxt-windows.zip
+        run: Compress-Archive -Path dist\juxt -DestinationPath ${{ matrix.artifact }}
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        run: cd dist && zip -r ../juxt-linux.zip juxt
+        run: cd dist && zip -r ../${{ matrix.artifact }} juxt
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        run: cd dist && zip -r ../juxt-macos.zip juxt.app
+        run: cd dist && zip -r ../${{ matrix.artifact }} juxt.app
 
       - uses: actions/upload-artifact@v4
         with:
@@ -78,6 +197,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -97,9 +217,15 @@ jobs:
 
             | Platform | File | Run |
             |---|---|---|
-            | Windows | `juxt-windows.zip` | Extract, then double-click `juxt\juxt.exe` or run it from a command prompt |
-            | Linux | `juxt-linux.zip` | Extract, then `./juxt/juxt path/to/config.yaml` |
-            | macOS | `juxt-macos.zip` | Extract, then `open juxt.app` or double-click — **built for Apple Silicon (arm64), untested** |
+            | Windows (x86_64) | `juxt-windows-x86_64.zip` | Extract, then double-click `juxt\juxt.exe` or run it from a command prompt |
+            | Linux (x86_64) | `juxt-linux-x86_64.zip` | Extract, then `./juxt/juxt path/to/config.yaml` |
+            | Linux (arm64) | `juxt-linux-arm64.zip` | Extract, then `./juxt/juxt path/to/config.yaml` |
+            | macOS (Apple Silicon) | `juxt-macos-arm64.zip` | Extract, then `open juxt.app` or double-click |
+            | macOS (Intel) | `juxt-macos-x86_64.zip` | Extract, then `open juxt.app` or double-click |
+
+            **Linux note:** the binaries are built against glibc 2.35, so they run on
+            Ubuntu 22.04 / Linux Mint 21 / Debian 12 and anything newer.
+            Windows on ARM runs the x86_64 build under emulation.
 
             **macOS note:** macOS Gatekeeper will block the unsigned app on first launch.
             Right-click → Open → Open to bypass, or run:
