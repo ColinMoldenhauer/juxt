@@ -61,6 +61,35 @@ mkdocs serve   # live-reloading local preview
 mkdocs build   # build static site to site/
 ```
 
+## Shell completion (bash / zsh)
+
+`pip install juxt` also installs `juxt-complete`, a small helper that backs Tab completion for the `juxt` command. Enable it by adding one line to `~/.bashrc`:
+
+```bash
+eval "$(juxt-complete --bash)"
+```
+
+zsh can reuse the same function through `bashcompinit`:
+
+```zsh
+autoload -U bashcompinit && bashcompinit
+eval "$(juxt-complete --bash)"
+```
+
+Completion covers the command-line options and the `PATH` argument — and paths complete with `{placeholders}` left in place, the same way the `:pattern` command bar inside the app does:
+
+```
+$ juxt plots/<TAB>
+ASCAT/  SMAP/  SMOS/
+
+$ juxt plots/{sensor}/2<TAB>          # every sensor directory at once
+plots/{sensor}/2024-03-15.png  plots/{sensor}/2024-03-16.png
+```
+
+Braces need no quoting: bash and zsh only expand them when they contain a comma or a range.
+
+Two limits are worth knowing. Remote `host:/path` arguments are not completed at the shell — that needs a live SFTP session, so use `:pattern` inside the app instead. And the standalone binaries ship no `juxt-complete`; with the helper missing, the function falls back to plain filename completion. Point `JUXT_COMPLETE` at the helper if it lives outside your `PATH`, e.g. in another virtualenv.
+
 ## Debugging / logging
 
 juxt uses Python's standard `logging` module. To enable diagnostic output, set the `JUXT_LOG_LEVEL` environment variable before launching:

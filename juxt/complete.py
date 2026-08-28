@@ -9,6 +9,9 @@ of completing one concrete path first and deleting the parts that should vary.
 Everything here is pure (no Qt, no viewer state): directory listings arrive
 through a `listdir(path) -> [(name, is_dir), ...]` callback so the same code
 serves the local filesystem and an open SFTP session.
+
+The bottom of the module is the `juxt-complete` helper command, which gives the
+`juxt` shell command the same completion at the bash/zsh prompt.
 """
 from __future__ import annotations
 
@@ -105,17 +108,16 @@ def complete_placeholder_name(prefix: str, axis_names) -> Completion | None:
     return Completion(lcp[len(frag):], [f"{{{n}}}" for n in cands])
 
 
-def complete_path(prefix: str, listdir, sep: str = "/") -> Completion:
-    """Complete the last component of *prefix*, treating placeholders as `*`.
+def _match_entries(prefix: str, listdir, sep: str):
+    """Return `(tail, [(name, is_dir, rest), ...])` for the last component.
 
-    Only the text *after* the last placeholder is completed, so placeholders
-    already typed survive: `plots/{sensor}/2024-0` + Tab lists what every
-    sensor directory has under it and extends the `2024-0` part only.
+    *rest* is the part of the filename beyond what was typed — the text a
+    completion would insert.
     """
     head, _, tail = prefix.rpartition(sep)
     dirs = _resolve_dirs(head, prefix.startswith(sep), listdir, sep)
     if not dirs:
-        return Completion()
+        return tail, []
 
     entries: list[tuple[str, bool]] = []
     seen: set[tuple[str, bool]] = set()
@@ -135,6 +137,17 @@ def complete_path(prefix: str, listdir, sep: str = "/") -> Completion:
         m = regex.match(name)
         if m:
             matched.append((name, is_dir, name[m.end():]))
+    return tail, matched
+
+
+def complete_path(prefix: str, listdir, sep: str = "/") -> Completion:
+    """Complete the last component of *prefix*, treating placeholders as `*`.
+
+    Only the text *after* the last placeholder is completed, so placeholders
+    already typed survive: `plots/{sensor}/2024-0` + Tab lists what every
+    sensor directory has under it and extends the `2024-0` part only.
+    """
+    tail, matched = _match_entries(prefix, listdir, sep)
     if not matched:
         return Completion()
 
@@ -155,6 +168,22 @@ def complete_path(prefix: str, listdir, sep: str = "/") -> Completion:
         extra = len(shown) - _MAX_MATCHES
         shown = shown[:_MAX_MATCHES] + [f"(+{extra} more)"]
     return Completion(append, shown)
+
+
+def completion_words(prefix: str, listdir, sep: str = "/") -> list[str]:
+    """Like `complete_path`, but as whole words — what a shell expects.
+
+    Each candidate is the typed *prefix* with one match appended, so the
+    placeholders in it survive the completion.
+    """
+    tail, matched = _match_entries(prefix, listdir, sep)
+    if not matched:
+        return []
+    if tail.endswith("}"):
+        # No partial word to extend — offer the one shared completion, if any.
+        append = _append_after_placeholder(matched, sep)
+        return [prefix + append] if append else []
+    return [prefix + rest + (sep if is_dir else "") for _, is_dir, rest in matched]
 
 
 def _append_after_placeholder(matched, sep: str) -> str:
@@ -268,3 +297,79 @@ def sftp_listdir(sftp):
         return entries
 
     return _listdir
+
+
+# ── shell completion ─────────────────────────────────────────────────────────
+#
+# `juxt-complete` backs the bash function in juxt/completion.bash.  It must stay
+# import-light — no Qt — so pressing Tab at a shell prompt costs milliseconds.
+
+# Mirrors the parser in juxt/__main__.py; kept in sync by a test.
+CLI_OPTIONS = [
+    "-a", "--auto",
+    "-h", "--help",
+    "-s", "--separator",
+    "--axis-h", "--axis-v",
+    "--grid", "--grid-layout", "--grid-values",
+    "--max-depth",
+    "--name",
+    "--no-sharex", "--no-sharey", "--no-watch",
+    "--save",
+    "--squeeze",
+    "--watch-interval",
+]
+
+# Options taking a value juxt cannot know before the images are scanned.
+_OPAQUE_VALUE_OPTIONS = {
+    "-s", "--separator",
+    "--axis-h", "--axis-v",
+    "--grid", "--grid-layout", "--grid-values",
+    "--max-depth",
+    "--name",
+    "--watch-interval",
+}
+
+# Options whose value is a path, completed like PATH itself.
+_PATH_OPTIONS = {"--save"}
+
+
+def cli_complete(cur: str, prev: str = "") -> list[str]:
+    """Candidates for the word *cur*, given the word before it."""
+    if prev in _OPAQUE_VALUE_OPTIONS:
+        return []
+    if prev in (":", "="):
+        # COMP_WORDBREAKS split a host:path or --option=value in two.
+        return []
+    if cur.startswith("-") and prev not in _PATH_OPTIONS:
+        return [o for o in CLI_OPTIONS if o.startswith(cur)]
+
+    from .detect import _is_remote_pattern
+    if _is_remote_pattern(cur):
+        return []  # listing a remote needs a live SFTP session — app only
+    return completion_words(cur, local_listdir())
+
+
+def bash_script() -> str:
+    """The bash completion function, for `eval "$(juxt-complete --bash)"`."""
+    from pathlib import Path
+    return (Path(__file__).parent / "completion.bash").read_text(encoding="utf-8")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point of the `juxt-complete` helper command."""
+    import sys
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "--":
+        args = args[1:]
+    if args and args[0] in ("--bash", "--zsh"):
+        sys.stdout.write(bash_script())
+        return 0
+    cur = args[-1] if args else ""
+    prev = args[-2] if len(args) > 1 else ""
+    for word in cli_complete(cur, prev):
+        print(word)
+    return 0
+
+
+if __name__ == "__main__":  # python -m juxt.complete, when the script is absent
+    raise SystemExit(main())

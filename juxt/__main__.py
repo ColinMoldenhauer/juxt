@@ -149,6 +149,9 @@ def _print_help() -> None:
       --no-sharey             disable synchronized vertical pan/zoom in grid view
   -h, --help                  show this message and exit
 
+  shell completion (bash / zsh)
+    eval "$(juxt-complete --bash)"   complete options and {placeholder} paths
+
   navigation modes (switch with :mode)
     tap   letter=+1/LETTER=-1 on that axis (default)
     seek  type to search axes and values by prefix
