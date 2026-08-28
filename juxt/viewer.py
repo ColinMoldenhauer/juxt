@@ -25,12 +25,23 @@ from PySide6.QtWidgets import (
 )
 
 from .config import Config
-from .settings import SETTINGS_PATH, load_settings
+from .settings import (
+    DEFAULT_HIGHLIGHT,
+    DEFAULT_HIGHLIGHT_CANDIDATES,
+    SETTINGS_PATH,
+    Highlight,
+    load_settings,
+    parse_highlight,
+)
 
 log = logging.getLogger(__name__)
 
-# Colour used to highlight the current value (info sidebar, status bar).
-_HL_COLOR = "#6af"
+# Fallback highlight formats, used until settings are applied.
+_HL_DEFAULT = parse_highlight(DEFAULT_HIGHLIGHT)
+_HL_DEFAULT_CANDIDATES = parse_highlight(DEFAULT_HIGHLIGHT_CANDIDATES)
+
+# Colour of a non-highlighted value link in the info sidebar.
+_LINK_COLOR = "#ddd"
 
 # ── info-sidebar links ────────────────────────────────────────────────────────
 
@@ -43,9 +54,25 @@ def _sp(text: str) -> str:
     return _html.escape(text).replace(" ", "&nbsp;")
 
 
-def _hl(text: str) -> str:
-    """Wrap *text* in the highlight colour used for the current selection."""
-    return f'<span style="color:{_HL_COLOR}">{text}</span>'
+def _hl_css(hl: Highlight) -> str:
+    """Inline CSS for a parsed highlight format."""
+    parts = []
+    if hl.color:
+        parts.append(f"color:{hl.color}")
+    if hl.bold:
+        parts.append("font-weight:bold")
+    if hl.italic:
+        parts.append("font-style:italic")
+    parts.append("text-decoration:underline" if hl.underline else "text-decoration:none")
+    return ";".join(parts)
+
+
+def _hl(text: str, hl: Highlight = _HL_DEFAULT) -> str:
+    """Apply the highlight format *hl* to the already-escaped *text*."""
+    if hl.raw is not None:
+        return hl.raw.replace("{}", text)
+    return (f'<span style="{_hl_css(hl)}">'
+            f'{_sp(hl.prefix)}{text}{_sp(hl.suffix)}</span>')
 
 
 def _rich(text: str) -> str:
@@ -53,10 +80,12 @@ def _rich(text: str) -> str:
     return f"<span>{text}</span>"
 
 
-def _candidate_html(candidates: list[str], cursor: int) -> str:
+def _candidate_html(
+    candidates: list[str], cursor: int, hl: Highlight = _HL_DEFAULT_CANDIDATES
+) -> str:
     """Render a status-bar candidate list, highlighting the one at *cursor*."""
     return "&nbsp;&nbsp;".join(
-        _hl(f"[{_sp(c)}]") if i == cursor else _sp(c)
+        _hl(_sp(c), hl) if i == cursor else _sp(c)
         for i, c in enumerate(candidates)
     )
 
@@ -2441,10 +2470,14 @@ class InfoPanel(QTextEdit):
         )
         # Anchors carry the value links; keep them looking like plain values.
         self.document().setDefaultStyleSheet(
-            "a { color: #ddd; text-decoration: none; }"
-            f"a.cur {{ color: {_HL_COLOR}; text-decoration: none; }}"
+            f"a {{ color: {_LINK_COLOR}; text-decoration: none; }}"
         )
         self.viewport().setMouseTracking(True)
+        self._highlight = _HL_DEFAULT
+
+    def set_highlight(self, hl: Highlight) -> None:
+        """Set the format used for the current value on each axis."""
+        self._highlight = hl
 
     def mousePressEvent(self, event):
         href = self.anchorAt(event.position().toPoint())
@@ -2476,8 +2509,8 @@ class InfoPanel(QTextEdit):
         for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
             cur = view.pos[i]
             val_html = "&nbsp;&nbsp;".join(
-                f'<a class="{"cur" if j == cur else "val"}" '
-                f'href="{_value_href(i, j)}">{e(v)}</a>'
+                f'<a href="{_value_href(i, j)}">'
+                f'{_hl(_sp(v), self._highlight) if j == cur else _sp(v)}</a>'
                 for j, v in enumerate(vals)
             )
             parts.append(
@@ -2506,6 +2539,8 @@ class MainWindow(QMainWindow):
         session_name: str | None = None,
         seek_greedy: bool = True,
         keybindings: dict[str, str] | None = None,
+        highlight: Highlight | None = None,
+        highlight_candidates: Highlight | None = None,
         grid: str | None = None,
         grid_values: list[str] | None = None,
         grid_layout: tuple[int, int] | None = None,
@@ -2514,6 +2549,8 @@ class MainWindow(QMainWindow):
     ):
         super().__init__()
         self._session_name = session_name
+        self._hl = highlight or _HL_DEFAULT
+        self._hl_candidates = highlight_candidates or _HL_DEFAULT_CANDIDATES
         self.setWindowTitle(_window_title(config, session_name))
         self.view = ImageView(
             config, pixmaps, self,
@@ -2560,6 +2597,7 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(self._help_label)
 
         self._info_panel = InfoPanel()
+        self._info_panel.set_highlight(self._hl)
         self._info_dock = QDockWidget("Info", self)
         self._info_dock.setWidget(self._info_panel)
         self._info_dock.setAllowedAreas(
@@ -2659,7 +2697,7 @@ class MainWindow(QMainWindow):
             elif desc:
                 self._help_label.setText(f"( {desc} )")
             if candidates:
-                cand_html = _candidate_html(candidates, cursor)
+                cand_html = _candidate_html(candidates, cursor, self._hl_candidates)
                 self._status_label.setText(
                     _rich(f"{_sp(prompt)}&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}")
                 )
@@ -2682,7 +2720,7 @@ class MainWindow(QMainWindow):
                 axis_name = v.axis_names[v._sel["axis_idx"]]
                 prompt = f"{axis_name}? {query}▌"
             cand_html = (
-                _candidate_html(candidates, cursor) if candidates
+                _candidate_html(candidates, cursor, self._hl_candidates) if candidates
                 else _sp("(no match)")
             )
             self._status_label.setText(_rich(
@@ -2708,7 +2746,7 @@ class MainWindow(QMainWindow):
         active = v._active_axis
         coord_html = (
             "&nbsp;&nbsp;".join(
-                _hl(sp(p)) if i == active else sp(p)
+                _hl(sp(p), self._hl) if i == active else sp(p)
                 for i, p in enumerate(coord_parts)
             ) if active is not None else None
         )
@@ -2811,6 +2849,11 @@ class MainWindow(QMainWindow):
             self._settings_watcher.addPath(str(SETTINGS_PATH))
         settings = load_settings(SETTINGS_PATH)
         self.view.apply_settings(settings)
+        self._hl = settings.highlight
+        self._hl_candidates = settings.highlight_candidates
+        self._info_panel.set_highlight(self._hl)
+        self._refresh_info_panel()
+        self._update_status()
         import juxt.detect as _detect
         _detect._MAX_VALS = settings.max_vals
         _detect._MAX_VALS_DISPLAY = settings.max_vals_display

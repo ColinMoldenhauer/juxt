@@ -328,7 +328,7 @@ class TestInfoPanelLinks:
         assert image_view.pos == [0, 0]
 
     def test_current_value_uses_highlight_colour(self, image_view, qtbot):
-        from juxt.viewer import _HL_COLOR
+        from juxt.viewer import _HL_DEFAULT, _LINK_COLOR
 
         panel = self._panel(image_view, qtbot)
         colours = _anchor_colours(panel)
@@ -336,11 +336,23 @@ class TestInfoPanelLinks:
             f"juxt:value/{i}/{image_view.pos[i]}"
             for i in range(len(image_view.axis_values))
         }
-        hl = QColor(_HL_COLOR).name()
+        hl = QColor(_HL_DEFAULT.color).name()
         assert cur_hrefs, "no axes to check"
         for href, colour in colours.items():
-            expected = hl if href in cur_hrefs else QColor("#ddd").name()
+            expected = hl if href in cur_hrefs else QColor(_LINK_COLOR).name()
             assert colour == expected, f"{href}: {colour} != {expected}"
+
+    def test_custom_highlight_format_applies(self, image_view, qtbot):
+        from juxt.settings import parse_highlight
+
+        panel = self._panel(image_view, qtbot)
+        panel.set_highlight(parse_highlight("bold #f80:«{}»"))
+        panel.refresh(image_view)
+        html = panel.toHtml()
+        cur = image_view.axis_values[0][image_view.pos[0]]
+        assert f"«{cur}»" in html
+        colours = _anchor_colours(panel)
+        assert colours[f"juxt:value/0/{image_view.pos[0]}"] == QColor("#f80").name()
 
 
 def _anchor_colours(panel) -> dict[str, str]:
@@ -380,11 +392,29 @@ class TestStatusCandidateHighlight:
         return lbl._full_html if lbl._full_html is not None else lbl._full_plain
 
     def test_candidate_html_highlights_cursor(self):
-        from juxt.viewer import _HL_COLOR, _candidate_html
+        from juxt.viewer import _HL_DEFAULT_CANDIDATES, _candidate_html
 
         html = _candidate_html(["alpha", "beta"], 1)
-        assert f'<span style="color:{_HL_COLOR}">[beta]</span>' in html
+        assert f'color:{_HL_DEFAULT_CANDIDATES.color}' in html
+        assert ">[beta]</span>" in html
         assert "[alpha]" not in html
+
+    def test_candidate_html_honours_custom_format(self):
+        from juxt.settings import parse_highlight
+        from juxt.viewer import _candidate_html
+
+        hl = parse_highlight("bold red:» {} «")
+        html = _candidate_html(["alpha", "beta"], 0, hl)
+        assert "color:red" in html and "font-weight:bold" in html
+        assert "»&nbsp;alpha&nbsp;«" in html
+
+    def test_candidate_html_raw_template(self):
+        from juxt.settings import parse_highlight
+        from juxt.viewer import _candidate_html
+
+        hl = parse_highlight('html:<span style="background:#334">[{}]</span>')
+        html = _candidate_html(["alpha"], 0, hl)
+        assert html == '<span style="background:#334">[alpha]</span>'
 
     def test_candidate_html_without_cursor(self):
         from juxt.viewer import _candidate_html
@@ -393,22 +423,37 @@ class TestStatusCandidateHighlight:
         assert html == "alpha&nbsp;&nbsp;beta"
 
     def test_seek_candidates_use_highlight_colour(self, main_window):
-        from juxt.viewer import _HL_COLOR
+        from juxt.viewer import _HL_DEFAULT_CANDIDATES
 
         main_window.view._sel = {
             "phase": "value", "query": "", "axis_idx": 0, "cursor": 1,
         }
         status = self._status(main_window)
         vals = main_window.view.axis_values[0]
-        assert f'<span style="color:{_HL_COLOR}">[{vals[1]}]</span>' in status
+        colour = _HL_DEFAULT_CANDIDATES.color
+        assert f'color:{colour}' in status
+        assert f">[{vals[1]}]</span>" in status
         assert f"[{vals[0]}]" not in status
 
+    def test_configured_candidate_format_is_used(self, main_window):
+        from juxt.settings import parse_highlight
+
+        main_window._hl_candidates = parse_highlight("#0f0:<{}>")
+        main_window.view._sel = {
+            "phase": "value", "query": "", "axis_idx": 0, "cursor": 0,
+        }
+        status = self._status(main_window)
+        vals = main_window.view.axis_values[0]
+        assert "color:#0f0" in status
+        assert f"&lt;{vals[0]}&gt;" in status
+
     def test_command_candidates_use_highlight_colour(self, main_window):
-        from juxt.viewer import _HL_COLOR
+        from juxt.viewer import _HL_DEFAULT_CANDIDATES
 
         main_window.view._cmd = {"phase": "verb", "query": "fit", "cursor": 0}
         status = self._status(main_window)
-        assert f'<span style="color:{_HL_COLOR}">[fit]</span>' in status
+        assert f'color:{_HL_DEFAULT_CANDIDATES.color}' in status
+        assert ">[fit]</span>" in status
 
     def test_spaces_are_preserved_as_nbsp(self, main_window):
         main_window.view._sel = {

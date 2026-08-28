@@ -220,6 +220,10 @@ The status bar at the bottom shows:
 
 Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted. Values in the sidebar are clickable: a left click jumps to that value and focuses its axis.
 
+### Highlight format
+
+The colour and delimiters used for the current value (info sidebar, active axis, candidate lists) are set in `~/.juxt/settings.yaml`; see [Highlight format](ui.md#highlight-format).
+
 ### Custom keybindings
 
 Any action (including every `:command` plus `toggle-statusbar` and `toggle-info`) can be bound to a key chord in `~/.juxt/settings.yaml`:

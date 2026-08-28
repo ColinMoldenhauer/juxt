@@ -418,6 +418,8 @@ def main():
         session_name=args.name,
         seek_greedy=settings.seek_greedy,
         keybindings=settings.keybindings,
+        highlight=settings.highlight,
+        highlight_candidates=settings.highlight_candidates,
         grid=args.grid,
         grid_values=args.grid_values,
         grid_layout=grid_layout,
