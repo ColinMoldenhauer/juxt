@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QSocketNotifier, QTimer
 from PySide6.QtGui import QCursor, QIcon
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLineEdit, QProgressDialog
 
+from .complete import normalize_template
 from .config import Config, _auto_keys, dump_config, load_config
 from .detect import (
     _axes_from_local_template,
@@ -123,6 +124,7 @@ def _print_help() -> None:
   PATH accepts several forms (auto-detected):
     /path/to/dir              scan directory, detect axes from filenames
     plots/{sensor}_{date}.png local template with explicit placeholders
+    plots/{}/{}.png           anonymous placeholders, named axis_1, axis_2, …
     host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
     host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
     config.yaml               explicit YAML config file
@@ -256,7 +258,7 @@ def main():
         args.path = chosen
 
     try:
-        raw = args.path
+        raw = normalize_template(args.path)  # anonymous {} → {axis_1}, {axis_2}, …
         if _is_remote_pattern(raw):
             remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
             if '{' in remote_tmpl:

@@ -153,6 +153,25 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 
 Free-text arguments (`:pattern`, `:write`) support full cursor editing: `←`/`→` move the caret, `Home`/`End` jump to the ends, `Delete` removes the character at the caret. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session.
 
+#### Placeholder-aware completion
+
+Completion treats every `{placeholder}` as a wildcard, so a template is built top-down instead of completing a concrete path first and deleting the components that should vary:
+
+```
+:pattern plots/⇥                        →  ASCAT/  SMAP/  SMOS/
+:pattern plots/{sensor}/⇥               →  AM/  PM/          (all sensors merged)
+:pattern plots/{sensor}/{overpass}/2⇥   →  2024-03-15.png  2024-03-16.png
+```
+
+Only the text after the last placeholder is completed, so placeholders already typed survive. A component that *ends* on a placeholder completes with whatever the candidates share — `/` when they are all directories, the common extension for files.
+
+Two shortcuts make the placeholders themselves quicker to type:
+
+- **`{`** followed by `Tab` completes the current axis names: `plots/{s⇥` → `plots/{sensor}`.
+- **`{}`** needs no name at all. Anonymous placeholders are numbered when the pattern is applied, so `plots/{}/{}.png` becomes `plots/{axis_1}/{axis_2}.png`.
+
+While a free-text argument is being typed, each placeholder is coloured by position in the status bar, which keeps a multi-axis template readable.
+
 ---
 
 ## Grid view
