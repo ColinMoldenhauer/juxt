@@ -119,9 +119,32 @@ Use `:mode tap|seek|pin` in the command bar to switch navigation modes.
 
 Press `:` to open the command bar (vim-style). Tab-completion narrows candidates as you type.
 
-The same completion works at the shell prompt — `eval "$(juxt --bash-completion)"` in `~/.bashrc` (see [Installation](https://juxt.readthedocs.io/en/latest/installation/)) — so `juxt plots/{sensor}/2⇥` completes there too.
-
 Path arguments complete with `{placeholders}` in place: `:pattern plots/{sensor}/2⇥` lists what every sensor directory holds, so a template is built top-down instead of completing a concrete path and deleting the parts that should vary. `{` + `Tab` completes an existing axis name, and anonymous `{}` placeholders are numbered automatically.
+
+## Shell completion
+
+The same completion works at the shell prompt. Add one line to `~/.bashrc`:
+
+```bash
+eval "$(juxt --bash-completion)"
+```
+
+zsh needs `bashcompinit` first:
+
+```zsh
+autoload -U bashcompinit && bashcompinit
+eval "$(juxt --bash-completion)"
+```
+
+Then `juxt plots/{sensor}/2⇥` completes at the prompt, as do the command-line options. ble.sh is handled as well, through its own hook. Reload the shell (`source ~/.bashrc`, or open a new terminal) for it to take effect.
+
+Point `JUXT_COMPLETE` at `juxt-complete` if juxt lives in a virtualenv you do not activate:
+
+```bash
+export JUXT_COMPLETE=~/env/juxt/bin/juxt-complete
+```
+
+Placeholders standing for a known kind of value complete only as far as that value: with `date` among the known names, `plots/{date}⇥` stops at `plots/{date}_` rather than swallowing the rest of the filename. Built-in names are `date datetime time year month day doy`, date-style shorthands such as `{yyyy-mm-dd}` are recognised on sight, and more can be added under `placeholders:` in `~/.juxt/settings.yaml`.
 
 | Command | Action |
 |---|---|

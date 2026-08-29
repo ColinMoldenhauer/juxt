@@ -172,6 +172,29 @@ Two shortcuts make the placeholders themselves quicker to type:
 
 While a free-text argument is being typed, each placeholder is coloured by position in the status bar, which keeps a multi-axis template readable.
 
+#### Placeholders that stand for a known value
+
+A placeholder ending a component has no partial word to extend, so completion falls back to what the candidates share. For a placeholder whose name says what kind of value it holds, that is too much: over `2024-03-15_L2.png` and `2024-03-16_L3.png`, `{date}` would complete to `{date}_L`, and the `L` then has to be deleted to make room for the next placeholder.
+
+Names with a known **value shape** stop at the end of the value instead:
+
+```
+:pattern plots/{sensor}/AM/{date}⇥        →  plots/{sensor}/AM/{date}_
+:pattern plots/{sensor}/AM/{yyyy-mm-dd}⇥  →  plots/{sensor}/AM/{yyyy-mm-dd}_
+```
+
+Recognised out of the box: `date` `datetime` `time` `year` `month` `day` `doy`, plus any name written as a date-style shorthand (`yyyy`, `yy`, `mm`, `dd`, `hh`, `ss` and separators), so `{yyyymmdd}` and `{yyyy-mm}` work without configuring anything. A shape only ever guides the completion: when it matches nothing, the placeholder falls back to matching anything, so an unusual date format still completes.
+
+Add your own under `placeholders:` in `~/.juxt/settings.yaml`:
+
+```yaml
+placeholders:
+  orbit: 'o\d{5}'      # a regular expression
+  cycle: yyyy-mm        # or a date-style shorthand
+```
+
+The names are also usable as axis names, so `{yyyy-mm-dd}` can stand in a template as it is.
+
 ---
 
 ## Grid view

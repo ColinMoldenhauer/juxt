@@ -9,6 +9,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
 
+from .complete import PLACEHOLDER_NAME_RE
 from .config import Config, RemoteConfig, _auto_keys
 
 log = logging.getLogger(__name__)
@@ -355,35 +356,44 @@ def _parse_remote_pattern(arg: str) -> tuple[RemoteConfig, str]:
     return RemoteConfig(host=host_part, user=user), remote_template
 
 
+def _template_regex(template: str) -> str:
+    """Turn a template into a regex whose groups are its placeholders, in order.
+
+    Groups are numbered rather than named: a placeholder may be called
+    `{yyyy-mm-dd}`, which is not a valid Python group name.
+    """
+    segs = PLACEHOLDER_NAME_RE.split(template)
+    return ''.join(
+        re.escape(s) if i % 2 == 0 else '([^/]+)'
+        for i, s in enumerate(segs)
+    )
+
+
 def _axes_from_local_template(template: str) -> dict[str, list[str]]:
     """Detect axis values by globbing the local filesystem against *template*.
 
     Example: 'plots/{sensor}_{date}.png' scans for matching files and returns
     {'sensor': ['ASCAT', 'SMAP', ...], 'date': ['2024-03-15', ...]}.
     """
-    names = re.findall(r'\{(\w+)\}', template)
+    names = PLACEHOLDER_NAME_RE.findall(template)
     if not names:
         raise ValueError(f"Template {template!r} has no {{placeholder}} variables")
 
     norm = template.replace('\\', '/')
-    glob_pat = re.sub(r'\{(\w+)\}', '*', norm)
+    glob_pat = PLACEHOLDER_NAME_RE.sub('*', norm)
     raw_files = _glob_mod.glob(glob_pat)
     if not raw_files:
         raise ValueError(f"No files match template {template!r}")
 
-    segs = re.split(r'\{(\w+)\}', norm)
-    regex = ''.join(
-        re.escape(s) if i % 2 == 0 else f'(?P<{s}>[^/]+)'
-        for i, s in enumerate(segs)
-    )
+    regex = _template_regex(norm)
 
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
     for f in sorted(raw_files):
         m = re.fullmatch(regex, f.replace('\\', '/'))
         if m:
-            for n in names:
-                v = m.group(n)
+            for i, n in enumerate(names):
+                v = m.group(i + 1)
                 if v not in seen[n]:
                     seen[n].add(v)
                     axes[n].append(v)
@@ -403,7 +413,7 @@ def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
     """
     import stat
 
-    names = re.findall(r'\{(\w+)\}', template)
+    names = PLACEHOLDER_NAME_RE.findall(template)
     if not names:
         raise ValueError(f"Remote template {template!r} has no {{placeholder}} variables")
 
@@ -411,11 +421,7 @@ def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
     last_slash = prefix.rfind('/')
     base_dir = prefix[:last_slash] if last_slash > 0 else '/'
 
-    segs = re.split(r'\{(\w+)\}', template)
-    regex = ''.join(
-        re.escape(s) if i % 2 == 0 else f'(?P<{s}>[^/]+)'
-        for i, s in enumerate(segs)
-    )
+    regex = _template_regex(template)
 
     remote_files: list[str] = []
     stack = [base_dir]
@@ -437,8 +443,8 @@ def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
     for f in sorted(remote_files):
         m = re.fullmatch(regex, f)
         if m:
-            for n in names:
-                v = m.group(n)
+            for i, n in enumerate(names):
+                v = m.group(i + 1)
                 if v not in seen[n]:
                     seen[n].add(v)
                     axes[n].append(v)

@@ -40,6 +40,17 @@ keybindings:
   Ctrl+Shift+H: toggle-statusbar   # toggle the status bar
   Ctrl+Shift+I: toggle-info        # toggle the info sidebar
   # F11: fullscreen                # example: bind F11 to fullscreen
+
+# Placeholder value shapes used by Tab completion.
+# A placeholder whose name is listed here is completed only as far as the value
+# it stands for: with `date` known, `plots/{date}<TAB>` stops at the end of the
+# date (e.g. `{date}_`) instead of swallowing whatever the filenames share
+# after it.  Built-in names: date datetime time year month day doy.
+# A value is either a date-style shorthand (yyyy yy mm dd hh ss and
+# separators) or a regular expression.
+placeholders:
+  # orbit: 'o\\d{5}'      # regex
+  # cycle: yyyy-mm        # shorthand
 """
 
 _SECTION_TEMPLATES: dict[str, str] = {
@@ -53,6 +64,18 @@ seek:
 display:
   max_vals: 3       # max values shown inline in the path preview  (e.g. {AM|PM|…})
   max_vals_display: 10  # max values listed per axis in the naming dialogue
+""",
+    "placeholders": """
+# Placeholder value shapes used by Tab completion.
+# A placeholder whose name is listed here is completed only as far as the value
+# it stands for: with `date` known, `plots/{date}<TAB>` stops at the end of the
+# date (e.g. `{date}_`) instead of swallowing whatever the filenames share
+# after it.  Built-in names: date datetime time year month day doy.
+# A value is either a date-style shorthand (yyyy yy mm dd hh ss and
+# separators) or a regular expression.
+placeholders:
+  # orbit: 'o\\d{5}'      # regex
+  # cycle: yyyy-mm        # shorthand
 """,
     "keybindings": """
 # Key bindings — map a key chord to an action name.
@@ -85,6 +108,7 @@ class Settings:
     keybindings: dict[str, str] = field(
         default_factory=lambda: dict(_DEFAULT_KEYBINDINGS)
     )
+    placeholders: dict[str, str] = field(default_factory=dict)
 
 
 def _write_missing_sections(path: Path, missing: set[str]) -> None:
@@ -95,11 +119,17 @@ def _write_missing_sections(path: Path, missing: set[str]) -> None:
     log.info("Added missing settings sections to %s: %s", path, sorted(missing))
 
 
-def load_settings(path: Path = SETTINGS_PATH) -> Settings:
+def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
+    """Read the user settings.
+
+    With *write* false the file is only read, never created or extended, which
+    is what the shell completion helper wants: it runs on every Tab press.
+    """
     if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_TEMPLATE, encoding="utf-8")
-        log.info("Created default settings file at %s", path)
+        if write:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_TEMPLATE, encoding="utf-8")
+            log.info("Created default settings file at %s", path)
         return Settings()
     try:
         with open(path, encoding="utf-8") as f:
@@ -117,9 +147,12 @@ def load_settings(path: Path = SETTINGS_PATH) -> Settings:
         kb = data.get("keybindings") or {}
         if isinstance(kb, dict):
             s.keybindings = {**_DEFAULT_KEYBINDINGS, **{str(k): str(v) for k, v in kb.items()}}
+        ph = data.get("placeholders") or {}
+        if isinstance(ph, dict):
+            s.placeholders = {str(k): str(v) for k, v in ph.items()}
         log.debug("Loaded settings from %s: %s", path, s)
         missing = _EXPECTED_SECTIONS - data.keys()
-        if missing:
+        if write and missing:
             _write_missing_sections(path, missing)
         return s
     except Exception as e:

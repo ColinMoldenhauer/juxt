@@ -133,6 +133,18 @@ Keys are single lowercase letters. Each letter is bound to exactly one axis. Any
 
 ---
 
+## Placeholder shapes
+
+`~/.juxt/settings.yaml` can say what kind of value a placeholder name stands for. Tab completion then stops at the end of that value instead of appending whatever the matching filenames happen to share:
+
+```yaml
+placeholders:
+  orbit: 'o\d{5}'      # a regular expression
+  cycle: yyyy-mm        # or a date-style shorthand (yyyy yy mm dd hh ss)
+```
+
+`date` `datetime` `time` `year` `month` `day` `doy` are built in, and any name written as a shorthand — `{yyyy-mm-dd}`, `{yyyymmdd}` — is recognised without configuration. See [Navigation](navigation.md#placeholders-that-stand-for-a-known-value) for what this changes at the prompt.
+
 ## Navigation mode
 
 Set the default navigation mode in the config file. You can still change it at runtime with `:mode`.
