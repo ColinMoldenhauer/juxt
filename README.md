@@ -144,7 +144,7 @@ Point `JUXT_COMPLETE` at `juxt-complete` if juxt lives in a virtualenv you do no
 export JUXT_COMPLETE=~/env/juxt/bin/juxt-complete
 ```
 
-Placeholders standing for a known kind of value complete only as far as that value: with `date` among the known names, `plots/{date}⇥` stops at `plots/{date}_` rather than swallowing the rest of the filename. Built-in names are `date datetime time year month day doy`, date-style shorthands such as `{yyyy-mm-dd}` are recognised on sight, and more can be added under `placeholders:` in `~/.juxt/settings.yaml`.
+Placeholders standing for a known kind of value complete only as far as that value: `plots/{date}⇥` stops at `plots/{date}_` rather than swallowing the rest of the filename. The names that count are the ones listed under `placeholders:` in `~/.juxt/settings.yaml`, which juxt seeds with `date datetime time year month day doy` — edit or delete them, and completion follows. Date-style shorthands such as `{yyyy-mm-dd}` are recognised on sight, with or without an entry.
 
 | Command | Action |
 |---|---|

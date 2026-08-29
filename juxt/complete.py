@@ -37,26 +37,30 @@ PLACEHOLDER_COLORS = ["#e8913a", "#4fc3f7", "#9ccc65", "#ce93d8", "#ffd54f"]
 
 _DELIMS = "_-. "
 
-# Value shapes for well-known placeholder names.  A placeholder whose name is
-# recognised is completed only as far as the value it stands for, so `{date}`
-# followed by Tab stops at the end of the date instead of swallowing whatever
-# the filenames happen to share after it.
-DEFAULT_SHAPES: dict[str, str] = {
-    "date":      r"\d{4}[-_.]?\d{2}[-_.]?\d{2}",
-    "datetime":  r"\d{4}[-_.]?\d{2}[-_.]?\d{2}[T_-]?\d{2}[-_.:]?\d{2}(?:[-_.:]?\d{2})?",
-    "time":      r"\d{2}[-_.:]?\d{2}(?:[-_.:]?\d{2})?",
-    "year":      r"\d{4}",
-    "month":     r"\d{2}",
-    "day":       r"\d{2}",
-    "doy":       r"\d{3}",
+# A placeholder whose name has a known value shape is completed only as far as
+# the value it stands for, so `{date}` followed by Tab stops at the end of the
+# date instead of swallowing whatever the filenames happen to share after it.
+#
+# These are the shapes juxt ships with, but nothing here is applied on its own:
+# they are written into ~/.juxt/settings.yaml, so what completion knows is what
+# the user can see, edit and remove.
+BUILTIN_SHAPES: dict[str, list[str]] = {
+    "date":     ["yyyy-mm-dd", "yyyy_mm_dd", "yyyymmdd"],
+    "datetime": ["yyyy-mm-ddThh:mm:ss", "yyyy-mm-dd_hhmmss", "yyyymmdd_hhmmss"],
+    "time":     ["hh:mm:ss", "hh-mm-ss", "hhmmss"],
+    "year":     ["yyyy"],
+    "month":    ["mm"],
+    "day":      ["dd"],
+    "doy":      ["ddd"],
 }
 
-# Date-style shorthands, longest first so yyyy wins over yy.
+# Date-style shorthands, longest first so yyyy wins over yy.  T is a separator
+# so that ISO timestamps can be written the way they read.
 _SHORTHAND_TOKENS = [
     ("yyyy", r"\d{4}"), ("ddd", r"\d{3}"), ("yy", r"\d{2}"),
     ("mm", r"\d{2}"), ("dd", r"\d{2}"), ("hh", r"\d{2}"), ("ss", r"\d{2}"),
 ]
-_SHORTHAND_SEPS = "-_.: "
+_SHORTHAND_SEPS = "-_.:t "
 
 _shape_cache: dict[str, str] | None = None
 _MAX_DIRS = 64      # cap on the fan-out of a wildcard directory component
@@ -94,22 +98,38 @@ def shorthand_shape(name: str) -> str | None:
         else:
             if text[i] not in _SHORTHAND_SEPS:
                 return None
-            out.append(re.escape(text[i]))
+            # ISO timestamps are written 2024-03-15T12:00:00 as often as with
+            # a lowercase t, so accept either.
+            out.append("[Tt]" if text[i] == "t" else re.escape(text[i]))
             i += 1
     return "".join(out) if matched_token else None
 
 
+def shape_from_setting(value) -> str | None:
+    """Read one settings entry: a shorthand, a regex, or a list of either."""
+    values = value if isinstance(value, (list, tuple)) else [value]
+    parts = [shorthand_shape(str(v)) or str(v) for v in values if str(v)]
+    if not parts:
+        return None
+    return parts[0] if len(parts) == 1 else "|".join(f"(?:{p})" for p in parts)
+
+
 def placeholder_shapes() -> dict[str, str]:
-    """Known value shapes: the built-in names plus anything the user configured."""
+    """The value shapes configured in ~/.juxt/settings.yaml.
+
+    Nothing is assumed when the file says nothing: the defaults juxt ships
+    live in that file, where they can be edited or removed.
+    """
     global _shape_cache
     if _shape_cache is None:
-        shapes = dict(DEFAULT_SHAPES)
+        shapes: dict[str, str] = {}
         try:
             from .settings import SETTINGS_PATH, load_settings
             # Read only: this also runs from the shell helper, on every Tab.
             for name, value in load_settings(SETTINGS_PATH, write=False).placeholders.items():
-                value = str(value)
-                shapes[str(name).lower()] = shorthand_shape(value) or value
+                shape = shape_from_setting(value)
+                if shape:
+                    shapes[str(name).lower()] = shape
         except Exception:
             pass  # a broken settings file must not break completion
         _shape_cache = shapes
@@ -274,7 +294,9 @@ def completion_words(prefix: str, listdir, sep: str = "/") -> list[str]:
         # No partial word to extend — offer the one shared completion, if any.
         append = _append_after_placeholder(matched, sep, shaped)
         return [prefix + append] if append else []
-    return [prefix + rest + (sep if is_dir else "") for _, is_dir, rest in matched]
+    # A placeholder swallows what differs, so several files can share a word.
+    words = [prefix + rest + (sep if is_dir else "") for _, is_dir, rest in matched]
+    return list(dict.fromkeys(words))
 
 
 def _append_after_placeholder(matched, sep: str, shaped: bool = False) -> str:

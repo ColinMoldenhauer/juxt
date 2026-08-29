@@ -59,8 +59,10 @@ _juxt_completion() {
 
     COMPREPLY=("${_juxt_complete_reply[@]}")
 
-    # -o nospace keeps a completed directory open; finish any other word.
-    if ((${#COMPREPLY[@]} == 1)) && [[ ${COMPREPLY[0]} != */ ]]; then
+    # -o nospace keeps the word open where completion stopped at a boundary --
+    # a directory, or a token separator before the next {placeholder}.  Anything
+    # else is a finished word and gets its space.
+    if ((${#COMPREPLY[@]} == 1)) && [[ ${COMPREPLY[0]} != *[/_.-] ]]; then
         COMPREPLY[0]+=" "
     fi
 }
@@ -74,11 +76,13 @@ complete -o nospace -F _juxt_completion juxt
 # it is loaded.  These definitions are inert under plain bash.
 
 # Candidates are inserted verbatim -- no quoting of the braces -- and only a
-# completed word, never a directory, is closed with a space.
+# finished word is closed with a space.  A candidate ending on a separator is
+# an invitation to keep typing: a directory, or the boundary in front of the
+# next {placeholder}.
 function ble/complete/action:juxt/initialize { return 0; }
 function ble/complete/action:juxt/initialize.batch { inserts=("${cands[@]}"); }
 function ble/complete/action:juxt/complete {
-    [[ $CAND == */ ]] || ble/complete/action/complete.addtail ' '
+    [[ $CAND == *[/_.-] ]] || ble/complete/action/complete.addtail ' '
 }
 function ble/complete/action:juxt/get-desc { ble/complete/action:plain/get-desc; }
 

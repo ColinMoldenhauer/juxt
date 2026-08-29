@@ -232,6 +232,7 @@ class TestBleShHook:
             source "{COMPLETION_BASH}"
             {BLE_STUBS}
             CAND="plots/{{sensor}}/"      ble/complete/action:juxt/complete
+            CAND="plots/{{date}}_"        ble/complete/action:juxt/complete
             CAND="plots/{{sensor}}/x.png" ble/complete/action:juxt/complete
         '''
         assert _run_bash(nested_plot_dir.parent, script).splitlines() == ["tail=[ ]"]
@@ -257,6 +258,16 @@ class TestBashFunction:
         reply = _run_completion(nested_plot_dir.parent, ["juxt", "plots/A/AM/d1"],
                                 self._with_helper(helper))
         assert reply == ["plots/A/AM/d1.png "]
+
+    def test_a_word_stopping_on_a_boundary_stays_open(self, tmp_path, helper):
+        """Completing to `{date}_` must not close the word with a space."""
+        plots = tmp_path / "plots"
+        plots.mkdir()
+        for date, level in (("2024-03-15", "L2"), ("2024-03-16", "L3")):
+            (plots / f"{date}_{level}.png").write_bytes(b"")
+        reply = _run_completion(tmp_path, ["juxt", "plots/{yyyy-mm-dd}"],
+                                self._with_helper(helper))
+        assert reply == ["plots/{yyyy-mm-dd}_"]
 
     def test_options_are_completed(self, nested_plot_dir, helper):
         reply = _run_completion(nested_plot_dir.parent, ["juxt", "--squ"],

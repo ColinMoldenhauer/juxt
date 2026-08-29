@@ -10,6 +10,38 @@ log = logging.getLogger(__name__)
 
 SETTINGS_PATH = Path.home() / ".juxt" / "settings.yaml"
 
+def _render_placeholders_section() -> str:
+    """The placeholders block, written from the shapes juxt ships with.
+
+    The defaults live in the user's settings file rather than in the code, so
+    they can be seen and changed; this keeps the two from drifting apart.
+    """
+    from .complete import BUILTIN_SHAPES
+
+    lines = []
+    for name, values in BUILTIN_SHAPES.items():
+        rendered = ", ".join(values)
+        lines.append(f"  {name}: [{rendered}]" if len(values) > 1
+                     else f"  {name}: {rendered}")
+    lines.append("  # orbit: 'o\\d{5}'      # a regular expression works too")
+    return _PLACEHOLDERS_HEADER + "\n".join(lines) + "\n"
+
+
+_PLACEHOLDERS_HEADER = """
+# Placeholder value shapes used by Tab completion.
+# A placeholder whose name is listed here is completed only as far as the value
+# it stands for: with `date` known, `plots/{date}<TAB>` stops at the end of the
+# date (e.g. `{date}_`) instead of swallowing whatever the filenames share
+# after it.  Only what stands here counts, so an entry you delete stops
+# applying.
+# A value is either a date-style shorthand (yyyy yy mm dd hh ss and
+# separators), a regular expression, or a list of alternatives.
+placeholders:
+"""
+
+_PLACEHOLDERS_SECTION = _render_placeholders_section()
+
+
 _TEMPLATE = """\
 # juxt user settings
 # Edit this file and restart juxt for changes to take effect.
@@ -40,18 +72,7 @@ keybindings:
   Ctrl+Shift+H: toggle-statusbar   # toggle the status bar
   Ctrl+Shift+I: toggle-info        # toggle the info sidebar
   # F11: fullscreen                # example: bind F11 to fullscreen
-
-# Placeholder value shapes used by Tab completion.
-# A placeholder whose name is listed here is completed only as far as the value
-# it stands for: with `date` known, `plots/{date}<TAB>` stops at the end of the
-# date (e.g. `{date}_`) instead of swallowing whatever the filenames share
-# after it.  Built-in names: date datetime time year month day doy.
-# A value is either a date-style shorthand (yyyy yy mm dd hh ss and
-# separators) or a regular expression.
-placeholders:
-  # orbit: 'o\\d{5}'      # regex
-  # cycle: yyyy-mm        # shorthand
-"""
+""" + _PLACEHOLDERS_SECTION
 
 _SECTION_TEMPLATES: dict[str, str] = {
     "seek": """
@@ -65,18 +86,7 @@ display:
   max_vals: 3       # max values shown inline in the path preview  (e.g. {AM|PM|…})
   max_vals_display: 10  # max values listed per axis in the naming dialogue
 """,
-    "placeholders": """
-# Placeholder value shapes used by Tab completion.
-# A placeholder whose name is listed here is completed only as far as the value
-# it stands for: with `date` known, `plots/{date}<TAB>` stops at the end of the
-# date (e.g. `{date}_`) instead of swallowing whatever the filenames share
-# after it.  Built-in names: date datetime time year month day doy.
-# A value is either a date-style shorthand (yyyy yy mm dd hh ss and
-# separators) or a regular expression.
-placeholders:
-  # orbit: 'o\\d{5}'      # regex
-  # cycle: yyyy-mm        # shorthand
-""",
+    "placeholders": _PLACEHOLDERS_SECTION,
     "keybindings": """
 # Key bindings — map a key chord to an action name.
 # Action names match any :command plus: toggle-statusbar  toggle-info
@@ -108,7 +118,7 @@ class Settings:
     keybindings: dict[str, str] = field(
         default_factory=lambda: dict(_DEFAULT_KEYBINDINGS)
     )
-    placeholders: dict[str, str] = field(default_factory=dict)
+    placeholders: dict[str, object] = field(default_factory=dict)
 
 
 def _write_missing_sections(path: Path, missing: set[str]) -> None:
@@ -149,7 +159,8 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
             s.keybindings = {**_DEFAULT_KEYBINDINGS, **{str(k): str(v) for k, v in kb.items()}}
         ph = data.get("placeholders") or {}
         if isinstance(ph, dict):
-            s.placeholders = {str(k): str(v) for k, v in ph.items()}
+            # Values stay as written: a shorthand, a regex, or a list of either.
+            s.placeholders = {str(k): v for k, v in ph.items()}
         log.debug("Loaded settings from %s: %s", path, s)
         missing = _EXPECTED_SECTIONS - data.keys()
         if write and missing:

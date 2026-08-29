@@ -183,17 +183,25 @@ Names with a known **value shape** stop at the end of the value instead:
 :pattern plots/{sensor}/AM/{yyyy-mm-dd}⇥  →  plots/{sensor}/AM/{yyyy-mm-dd}_
 ```
 
-Recognised out of the box: `date` `datetime` `time` `year` `month` `day` `doy`, plus any name written as a date-style shorthand (`yyyy`, `yy`, `mm`, `dd`, `hh`, `ss` and separators), so `{yyyymmdd}` and `{yyyy-mm}` work without configuring anything. A shape only ever guides the completion: when it matches nothing, the placeholder falls back to matching anything, so an unusual date format still completes.
-
-Add your own under `placeholders:` in `~/.juxt/settings.yaml`:
+Which names those are is entirely up to `placeholders:` in `~/.juxt/settings.yaml`. juxt writes the section on first run with the names it ships:
 
 ```yaml
 placeholders:
-  orbit: 'o\d{5}'      # a regular expression
-  cycle: yyyy-mm        # or a date-style shorthand
+  date: [yyyy-mm-dd, yyyy_mm_dd, yyyymmdd]
+  datetime: [yyyy-mm-ddThh:mm:ss, yyyy-mm-dd_hhmmss, yyyymmdd_hhmmss]
+  time: [hh:mm:ss, hh-mm-ss, hhmmss]
+  year: yyyy
+  month: mm
+  day: dd
+  doy: ddd
+  orbit: 'o\d{5}'      # add your own: a regex, a shorthand, or a list of either
 ```
 
-The names are also usable as axis names, so `{yyyy-mm-dd}` can stand in a template as it is.
+Nothing is assumed beyond that file, so deleting an entry really does remove it. A value is a date-style shorthand (`yyyy`, `yy`, `mm`, `dd`, `hh`, `ss`, `ddd`, `T` and separators), a regular expression, or a list of alternatives.
+
+Independently of the file, a placeholder whose *name* is itself a shorthand is recognised on sight, so `{yyyy-mm-dd}` and `{yyyymmdd}` work with no configuration at all. And a shape only ever guides the completion: when it matches nothing, the placeholder falls back to matching anything, so an unusual date format still completes.
+
+Shorthand names double as axis names, so `{yyyy-mm-dd}` can stand in a template as it is.
 
 ---
 
