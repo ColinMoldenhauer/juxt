@@ -20,7 +20,6 @@ from PySide6.QtCore import Qt, QSocketNotifier, QTimer  # noqa: E402
 from PySide6.QtGui import QCursor, QIcon  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
-    QFileDialog,
     QInputDialog,
     QLineEdit,
     QProgressDialog,
@@ -38,6 +37,7 @@ from .detect import (
 )
 from .loader import preload, preload_remote
 from .settings import load_settings
+from .startup import StartupDialog
 from .viewer import MainWindow
 
 log = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ def _print_help() -> None:
     host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
     host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
     config.yaml               explicit YAML config file
-    (default: opens a directory picker)
+    (default: opens a dialog to browse a directory or build a template)
 
   -s, --separator SEP [...]   separator(s) for auto-detection
   -a, --auto                  skip axis naming prompt
@@ -261,14 +261,11 @@ def main():
         return _pw_cache[0]
 
     if args.path is None:
-        dlg = QFileDialog(None, "Select image directory", str(Path.home()))
-        dlg.setFileMode(QFileDialog.FileMode.Directory)
-        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        if not app_icon.isNull():
-            dlg.setWindowIcon(app_icon)
+        dlg = StartupDialog(str(Path.home()), app_icon=app_icon)
+        QTimer.singleShot(0, lambda: dlg.move(
+            _startup_screen.geometry().center() - dlg.rect().center()))
         QTimer.singleShot(0, lambda: _force_focus(dlg))
-        chosen = dlg.selectedFiles()[0] if dlg.exec() else ""
+        chosen = dlg.chosen_path() if dlg.exec() else ""
         if not chosen:
             sys.exit(0)
         args.path = chosen

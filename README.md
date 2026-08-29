@@ -40,6 +40,8 @@ juxt config.yaml                            # explicit config file
 
 For directory and remote-directory modes, filenames are split on separators (`_` and `/` by default) and any position with more than one distinct value becomes an axis. You'll be prompted to name the axes on first run; use `-a` to skip.
 
+Run `juxt` with no argument and it opens a dialog instead: a **Browse** tab for picking a directory (auto-discover), and a **Build path** tab for typing a `{placeholder}` template by hand, with `Tab` completing real directories and files along the way.
+
 ## Config
 
 ### Auto-discover mode
