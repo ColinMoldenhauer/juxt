@@ -73,6 +73,7 @@ class StartupDialog(QDialog):
         self.resize(760, 520)
 
         self._chosen_path = ""
+        self._template_touched = False
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Open | QDialogButtonBox.StandardButton.Cancel
@@ -84,6 +85,7 @@ class StartupDialog(QDialog):
         self.tabs.addTab(self._build_browse_tab(initial_dir), "Browse")
         self.tabs.addTab(self._build_template_tab(), "Build path")
         self.tabs.currentChanged.connect(self._update_button_state)
+        self.tabs.currentChanged.connect(self._sync_template_start_path)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs)
@@ -131,7 +133,7 @@ class StartupDialog(QDialog):
         self._path_edit.setPlaceholderText("plots/{sensor}_{date}.png")
         self._path_edit.setText(str(Path.home()) + "/")
         self._path_edit.returnPressed.connect(self._accept)
-        self._path_edit.textEdited.connect(lambda t: self._on_template_change(t, []))
+        self._path_edit.textEdited.connect(self._on_template_edited)
         layout.addWidget(self._path_edit)
 
         preview_row = QHBoxLayout()
@@ -143,7 +145,7 @@ class StartupDialog(QDialog):
 
         self._candidates_label = QLabel(container)
         self._candidates_label.setWordWrap(True)
-        self._candidates_label.setStyleSheet("color: palette(mid);")
+        self._candidates_label.setStyleSheet("color: palette(placeholder-text);")
         layout.addWidget(self._candidates_label)
         layout.addStretch(1)
 
@@ -154,6 +156,26 @@ class StartupDialog(QDialog):
         self._preview_label.setText(placeholder_html(text) or "&nbsp;")
         self._candidates_label.setText(", ".join(matches))
         self._update_button_state()
+
+    def _on_template_edited(self, text: str):
+        self._template_touched = True
+        self._on_template_change(text, [])
+
+    def _sync_template_start_path(self, index: int):
+        """Seed the Build path tab from the Browse tab's current directory.
+
+        Only applies until the user actually types into the template field,
+        so it never clobbers work in progress.
+        """
+        if index != 1 or self._template_touched:
+            return
+        selection = self._browse_selection()
+        if not selection:
+            return
+        path = selection.rstrip("/") + "/"
+        self._path_edit.setText(path)
+        self._path_edit.setCursorPosition(len(path))
+        self._on_template_change(path, [])
 
     # -- shared ----------------------------------------------------------------
 
