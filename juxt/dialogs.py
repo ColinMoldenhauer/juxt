@@ -9,7 +9,8 @@ import logging
 import math
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QPainter, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -23,6 +24,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSpinBox,
+    QStyle,
+    QStyleOptionSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -43,6 +46,16 @@ QComboBox QAbstractItemView { background: #111; color: #ddd;
     border: 1px solid #333; }
 QSpinBox:disabled { color: #666; border-color: #2a2a2a; }
 QCheckBox:disabled { color: #666; }
+/* Give the step buttons a visible box of their own.  The arrows themselves are
+   painted by _ArrowSpinBox — see the note there. */
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border; width: 15px;
+    background: #222; border-left: 1px solid #333; }
+QSpinBox::up-button   { subcontrol-position: top right;
+    border-bottom: 1px solid #333; }
+QSpinBox::down-button { subcontrol-position: bottom right; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #2c2c2c; }
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed { background: #2a4a6a; }
 QPushButton { background: #222; color: #e0e0e0; border: 1px solid #444;
     padding: 4px 12px;
     font-family: 'Courier New', monospace; font-size: 9pt; }
@@ -60,6 +73,55 @@ QCheckBox::indicator:disabled, QListWidget::indicator:disabled {
 
 # Longer value lists scroll rather than growing the dialogue past this.
 _MAX_LIST_ROWS = 12
+
+
+class _ArrowSpinBox(QSpinBox):
+    """A spin box that paints its own step arrows.
+
+    Giving a spin box any stylesheet switches it to ``QStyleSheetStyle``, which
+    draws the native arrows so dark they vanish against the box — and once
+    ``::up-button`` carries a rule of its own, drops them entirely.  Qt only
+    accepts an ``image:`` URL as a replacement, so paint the triangles here
+    rather than shipping a pair of icon assets for two glyphs.
+    """
+
+    _ARROW_W = 7      # triangle base, px
+    _ARROW_H = 4      # triangle height, px
+
+    def _sub_rect(self, which: QStyle.SubControl):
+        opt = QStyleOptionSpinBox()
+        self.initStyleOption(opt)
+        return self.style().subControlRect(
+            QStyle.ComplexControl.CC_SpinBox, opt, which, self
+        )
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        hw, hh = self._ARROW_W / 2, self._ARROW_H / 2
+        for which, up in (
+            (QStyle.SubControl.SC_SpinBoxUp, True),
+            (QStyle.SubControl.SC_SpinBoxDown, False),
+        ):
+            r = self._sub_rect(which)
+            if r.isEmpty():
+                continue
+            # Dim the arrow when that direction has nowhere left to go.
+            live = self.isEnabled() and (
+                self.value() < self.maximum() if up else self.value() > self.minimum()
+            )
+            p.setBrush(QColor("#cccccc" if live else "#555555"))
+            # Qt reports the button rect a couple of px wider than the frame;
+            # keep the glyph inside the widget either way.
+            cx = min(r.center().x() + 0.5, self.width() - hw - 3)
+            cy = r.center().y() + 0.5
+            tip, base = (cy - hh, cy + hh) if up else (cy + hh, cy - hh)
+            p.drawPolygon(QPolygonF([
+                QPointF(cx - hw, base), QPointF(cx + hw, base), QPointF(cx, tip),
+            ]))
+        p.end()
 
 
 @dataclass
@@ -142,8 +204,8 @@ class GridDialog(QDialog):
         form.addRow("", sel_widget)
 
         self.auto_check = QCheckBox("auto (fit viewport)")
-        self.rows_spin = QSpinBox()
-        self.cols_spin = QSpinBox()
+        self.rows_spin = _ArrowSpinBox()
+        self.cols_spin = _ArrowSpinBox()
         for s in (self.rows_spin, self.cols_spin):
             s.setRange(1, 99)
         layout_row = QHBoxLayout()
@@ -191,8 +253,8 @@ class GridDialog(QDialog):
         self.axis_box.currentIndexChanged.connect(self._populate_values)
         self.value_list.itemChanged.connect(self._update_hint)
         self.auto_check.toggled.connect(self._on_auto_toggled)
-        self.rows_spin.valueChanged.connect(self._update_hint)
-        self.cols_spin.valueChanged.connect(self._update_hint)
+        self.rows_spin.valueChanged.connect(self._on_spin_edited)
+        self.cols_spin.valueChanged.connect(self._on_spin_edited)
         btn_all.clicked.connect(lambda: self._set_all(True))
         btn_none.clicked.connect(lambda: self._set_all(False))
         btn_invert.clicked.connect(self._invert)
@@ -265,10 +327,16 @@ class GridDialog(QDialog):
     # ── layout / hint ────────────────────────────────────────────────────────
 
     def _on_auto_toggled(self, auto: bool):
-        self.rows_spin.setEnabled(not auto)
-        self.cols_spin.setEnabled(not auto)
         if auto:
             self._seed_spins()
+        self._update_hint()
+
+    def _on_spin_edited(self, *_):
+        """A spin box only changes under the user's hand — ``_seed_spins`` blocks
+        its signals — so treat any change as the user overriding ``auto``."""
+        if self.auto_check.isChecked():
+            self.auto_check.setChecked(False)  # re-enters via _on_auto_toggled
+            return
         self._update_hint()
 
     def _seed_spins(self):

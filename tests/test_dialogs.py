@@ -15,6 +15,9 @@ AXIS_VALUES = [["A", "B", "C"], ["d1", "d2"]]
 @pytest.fixture
 def dlg(qtbot):
     def _make(**kw):
+        # Mirror the viewer, which always supplies auto_layout_for.
+        kw.setdefault("auto_layout_for",
+                      lambda n: auto_layout(n, 800, 600, 1600, 900))
         d = GridDialog(list(AXIS_NAMES), [list(v) for v in AXIS_VALUES], **kw)
         qtbot.addWidget(d)
         return d
@@ -63,10 +66,35 @@ class TestValueSelection:
 
 
 class TestLayoutControls:
-    def test_auto_disables_the_spin_boxes(self, dlg):
+    def test_auto_leaves_the_spin_boxes_live(self, dlg):
+        """Disabling them made the step arrows look broken; they stay usable
+        and stepping one simply takes the layout off auto."""
         d = dlg()
         assert d.auto_check.isChecked()
-        assert not d.rows_spin.isEnabled()
+        assert d.rows_spin.isEnabled()
+        assert d.cols_spin.isEnabled()
+
+    def test_stepping_a_spin_box_unticks_auto(self, dlg):
+        d = dlg()
+        seeded = d.rows_spin.value()
+        d.rows_spin.stepBy(1)
+        assert not d.auto_check.isChecked()
+        assert d.rows_spin.value() == seeded + 1
+
+    def test_reticking_auto_restores_the_computed_layout(self, dlg):
+        d = dlg()
+        seeded = (d.rows_spin.value(), d.cols_spin.value())
+        d.rows_spin.stepBy(3)
+        d.auto_check.setChecked(True)
+        assert (d.rows_spin.value(), d.cols_spin.value()) == seeded
+
+    def test_stepped_layout_reaches_the_spec(self, dlg):
+        d = dlg()
+        d.rows_spin.stepBy(1)
+        d.cols_spin.stepBy(1)
+        expected = (d.rows_spin.value(), d.cols_spin.value())
+        d._accept()
+        assert d.spec.layout == expected
 
     def test_explicit_layout_prefills_and_enables(self, dlg):
         d = dlg(layout=(2, 3))
@@ -77,6 +105,25 @@ class TestLayoutControls:
     def test_hint_warns_when_layout_is_too_small(self, dlg):
         d = dlg(layout=(1, 2))
         assert "only 2" in d.hint.text()
+
+    def test_step_arrows_are_actually_drawn(self, dlg):
+        """The dialog stylesheet suppresses Qt's native spin arrows, leaving two
+        blank buttons that read as dead controls; _ArrowSpinBox paints its own."""
+        d = dlg()
+        d.show()
+        spin = d.rows_spin
+        spin.setValue(5)  # mid-range, so neither arrow is dimmed at a limit
+        img = spin.grab().toImage()
+        strip = range(max(0, spin.width() - 18), img.width())
+        light = sum(
+            1
+            for y in range(img.height())
+            for x in strip
+            if img.pixelColor(x, y).red() > 120
+        )
+        # Each triangle contributes ~9 bright pixels; the unpainted stylesheet
+        # rendering this replaced scored 0.
+        assert light > 12, "no visible arrow glyphs in the step-button strip"
 
 
 class TestResultSpec:

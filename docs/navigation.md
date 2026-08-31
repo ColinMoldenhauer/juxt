@@ -231,7 +231,7 @@ spellings.
 |---|---|
 | **Axis** | Which axis to tile. Defaults to the current grid axis, or the `←`/`→` axis when not in grid view. |
 | **Values** | Tick the values to show. `All` / `None` / `Invert` set them in bulk. |
-| **Layout** | Leave `auto` ticked to fit the viewport, or untick it and set rows × cols. |
+| **Layout** | With `auto` ticked the spin boxes show the layout that fits the viewport; stepping either one takes it off `auto` and sets rows × cols by hand. Re-tick `auto` to go back. |
 | **Sync pan/zoom** | The `:grid-sharex` / `:grid-sharey` toggles. |
 
 The line above the buttons previews the result, e.g. `3 cells → 2×2 (auto)`, and
