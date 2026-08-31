@@ -111,11 +111,36 @@ def _print_help() -> None:
         "",
         "keys (all modes)",
         None,  # horizontal rule
-        "↑ ↓ ← →    navigate axes",
-        "Space       toggle between two positions",
-        "1–9         jump to Nth value on active axis",
-        ":           command mode  (:fit  :zoom N  :q)",
-        "Ctrl+H      toggle status bar",
+        "↑ ↓ ← →         navigate axes",
+        "Space           toggle between two positions",
+        "Home / End      first / last value on active axis",
+        "1–9             jump to Nth value on active axis",
+        "Enter           toggle fullscreen",
+        "Escape          exit fullscreen / cancel",
+        ":               command mode  (:fit  :zoom N  :q)",
+        "Ctrl+C          cancel command / value picker",
+        "Ctrl+Shift+H    toggle status bar",
+        "Ctrl+Shift+I    toggle info sidebar",
+        "",
+        "view controls",
+        None,  # horizontal rule
+        "0               reset zoom to 100%",
+        "double-click    fit image to window",
+        "drag            pan the image",
+        "wheel           step the ←/→ axis",
+        "Shift+wheel     step the ↑/↓ axis",
+        "Ctrl+wheel      zoom under the cursor",
+        "",
+        "mode keys",
+        None,  # horizontal rule
+        "tap    letter  +1 on that axis  (Letter = −1)",
+        "       Ctrl+letter  open value picker",
+        "seek   letter  incremental axis → value search",
+        "pin    letter  focus axis, then use arrows",
+        "       Ctrl+letter  open value picker",
+        "",
+        "Key bindings are configurable in",
+        "~/.juxt/settings.yaml  (also via :settings).",
         "",
     ]
     pad = 2
@@ -165,10 +190,16 @@ def _print_help() -> None:
   shell completion (bash / zsh)
     eval "$(juxt --bash-completion)"  complete options and {placeholder} paths
 
-  navigation modes (switch with :mode)
-    tap   letter=+1/LETTER=-1 on that axis (default)
-    seek  type to search axes and values by prefix
-    pin   letter focuses axis; arrows navigate""")
+  commands (press : in the viewer, Tab completes)
+    :fit  :fit-width  :fit-height  :zoom N  :fullscreen
+    :grid AXIS [VALUES|NxM]  :grid-layout NxM  :ungrid
+    :grid-sharex on|off  :grid-sharey on|off
+    :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes
+    :mode tap|seek|pin  :switch-last  :info
+    :pattern PATH  :reload  :watch true|false
+    :remove-axis NAME  :remove-value AXIS VALUE
+    :change-key AXIS LETTER  :settings
+    :copy-image  :copy-path  :write [PATH]  :quit""")
 
 
 class _HelpAction(argparse.Action):
