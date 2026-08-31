@@ -23,16 +23,46 @@ import stat as _stat
 from dataclasses import dataclass, field
 
 # A placeholder is either named — {sensor} — or anonymous — {} — which is
-# given a generated name when the pattern is applied.
-PLACEHOLDER_RE = re.compile(r"\{\w*\}")
+# given a generated name when the pattern is applied.  A name may hold anything
+# but braces and a path separator, so date shorthands like {yyyy-mm-dd} count.
+PLACEHOLDER_RE = re.compile(r"\{[^{}/]*\}")
+PLACEHOLDER_NAME_RE = re.compile(r"\{([^{}/]+)\}")
+_PLACEHOLDER_SPLIT_RE = re.compile(r"\{([^{}/]*)\}")
 
 CARET = "▌"  # the status bar caret, which may sit inside a placeholder
-_HIGHLIGHT_RE = re.compile(rf"\{{[\w{CARET}]*\}}|\{{[\w{CARET}]*$")
+_HIGHLIGHT_RE = re.compile(r"\{[^{}/]*\}|\{[^{}/]*$")
 
 # Cycled per placeholder, in order of appearance.
 PLACEHOLDER_COLORS = ["#e8913a", "#4fc3f7", "#9ccc65", "#ce93d8", "#ffd54f"]
 
 _DELIMS = "_-. "
+
+# A placeholder whose name has a known value shape is completed only as far as
+# the value it stands for, so `{date}` followed by Tab stops at the end of the
+# date instead of swallowing whatever the filenames happen to share after it.
+#
+# These are the shapes juxt ships with, but nothing here is applied on its own:
+# they are written into ~/.juxt/settings.yaml, so what completion knows is what
+# the user can see, edit and remove.
+BUILTIN_SHAPES: dict[str, list[str]] = {
+    "date":     ["yyyy-mm-dd", "yyyy_mm_dd", "yyyymmdd"],
+    "datetime": ["yyyy-mm-ddThh:mm:ss", "yyyy-mm-dd_hhmmss", "yyyymmdd_hhmmss"],
+    "time":     ["hh:mm:ss", "hh-mm-ss", "hhmmss"],
+    "year":     ["yyyy"],
+    "month":    ["mm"],
+    "day":      ["dd"],
+    "doy":      ["ddd"],
+}
+
+# Date-style shorthands, longest first so yyyy wins over yy.  T is a separator
+# so that ISO timestamps can be written the way they read.
+_SHORTHAND_TOKENS = [
+    ("yyyy", r"\d{4}"), ("ddd", r"\d{3}"), ("yy", r"\d{2}"),
+    ("mm", r"\d{2}"), ("dd", r"\d{2}"), ("hh", r"\d{2}"), ("ss", r"\d{2}"),
+]
+_SHORTHAND_SEPS = "-_.:t "
+
+_shape_cache: dict[str, str] | None = None
 _MAX_DIRS = 64      # cap on the fan-out of a wildcard directory component
 _MAX_MATCHES = 24   # cap on candidates listed in the status bar
 
@@ -48,13 +78,84 @@ def has_placeholder(text: str) -> bool:
     return PLACEHOLDER_RE.search(text) is not None
 
 
+def shorthand_shape(name: str) -> str | None:
+    """Turn a date-style shorthand such as `yyyy-mm-dd` into a value regex.
+
+    Returns None when *name* is not a shorthand, e.g. `sensor` or a regex the
+    user wrote by hand.
+    """
+    out: list[str] = []
+    text = name.lower()
+    i = 0
+    matched_token = False
+    while i < len(text):
+        for token, pattern in _SHORTHAND_TOKENS:
+            if text.startswith(token, i):
+                out.append(pattern)
+                i += len(token)
+                matched_token = True
+                break
+        else:
+            if text[i] not in _SHORTHAND_SEPS:
+                return None
+            # ISO timestamps are written 2024-03-15T12:00:00 as often as with
+            # a lowercase t, so accept either.
+            out.append("[Tt]" if text[i] == "t" else re.escape(text[i]))
+            i += 1
+    return "".join(out) if matched_token else None
+
+
+def shape_from_setting(value) -> str | None:
+    """Read one settings entry: a shorthand, a regex, or a list of either."""
+    values = value if isinstance(value, (list, tuple)) else [value]
+    parts = [shorthand_shape(str(v)) or str(v) for v in values if str(v)]
+    if not parts:
+        return None
+    return parts[0] if len(parts) == 1 else "|".join(f"(?:{p})" for p in parts)
+
+
+def placeholder_shapes() -> dict[str, str]:
+    """The value shapes configured in ~/.juxt/settings.yaml.
+
+    Nothing is assumed when the file says nothing: the defaults juxt ships
+    live in that file, where they can be edited or removed.
+    """
+    global _shape_cache
+    if _shape_cache is None:
+        shapes: dict[str, str] = {}
+        try:
+            from .settings import SETTINGS_PATH, load_settings
+            # Read only: this also runs from the shell helper, on every Tab.
+            for name, value in load_settings(SETTINGS_PATH, write=False).placeholders.items():
+                shape = shape_from_setting(value)
+                if shape:
+                    shapes[str(name).lower()] = shape
+        except Exception:
+            pass  # a broken settings file must not break completion
+        _shape_cache = shapes
+    return _shape_cache
+
+
+def reset_placeholder_shapes() -> None:
+    """Drop the cached shapes so the next completion re-reads the settings."""
+    global _shape_cache
+    _shape_cache = None
+
+
+def shape_for(name: str, shapes: dict[str, str] | None = None) -> str | None:
+    """The value shape for a placeholder name, or None when it is unknown."""
+    if shapes is None:
+        shapes = placeholder_shapes()
+    return shapes.get(name.lower()) or shorthand_shape(name)
+
+
 def normalize_template(template: str) -> str:
     """Give every anonymous `{}` placeholder a generated axis name.
 
     `plots/{}/{date}.png` → `plots/{axis_1}/{date}.png`.  Generated names skip
     any name already used in the template.
     """
-    taken = set(re.findall(r"\{(\w+)\}", template))
+    taken = set(PLACEHOLDER_NAME_RE.findall(template))
     counter = 0
 
     def _name(_m):
@@ -97,7 +198,7 @@ def complete_placeholder_name(prefix: str, axis_names) -> Completion | None:
     if open_brace < 0:
         return None
     frag = prefix[open_brace + 1:]
-    if not re.fullmatch(r"\w*", frag):
+    if not re.fullmatch(r"[^{}/]*", frag):
         return None
     cands = [n for n in axis_names if n.startswith(frag)]
     if not cands:
@@ -109,15 +210,16 @@ def complete_placeholder_name(prefix: str, axis_names) -> Completion | None:
 
 
 def _match_entries(prefix: str, listdir, sep: str):
-    """Return `(tail, [(name, is_dir, rest), ...])` for the last component.
+    """Return `(tail, [(name, is_dir, rest), ...], shaped)` for the last component.
 
     *rest* is the part of the filename beyond what was typed — the text a
-    completion would insert.
+    completion would insert — and *shaped* says the component ends on a
+    placeholder whose value shape is known, e.g. `{date}`.
     """
     head, _, tail = prefix.rpartition(sep)
     dirs = _resolve_dirs(head, prefix.startswith(sep), listdir, sep)
     if not dirs:
-        return tail, []
+        return tail, [], False
 
     entries: list[tuple[str, bool]] = []
     seen: set[tuple[str, bool]] = set()
@@ -131,13 +233,22 @@ def _match_entries(prefix: str, listdir, sep: str):
             entries.append((name, is_dir))
     entries.sort()
 
-    regex = _tail_regex(tail)
+    regex, shaped = _tail_regex(tail, placeholder_shapes())
+    matched = _apply(regex, entries)
+    if not matched:
+        # A shape is a guess about how values look; retry without it.
+        regex, shaped = _tail_regex(tail, None)
+        matched = _apply(regex, entries)
+    return tail, matched, shaped
+
+
+def _apply(regex: re.Pattern, entries) -> list[tuple[str, bool, str]]:
     matched = []
     for name, is_dir in entries:
         m = regex.match(name)
         if m:
             matched.append((name, is_dir, name[m.end():]))
-    return tail, matched
+    return matched
 
 
 def complete_path(prefix: str, listdir, sep: str = "/") -> Completion:
@@ -147,14 +258,14 @@ def complete_path(prefix: str, listdir, sep: str = "/") -> Completion:
     already typed survive: `plots/{sensor}/2024-0` + Tab lists what every
     sensor directory has under it and extends the `2024-0` part only.
     """
-    tail, matched = _match_entries(prefix, listdir, sep)
+    tail, matched, shaped = _match_entries(prefix, listdir, sep)
     if not matched:
         return Completion()
 
     if tail.endswith("}"):
         # The component ends on a placeholder: there is no partial word to
         # extend, so complete with what all candidates have in common instead.
-        append = _append_after_placeholder(matched, sep)
+        append = _append_after_placeholder(matched, sep, shaped)
     elif len(matched) == 1:
         name, is_dir, rest = matched[0]
         append = rest + (sep if is_dir else "")
@@ -176,17 +287,21 @@ def completion_words(prefix: str, listdir, sep: str = "/") -> list[str]:
     Each candidate is the typed *prefix* with one match appended, so the
     placeholders in it survive the completion.
     """
-    tail, matched = _match_entries(prefix, listdir, sep)
+    tail, matched, shaped = _match_entries(prefix, listdir, sep)
     if not matched:
         return []
     if tail.endswith("}"):
         # No partial word to extend — offer the one shared completion, if any.
-        append = _append_after_placeholder(matched, sep)
+        append = _append_after_placeholder(matched, sep, shaped)
         return [prefix + append] if append else []
-    return [prefix + rest + (sep if is_dir else "") for _, is_dir, rest in matched]
+    # A placeholder swallows what differs, so several files can share a word.
+    words = [prefix + rest + (sep if is_dir else "") for _, is_dir, rest in matched]
+    return list(dict.fromkeys(words))
 
 
-def _append_after_placeholder(matched, sep: str) -> str:
+def _append_after_placeholder(matched, sep: str, shaped: bool = False) -> str:
+    if shaped:
+        return _append_after_shaped_placeholder(matched, sep)
     names = [name for name, _, _ in matched]
     if len(names) > 1:
         suffix = _delimited_suffix(_common_suffix(names))
@@ -197,6 +312,30 @@ def _append_after_placeholder(matched, sep: str) -> str:
     if all(is_dir for _, is_dir, _ in matched):
         return sep
     return ""
+
+
+def _append_after_shaped_placeholder(matched, sep: str) -> str:
+    """Complete a known placeholder only up to the next token boundary.
+
+    `{date}` stands for one field, so over 2024-03-15_L2.png and
+    2024-03-16_L3.png it completes to `{date}_`, not `{date}_L`, leaving room
+    for the placeholder that comes next.
+    """
+    rests = [rest for _, _, rest in matched]
+    all_dirs = all(is_dir for _, is_dir, _ in matched)
+    if len(set(rests)) == 1:
+        # Nothing to choose between: everything after the value is shared.
+        return rests[0] + (sep if all_dirs else "")
+
+    # The candidates diverge, so stop at the last boundary before they do.
+    common = os.path.commonprefix(rests)
+    boundary = ""
+    for i, ch in enumerate(common):
+        if ch in _DELIMS or ch == sep:
+            boundary = common[:i + 1]
+    if not boundary and all_dirs:
+        return sep
+    return boundary
 
 
 def _common_suffix(names) -> str:
@@ -212,10 +351,24 @@ def _delimited_suffix(suffix: str) -> str:
     return ""
 
 
-def _tail_regex(tail: str) -> re.Pattern:
-    """Match a filename against the typed component, placeholders being `*`."""
-    parts = [_literal_regex(p) for p in PLACEHOLDER_RE.split(tail)]
-    return re.compile(".*?".join(parts))
+def _tail_regex(tail: str, shapes: dict[str, str] | None) -> tuple[re.Pattern, bool]:
+    """Match a filename against the typed component.
+
+    Placeholders match anything, unless *shapes* is given and names the
+    placeholder, in which case it matches only that value shape.  The second
+    return value says whether the component ends on such a shaped placeholder.
+    """
+    segments = _PLACEHOLDER_SPLIT_RE.split(tail)
+    parts: list[str] = []
+    shaped = False
+    for i, segment in enumerate(segments):
+        if i % 2 == 0:
+            parts.append(_literal_regex(segment))
+            continue
+        shape = shape_for(segment, shapes) if shapes is not None else None
+        parts.append(f"(?:{shape})" if shape else ".*?")
+        shaped = bool(shape) and i == len(segments) - 2
+    return re.compile("".join(parts)), shaped
 
 
 def _literal_regex(literal: str) -> str:

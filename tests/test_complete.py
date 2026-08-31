@@ -10,10 +10,14 @@ from juxt.complete import (
     Completion,
     complete_path,
     complete_placeholder_name,
+    completion_words,
     local_listdir,
     normalize_template,
     placeholder_html,
+    placeholder_shapes,
+    reset_placeholder_shapes,
     sftp_listdir,
+    shorthand_shape,
 )
 
 
@@ -158,6 +162,10 @@ class TestPlaceholderNameCompletion:
         comp = complete_placeholder_name("plots/{d", ["date", "daynight"])
         assert comp.append == "a"
 
+    def test_a_hyphenated_axis_name_completes(self):
+        comp = complete_placeholder_name("plots/{yyyy-", ["yyyy-mm-dd", "sensor"])
+        assert comp.append == "mm-dd}"
+
     def test_unknown_name_falls_through(self):
         assert complete_placeholder_name("plots/{zz", self.NAMES) is None
 
@@ -246,3 +254,161 @@ class TestPlaceholderHtml:
     def test_caret_inside_a_placeholder(self):
         html = placeholder_html("plots/{sen▌sor}.png")
         assert f'<span style="color:{PLACEHOLDER_COLORS[0]}">{{sen▌sor}}</span>' in html
+
+
+# ---------------------------------------------------------------------------
+# Placeholder value shapes
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def dated_dir(tmp_path):
+    """2 dates x 2 levels: 2024-03-15_L2.png ... 2024-03-16_L3.png."""
+    for date in ("2024-03-15", "2024-03-16"):
+        for level in ("L2", "L3"):
+            (tmp_path / f"{date}_{level}.png").write_bytes(b"")
+    return tmp_path
+
+
+class TestShorthandShape:
+    def test_dashed_date(self):
+        assert shorthand_shape("yyyy-mm-dd") == r"\d{4}\-\d{2}\-\d{2}"
+
+    def test_compact_date(self):
+        assert shorthand_shape("yyyymmdd") == r"\d{4}\d{2}\d{2}"
+
+    def test_longest_token_wins(self):
+        assert shorthand_shape("yy") == r"\d{2}"
+        assert shorthand_shape("yyyy") == r"\d{4}"
+
+    def test_a_plain_name_is_not_a_shorthand(self):
+        assert shorthand_shape("sensor") is None
+
+    def test_separators_alone_are_not_a_shorthand(self):
+        assert shorthand_shape("--") is None
+
+    def test_a_handwritten_regex_is_not_a_shorthand(self):
+        assert shorthand_shape(r"o\d{5}") is None
+
+
+@pytest.fixture
+def shipped_settings(tmp_path, monkeypatch):
+    """A settings file as a fresh install writes it, with the default shapes."""
+    from juxt.settings import _TEMPLATE
+
+    cfg = tmp_path / ".juxt"      # hidden, so it is never a completion candidate
+    cfg.mkdir()
+    path = cfg / "settings.yaml"
+    path.write_text(_TEMPLATE, encoding="utf-8")
+    monkeypatch.setattr("juxt.settings.SETTINGS_PATH", path)
+    reset_placeholder_shapes()
+    yield path
+    reset_placeholder_shapes()
+
+
+@pytest.mark.usefixtures("shipped_settings")
+class TestShapedCompletion:
+    def test_known_name_stops_at_the_token_boundary(self, dated_dir):
+        # Without the shape this would complete to "_L", or even "_L2.png".
+        comp = _complete(f"{dated_dir.as_posix()}/{{date}}")
+        assert comp.append == "_"
+
+    def test_shorthand_name_stops_at_the_token_boundary(self, dated_dir):
+        comp = _complete(f"{dated_dir.as_posix()}/{{yyyy-mm-dd}}")
+        assert comp.append == "_"
+
+    def test_completion_continues_past_the_boundary(self, dated_dir):
+        comp = _complete(f"{dated_dir.as_posix()}/{{date}}_")
+        assert comp.append == "L"
+
+    def test_an_unknown_name_keeps_the_shared_suffix(self, dated_dir):
+        comp = _complete(f"{dated_dir.as_posix()}/{{sensor}}")
+        assert comp.append == ".png"
+
+    def test_a_fully_shared_remainder_is_completed(self, tmp_path):
+        for date in ("2024-03-15", "2024-03-16"):
+            (tmp_path / f"{date}.png").write_bytes(b"")
+        assert _complete(f"{tmp_path.as_posix()}/{{date}}").append == ".png"
+
+    def test_date_directories_open(self, tmp_path):
+        for date in ("2024-03-15", "2024-03-16"):
+            (tmp_path / date).mkdir()
+        assert _complete(f"{tmp_path.as_posix()}/{{date}}").append == "/"
+
+    def test_a_shape_that_does_not_fit_falls_back(self, tmp_path):
+        # Dates the built-in shape knows nothing about must still complete.
+        for name in ("15Mar2024_L2.png", "16Mar2024_L3.png"):
+            (tmp_path / name).write_bytes(b"")
+        comp = _complete(f"{tmp_path.as_posix()}/{{date}}")
+        assert comp.matches == ["15Mar2024_L2.png", "16Mar2024_L3.png"]
+
+    def test_words_swallowed_by_a_placeholder_appear_once(self, dated_dir):
+        words = completion_words(f"{dated_dir.as_posix()}/{{date}}_", local_listdir())
+        assert words == [f"{dated_dir.as_posix()}/{{date}}_L2.png",
+                         f"{dated_dir.as_posix()}/{{date}}_L3.png"]
+
+    def test_shapes_apply_to_shell_words_too(self, dated_dir):
+        words = completion_words(f"{dated_dir.as_posix()}/{{date}}", local_listdir())
+        assert words == [f"{dated_dir.as_posix()}/{{date}}_"]
+
+
+class TestConfiguredShapes:
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        reset_placeholder_shapes()
+        yield
+        reset_placeholder_shapes()
+
+    def _settings(self, tmp_path, body: str):
+        cfg = tmp_path / ".juxt"      # hidden, so it is never a candidate
+        cfg.mkdir(exist_ok=True)
+        path = cfg / "settings.yaml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_user_regex_is_used(self, tmp_path, monkeypatch):
+        plots = tmp_path / "plots"
+        plots.mkdir()
+        for orbit, version in (("o12345", "v2"), ("o12346", "v3")):
+            (plots / f"{orbit}_{version}.png").write_bytes(b"")
+        settings = self._settings(tmp_path, "placeholders:\n  orbit: 'o\\d{5}'\n")
+        monkeypatch.setattr("juxt.settings.SETTINGS_PATH", settings)
+        assert _complete(f"{plots.as_posix()}/{{orbit}}").append == "_"
+
+    def test_an_unconfigured_name_is_still_a_plain_placeholder(self, tmp_path, monkeypatch):
+        plots = tmp_path / "plots"
+        plots.mkdir()
+        for orbit, version in (("o12345", "v2"), ("o12346", "v3")):
+            (plots / f"{orbit}_{version}.png").write_bytes(b"")
+        monkeypatch.setattr("juxt.settings.SETTINGS_PATH", tmp_path / ".juxt" / "none.yaml")
+        assert _complete(f"{plots.as_posix()}/{{orbit}}").append == ".png"
+
+    def test_user_shorthand_is_used(self, tmp_path, monkeypatch):
+        plots = tmp_path / "plots"
+        plots.mkdir()
+        for cycle, run in (("2024-03", "a"), ("2024-04", "b")):
+            (plots / f"{cycle}_{run}.png").write_bytes(b"")
+        settings = self._settings(tmp_path, "placeholders:\n  cycle: yyyy-mm\n")
+        monkeypatch.setattr("juxt.settings.SETTINGS_PATH", settings)
+        assert _complete(f"{plots.as_posix()}/{{cycle}}").append == "_"
+
+    def test_settings_file_is_never_written_by_completion(self, tmp_path, monkeypatch):
+        missing = tmp_path / ".juxt" / "settings.yaml"
+        monkeypatch.setattr("juxt.settings.SETTINGS_PATH", missing)
+        placeholder_shapes()
+        assert not missing.exists()
+
+    def test_a_broken_settings_file_leaves_completion_working(
+        self, tmp_path, monkeypatch, dated_dir
+    ):
+        settings = self._settings(tmp_path, "placeholders: [not, a, mapping\n")
+        monkeypatch.setattr("juxt.settings.SETTINGS_PATH", settings)
+        comp = _complete(f"{dated_dir.as_posix()}/{{date}}")
+        assert comp.append == ".png"       # no shapes, but still completing
+        assert len(comp.matches) == 4
+
+    def test_built_in_names_come_from_the_settings_file(self, tmp_path, monkeypatch,
+                                                        dated_dir):
+        """Without the settings entry, `date` is just another placeholder name."""
+        monkeypatch.setattr("juxt.settings.SETTINGS_PATH", tmp_path / ".juxt" / "no.yaml")
+        assert _complete(f"{dated_dir.as_posix()}/{{date}}").append == ".png"
+        assert placeholder_shapes() == {}

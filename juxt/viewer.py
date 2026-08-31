@@ -30,6 +30,7 @@ from .complete import (
     local_listdir,
     normalize_template,
     placeholder_html,
+    reset_placeholder_shapes,
     sftp_listdir,
 )
 from .config import Config
@@ -2703,6 +2704,7 @@ class MainWindow(QMainWindow):
             self._settings_watcher.addPath(str(SETTINGS_PATH))
         settings = load_settings(SETTINGS_PATH)
         self.view.apply_settings(settings)
+        reset_placeholder_shapes()  # {date} & friends may have been re-configured
         import juxt.detect as _detect
         _detect._MAX_VALS = settings.max_vals
         _detect._MAX_VALS_DISPLAY = settings.max_vals_display
