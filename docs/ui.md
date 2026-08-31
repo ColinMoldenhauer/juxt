@@ -38,8 +38,8 @@ Triggered by pressing `:`.
 
 | # | Element | Description |
 |---|---|---|
-| 1 | **Cursor** | The command being typed, e.g. `:fit▌`. |
-| 2 | **Suggested values** | Prefix-matched command candidates; the selected entry is shown in `[brackets]`. |
+| 1 | **Cursor** | The command being typed, e.g. `:fit▌`. In a free-text argument (`:pattern`, `:write`), each `{placeholder}` is coloured by position. |
+| 2 | **Suggested values** | Prefix-matched command candidates; the selected entry is shown in `[brackets]`. After `Tab` on a path argument, this row lists the matching directory entries instead. |
 | 3 | **Tooltip** | One-line description of the selected command, right-aligned. |
 
 ### Seek mode
