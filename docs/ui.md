@@ -66,6 +66,33 @@ Every value is clickable: a left click jumps straight to it, focuses that axis (
 
 ---
 
+## Grid builder
+
+![Grid builder dialogue](assets/screenshots/grid-dialog.png)
+
+Open with `Ctrl+Shift+G` or `:grid-dialog` — a point-and-click front end for the
+`:grid` command family.
+
+| Field | Description |
+|---|---|
+| **Axis** | The axis to tile across the grid. Pre-selected to the current grid axis, or the `←`/`→` axis when not yet in grid view. |
+| **Values** | One checkbox per value; only the ticked ones become cells. `All`, `None` and `Invert` set them in bulk. |
+| **Layout** | With `auto` ticked the spin boxes preview the layout fitted to the viewport aspect ratio. Stepping either spin box unticks `auto` and hands you rows × cols; re-tick it to return to the fitted layout. Rows × cols is a hard cap — pick fewer panes than values and the leftovers stay reachable through the focused pane. |
+| **Sync pan/zoom** | The per-axis equivalents of `:grid-sharex` and `:grid-sharey`. |
+
+The grey line above the buttons previews the outcome — `3 cells → 2×2 (auto)` —
+and says how many values the focused pane will cycle when an explicit layout has
+fewer panes than selected values.
+
+Click a pane to focus it; the grid axis then scrolls that pane alone, through
+the values no other pane is showing.
+
+**Show grid** applies the settings, **Exit grid** (shown only while a grid is
+open) is the same as `:ungrid`, and every field is pre-filled from the active
+grid, so the dialogue doubles as an editor for the current view.
+
+---
+
 ## Highlight format
 
 Three places show the current selection in colour: the active value in the info sidebar, the active axis in the status-bar coordinates, and the selected entry in a candidate list. All three are configurable in `~/.juxt/settings.yaml`:

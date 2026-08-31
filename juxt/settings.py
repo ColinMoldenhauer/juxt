@@ -160,6 +160,7 @@ highlight:
 keybindings:
   Ctrl+Shift+H: toggle-statusbar   # toggle the status bar
   Ctrl+Shift+I: toggle-info        # toggle the info sidebar
+  Ctrl+Shift+G: grid-dialog        # open the grid builder dialogue
   # F11: fullscreen                # example: bind F11 to fullscreen
 """ + _PLACEHOLDERS_SECTION
 
@@ -198,6 +199,7 @@ highlight:
 keybindings:
   Ctrl+Shift+H: toggle-statusbar
   Ctrl+Shift+I: toggle-info
+  Ctrl+Shift+G: grid-dialog
   # F11: fullscreen
 """,
 }
@@ -207,6 +209,7 @@ _EXPECTED_SECTIONS = set(_SECTION_TEMPLATES)
 _DEFAULT_KEYBINDINGS: dict[str, str] = {
     "Ctrl+Shift+H": "toggle-statusbar",
     "Ctrl+Shift+I": "toggle-info",
+    "Ctrl+Shift+G": "grid-dialog",
 }
 
 

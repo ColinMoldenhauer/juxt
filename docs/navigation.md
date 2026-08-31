@@ -33,6 +33,7 @@ These bindings work identically regardless of which mode is active.
 | `Enter` | Toggle fullscreen |
 | `Ctrl+Shift+H` | Toggle the status bar |
 | `Ctrl+Shift+I` | Toggle the info sidebar |
+| `Ctrl+Shift+G` | Open the grid builder dialogue |
 
 ### Other
 
@@ -133,6 +134,7 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:grid AXIS VAL …` | Same, but show only the listed values |
 | `:grid AXIS NxM` | Same, with an explicit layout (e.g. `:grid sensor 2x2`) |
 | `:grid AXIS VAL … NxM` | Values and explicit layout combined |
+| `:grid-dialog` | Open the grid builder dialogue (same as `Ctrl+Shift+G`) |
 | `:grid-layout NxM` | Change the layout of the current grid without exiting (e.g. `:grid-layout 1x3`) |
 | `:ungrid` | Return to single-image view |
 | `:grid-sharex [on\|off]` | Toggle or set synchronized horizontal pan/zoom across cells (default: on) |
@@ -219,6 +221,54 @@ Grid view tiles all (or a subset of) values from one axis into a grid of indepen
 
 The layout is chosen automatically to best match the viewport's aspect ratio given the image dimensions; use `NxM` to override.
 
+#### Layouts smaller than the value count
+
+`NxM` is a hard cap, not a hint: `:grid sensor 2x1` gives you exactly two panes
+even when the axis has more values. Each pane holds its own value, and the
+values that don't fit stay reachable through the **focused pane** — the one
+drawn with a highlighted border and label.
+
+Stepping the grid axis scrolls **only the focused pane**, through the values no
+other pane is currently showing. The focus never moves on its own and the other
+panes hold still, so you can flip one tile against a fixed reference:
+
+```
+:grid sensor 2x1        # sensor = ASCAT SMAP SMOS
+                        # panes  [ASCAT] SMAP
+s                       # panes  [SMOS]  SMAP    ← only the focused pane moved
+s                       # panes  [ASCAT] SMAP    ← wraps; SMAP is never offered
+```
+
+**Click any pane to focus it.** The grid axis then acts on that pane instead,
+and its list of candidates updates to exclude whatever the other panes hold.
+
+The status bar names the focused pane, e.g. `[tap  grid:sensor[pane 1/2 +1]]` —
+pane 1 of 2, with 1 value not on screen. When every value already has a pane
+there is nothing left to cycle and the grid axis does nothing; use a smaller
+layout if you want to scroll through them.
+
+### The grid builder dialogue
+
+`Ctrl+Shift+G` (or `:grid-dialog`) opens a small dialogue that builds the same
+grid without typing a command — useful when you don't remember the axis or value
+spellings.
+
+| Field | Meaning |
+|---|---|
+| **Axis** | Which axis to tile. Defaults to the current grid axis, or the `←`/`→` axis when not in grid view. |
+| **Values** | Tick the values to show. `All` / `None` / `Invert` set them in bulk. |
+| **Layout** | With `auto` ticked the spin boxes show the layout that fits the viewport; stepping either one takes it off `auto` and sets rows × cols by hand. Re-tick `auto` to go back. A layout smaller than the value count gives the focused pane something to cycle, as above. |
+| **Sync pan/zoom** | The `:grid-sharex` / `:grid-sharey` toggles. |
+
+The line above the buttons previews the result, e.g. `3 cells → 2×2 (auto)`, and
+says so when an explicit layout has fewer panes than selected values — those
+values stay reachable through the focused pane. **Show grid**
+applies the settings; when opened from inside grid view the dialogue also offers
+**Exit grid**, equivalent to `:ungrid`.
+
+Opening the dialogue while a grid is active pre-fills every field from that grid,
+so it doubles as an editor for the current view.
+
 ### :grid — interactive completion
 
 `:grid` supports interactive argument completion. After pressing `Enter` to confirm the verb, the status bar shows axis name candidates:
@@ -235,7 +285,7 @@ Use `←`/`→` to cycle candidates or type a prefix to narrow them. Press **`Ta
 
 Press **`Tab`** again on each value to append it to the filter list. Press **`Enter`** to execute with the current selection — or just type the arguments manually if you know them.
 
-**Navigation in grid mode** works the same as normal: arrow keys and letter keys advance all other axes simultaneously — every cell updates together.
+**Navigation in grid mode** works the same as normal for every axis except the grid axis: arrow keys and letter keys advance all other axes simultaneously, and every cell updates together. The *grid* axis is confined to the focused pane — it swaps that one pane's value for another that is not already on screen, leaving the rest of the grid as a fixed reference. With a value subset, only values from that subset are ever offered.
 
 **Pan and zoom** are synchronized across all cells by default. Each cell is an independent `QGraphicsView`, so you can also pan/drag within a single cell independently when sync is off.
 
@@ -253,7 +303,7 @@ juxt "plots/{sensor}_{date}.png" --grid sensor --grid-layout 1x3
 juxt "plots/{sensor}_{date}.png" --grid sensor --no-sharex --no-sharey
 ```
 
-The status bar shows the active grid axis in the mode indicator, e.g. `[tap  grid:sensor]`.
+The status bar shows the active grid axis in the mode indicator, e.g. `[tap  grid:sensor]`, and names the focused pane when there is more than one, e.g. `[tap  grid:sensor[pane 2/2 +1]]` — the trailing `+1` counts values with no pane of their own.
 
 ---
 
@@ -281,6 +331,7 @@ Any action (including every `:command` plus `toggle-statusbar` and `toggle-info`
 ```yaml
 keybindings:
   Ctrl+Shift+H: toggle-statusbar
+  Ctrl+Shift+G: grid-dialog
   F11: fullscreen
   Ctrl+R: reload
 ```

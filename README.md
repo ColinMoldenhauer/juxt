@@ -158,6 +158,7 @@ Placeholders standing for a known kind of value complete only as far as that val
 | `:mode tap\|seek\|pin` | switch navigation mode |
 | `:grid [AXIS]` | tile an axis into a grid of viewports |
 | `:grid AXIS VAL …` | grid with a value subset |
+| `:grid-dialog` | open the grid builder dialogue (`Ctrl+Shift+G`) |
 | `:grid-layout NxM` | change grid layout without exiting |
 | `:ungrid` | return to single-image view |
 | `:grid-sharex` / `:grid-sharey` | toggle synchronized pan/zoom |
@@ -178,4 +179,6 @@ Placeholders standing for a known kind of value complete only as far as that val
 | Key | Action |
 |---|---|
 | `Enter` | toggle fullscreen |
-| `Ctrl+H` | toggle status bar |
+| `Ctrl+Shift+H` | toggle status bar |
+| `Ctrl+Shift+I` | toggle info sidebar |
+| `Ctrl+Shift+G` | open the grid builder dialogue |

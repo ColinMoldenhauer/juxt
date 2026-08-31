@@ -8,9 +8,10 @@ from enum import IntEnum
 from typing import Literal
 
 from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
+from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QDockWidget,
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -224,6 +225,7 @@ _COMMANDS = [
     "fit-width",
     "fullscreen",
     "grid",
+    "grid-dialog",
     "grid-layout",
     "grid-sharex",
     "grid-sharey",
@@ -285,6 +287,7 @@ _COMMAND_HELP: dict[str, str] = {
     "fit-width":    "fit image width to viewport",
     "fullscreen":   "toggle fullscreen",
     "grid":         "expand an axis into a tiled grid  (e.g. grid sensor  /  grid sensor SMAP SMOS  /  grid sensor 2x2)",
+    "grid-dialog":  "open the point-and-click grid builder  (Ctrl+Shift+G)",
     "grid-layout":  "change the grid layout without exiting  (e.g. grid-layout 2x3)",
     "grid-sharex":  "toggle or set synchronized horizontal pan/zoom  (on / off)",
     "grid-sharey":  "toggle or set synchronized vertical pan/zoom  (on / off)",
@@ -375,10 +378,15 @@ def _window_title(config: "Config", session_name: str | None = None) -> str:
     return f"juxt | {name}"
 
 
+# Focus accent, matching the :default button border in dialogs.py.
+_ACCENT = QColor(102, 170, 255)
+
+
 class _CellView(QGraphicsView):
     """Single-image viewport used inside GridWidget."""
 
     zoomed = Signal(object)  # emits self.transform() after a wheel-zoom
+    clicked = Signal()       # emits on mouse press, to claim grid focus
 
     def __init__(self, label: str, parent=None):
         scene = QGraphicsScene()
@@ -389,6 +397,7 @@ class _CellView(QGraphicsView):
         scene.addItem(self._item)
         self._fit: Literal["image", "height", "width"] | None = None
         self._label_text = label
+        self._focused = False
 
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -404,6 +413,17 @@ class _CellView(QGraphicsView):
         self._scene.setSceneRect(QRectF(pm.rect()))
         if self._fit is not None:
             getattr(self, f"fit_{self._fit}")()
+
+    def set_label(self, text: str):
+        """Cells are reused as the visible window scrolls, so labels change."""
+        if text != self._label_text:
+            self._label_text = text
+            self.viewport().update()
+
+    def set_focused(self, on: bool):
+        if on != self._focused:
+            self._focused = on
+            self.viewport().update()
 
     def fit_image(self):
         self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
@@ -448,23 +468,34 @@ class _CellView(QGraphicsView):
             super().wheelEvent(event)
 
     def drawForeground(self, painter: QPainter, _rect):
-        if not self._label_text:
-            return
         painter.save()
         painter.resetTransform()   # switch to viewport pixel coordinates
-        fm = painter.fontMetrics()
-        pad_x, pad_y, margin = 5, 2, 4
-        text_w = fm.horizontalAdvance(self._label_text)
-        text_h = fm.height()
-        bg = QRectF(margin, margin, text_w + 2 * pad_x, text_h + 2 * pad_y)
-        painter.fillRect(bg, QColor(0, 0, 0, 160))
-        painter.setPen(QColor(224, 224, 224))
-        painter.drawText(
-            int(bg.x() + pad_x),
-            int(bg.y() + pad_y + text_h - fm.descent()),
-            self._label_text,
-        )
+        if self._focused:
+            # Marks the cell the grid axis is currently on — the one that
+            # scrolls the window when it steps past an edge.
+            painter.setPen(QPen(_ACCENT, 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(self.viewport().rect().adjusted(1, 1, -1, -1))
+        if self._label_text:
+            fm = painter.fontMetrics()
+            pad_x, pad_y, margin = 5, 2, 4
+            text_w = fm.horizontalAdvance(self._label_text)
+            text_h = fm.height()
+            bg = QRectF(margin, margin, text_w + 2 * pad_x, text_h + 2 * pad_y)
+            painter.fillRect(bg, _ACCENT if self._focused else QColor(0, 0, 0, 160))
+            painter.setPen(QColor(255, 255, 255) if self._focused
+                           else QColor(224, 224, 224))
+            painter.drawText(
+                int(bg.x() + pad_x),
+                int(bg.y() + pad_y + text_h - fm.descent()),
+                self._label_text,
+            )
         painter.restore()
+
+    def mousePressEvent(self, event):
+        # Press, not release, so claiming focus does not wait out a pan drag.
+        self.clicked.emit()
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, _event):
         self.fit_image()
@@ -477,6 +508,8 @@ class _CellView(QGraphicsView):
 
 class GridWidget(QWidget):
     """Grid of independent image viewports with optional scroll/zoom sync."""
+
+    focus_requested = Signal(int)   # cell index the user clicked into
 
     def __init__(
         self,
@@ -492,13 +525,17 @@ class GridWidget(QWidget):
         self._sharex = sharex
         self._sharey = sharey
         self._syncing = False
+        self._rows = rows
+        self._cols = cols
 
         layout = QGridLayout(self)
         layout.setSpacing(4)
         layout.setContentsMargins(0, 0, 0, 0)
         self._cells: list[_CellView] = []
 
-        for i, label in enumerate(labels):
+        # The layout is a hard cap: with more values than slots the extra ones
+        # are reached by scrolling the window, not by growing the grid.
+        for i, label in enumerate(labels[: rows * cols]):
             row, col = i // cols, i % cols
             cell = _CellView(label)
             layout.addWidget(cell, row, col)
@@ -510,6 +547,7 @@ class GridWidget(QWidget):
                 lambda val, c=cell: self._on_vscroll(val, c)
             )
             cell.zoomed.connect(lambda t, c=cell: self._on_zoom(t, c))
+            cell.clicked.connect(lambda i=i: self.focus_requested.emit(i))
 
     # ── sync handlers ─────────────────────────────────────────────────────────
 
@@ -548,15 +586,31 @@ class GridWidget(QWidget):
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def update_cells(self, base_pos: list, axis_idx: int, indices: list[int], pixmaps: dict):
-        for grid_i, vi in enumerate(indices):
-            if grid_i >= len(self._cells):
-                break
+    def capacity(self) -> int:
+        """How many values fit on screen at once."""
+        return len(self._cells)
+
+    def update_cells(
+        self,
+        base_pos: list,
+        axis_idx: int,
+        indices: list[int],
+        labels: list[str],
+        pixmaps: dict,
+        focused: int = -1,
+    ):
+        """Fill the cells from *indices* — the currently visible window."""
+        for slot, cell in enumerate(self._cells):
+            if slot >= len(indices):
+                cell.set_focused(False)
+                continue
             key = list(base_pos)
-            key[axis_idx] = vi
+            key[axis_idx] = indices[slot]
             pm = pixmaps.get(tuple(key))
             if pm and not pm.isNull():
-                self._cells[grid_i].set_pixmap(pm)
+                cell.set_pixmap(pm)
+            cell.set_label(labels[slot])
+            cell.set_focused(slot == focused)
 
     def fit_image(self):
         for cell in self._cells:
@@ -715,6 +769,8 @@ class ImageView(QGraphicsView):
         self._grid_axis: int | None = None
         self._grid_filter: list[int] | None = None   # None = all values
         self._grid_layout: tuple[int, int] | None = None  # explicit (rows, cols)
+        self._grid_slots: list[int] = []  # value index shown in each pane
+        self._grid_focus: int = 0        # pane the grid axis acts on
         self._grid_sharex: bool = grid_sharex
         self._grid_sharey: bool = grid_sharey
         self._grid_widget: GridWidget | None = None
@@ -753,14 +809,67 @@ class ImageView(QGraphicsView):
         self.viewport().update()
         self.state_changed.emit()
 
+    def _grid_indices(self) -> list[int]:
+        """Value indices the grid is showing, in order (before windowing)."""
+        if self._grid_axis is None:
+            return []
+        if self._grid_filter is not None:
+            return self._grid_filter
+        return list(range(len(self.axis_values[self._grid_axis])))
+
+    def _grid_candidates(self) -> list[int]:
+        """Values the focused pane may cycle through.
+
+        Everything the grid was given, minus what the *other* panes are already
+        showing — stepping the axis walks the values that aren't on screen yet
+        instead of duplicating a neighbour.
+        """
+        others = {vi for i, vi in enumerate(self._grid_slots) if i != self._grid_focus}
+        return [vi for vi in self._grid_indices() if vi not in others]
+
+    def _grid_sync_focus(self):
+        """Push ``pos`` on the grid axis into the focused pane.
+
+        Anything that moves the axis — stepping, the value picker, Home/End —
+        lands here, so the pane the user is working in is the only one that
+        changes.  Panes stay distinct: picking a value another pane already
+        holds exchanges the two rather than showing it twice.
+        """
+        if not self._grid_slots:
+            return
+        cur = self.pos[self._grid_axis]
+        f = self._grid_focus
+        if self._grid_slots[f] == cur:
+            return
+        if cur in self._grid_slots:
+            self._grid_slots[self._grid_slots.index(cur)] = self._grid_slots[f]
+        self._grid_slots[f] = cur
+
+    def _grid_set_focus(self, slot: int):
+        """Make *slot* the pane the grid axis acts on (click-to-focus)."""
+        if self._grid_widget is None or not (0 <= slot < len(self._grid_slots)):
+            return
+        if slot == self._grid_focus:
+            return
+        self._grid_focus = slot
+        # Follow the pane with the axis position so the status bar, the info
+        # sidebar and the next step all speak about the pane in hand.
+        self.pos[self._grid_axis] = self._grid_slots[slot]
+        log.debug("grid: focus -> pane %d (%s)", slot,
+                  self.axis_values[self._grid_axis][self._grid_slots[slot]])
+        self._refresh()
+
     def _refresh_grid(self):
         if self._grid_widget is None:
             log.debug("_refresh_grid: no grid widget, skipping")
             return
-        indices = (self._grid_filter if self._grid_filter is not None
-                   else list(range(len(self.axis_values[self._grid_axis]))))
-        log.debug("_refresh_grid: axis=%d indices=%s pos=%s", self._grid_axis, indices, self.pos)
-        self._grid_widget.update_cells(self.pos, self._grid_axis, indices, self.pixmaps)
+        self._grid_sync_focus()
+        labels = [self.axis_values[self._grid_axis][vi] for vi in self._grid_slots]
+        log.debug("_refresh_grid: axis=%d slots=%s focus=%d pos=%s",
+                  self._grid_axis, self._grid_slots, self._grid_focus, self.pos)
+        self._grid_widget.update_cells(
+            self.pos, self._grid_axis, self._grid_slots, labels,
+            self.pixmaps, self._grid_focus)
         self.state_changed.emit()
 
     def _enter_grid(self, axis_idx: int, filter_indices: list[int] | None, layout: tuple[int, int] | None):
@@ -794,20 +903,74 @@ class ImageView(QGraphicsView):
                 ((c, math.ceil(n / c)) for c in range(1, n + 1)),
                 key=lambda cr: abs((cr[0] * img_w) / max(1, cr[1] * img_h) - vp_ar),
             )
-        log.info("grid: axis=%r  %d cells  layout=%dx%d  sharex=%s  sharey=%s",
-                 self.axis_names[axis_idx], n, rows, cols, self._grid_sharex, self._grid_sharey)
+        capacity = rows * cols
+        log.info("grid: axis=%r  %d value%s  layout=%dx%d (%d cell%s)  sharex=%s  sharey=%s",
+                 self.axis_names[axis_idx], n, "" if n == 1 else "s", rows, cols,
+                 min(n, capacity), "" if min(n, capacity) == 1 else "s",
+                 self._grid_sharex, self._grid_sharey)
+        if n > capacity:
+            log.info("grid: %d values do not fit %d cells — the focused pane cycles "
+                     "the %d that are off screen", n, capacity, n - capacity)
 
-        labels = [all_vals[vi] for vi in indices]
+        # Each pane holds its own value; the axis only ever moves the focused one.
+        self._grid_slots = list(indices[:capacity])
+        if self.pos[axis_idx] in self._grid_slots:
+            self._grid_focus = self._grid_slots.index(self.pos[axis_idx])
+        else:
+            self._grid_focus = 0
+            self.pos[axis_idx] = self._grid_slots[0]
+
+        labels = [all_vals[vi] for vi in self._grid_slots]
         gw = GridWidget(self, rows, cols, labels, self._grid_sharex, self._grid_sharey)
+        gw.focus_requested.connect(self._grid_set_focus)
         self._grid_widget = gw
         self._refresh_grid()
         self.grid_mode_changed.emit(gw)
+
+    def _open_grid_dialog(self):
+        """Point-and-click front end for :grid (Ctrl+Shift+G)."""
+        from .dialogs import GridDialog, auto_layout
+
+        img_w, img_h = 800, 600
+        pm = self.pixmaps.get(tuple(self.pos))
+        if pm and not pm.isNull():
+            img_w, img_h = pm.width(), pm.height()
+        vp = self.viewport()
+        vp_w, vp_h = vp.width(), vp.height()
+
+        dlg = GridDialog(
+            list(self.axis_names),
+            [list(v) for v in self.axis_values],
+            axis=self._grid_axis if self._grid_axis is not None else self._h_axis(),
+            values=self._grid_filter,
+            layout=self._grid_layout,
+            sharex=self._grid_sharex,
+            sharey=self._grid_sharey,
+            in_grid=self._grid_axis is not None,
+            auto_layout_for=lambda n: auto_layout(n, img_w, img_h, vp_w, vp_h),
+            parent=self.window(),
+        )
+        result = dlg.exec()
+        self.setFocus()
+        if result == GridDialog.EXIT:
+            if self._grid_axis is not None:
+                self._exit_grid()
+            return
+        if result != QDialog.DialogCode.Accepted or dlg.spec is None:
+            return
+        spec = dlg.spec
+        self._grid_sharex = spec.sharex
+        self._grid_sharey = spec.sharey
+        self._enter_grid(spec.axis, spec.values, spec.layout)
+        self.state_changed.emit()
 
     def _exit_grid(self):
         log.info("grid: exiting grid mode (was axis=%r)", self.axis_names[self._grid_axis] if self._grid_axis is not None else None)
         self._grid_axis = None
         self._grid_filter = None
         self._grid_layout = None
+        self._grid_slots = []
+        self._grid_focus = 0
         self._grid_widget = None
         self.grid_mode_changed.emit(None)
         self._refresh()
@@ -823,7 +986,15 @@ class ImageView(QGraphicsView):
     def _navigate(self, axis: int, delta: int):
         n = len(self.axis_values[axis])
         self.prev = list(self.pos)
-        self.pos[axis] = (self.pos[axis] + delta) % n
+        if axis == self._grid_axis and self._grid_widget is not None:
+            # The grid axis scrolls inside the focused pane only, through the
+            # values no other pane is showing.
+            cands = self._grid_candidates()
+            cur = self.pos[axis]
+            k = cands.index(cur) if cur in cands else 0
+            self.pos[axis] = cands[(k + delta) % len(cands)] if cands else cur
+        else:
+            self.pos[axis] = (self.pos[axis] + delta) % n
         self._active_axis = axis
         self._active_axis_timer.start(1000)
         self._refresh()
@@ -1315,6 +1486,8 @@ class ImageView(QGraphicsView):
                         filter_indices.append(match)
 
             self._enter_grid(axis_idx, filter_indices, layout)
+        elif verb == "grid-dialog":
+            self._open_grid_dialog()
         elif verb == "ungrid":
             if self._grid_axis is not None:
                 self._exit_grid()
@@ -2625,7 +2798,14 @@ class MainWindow(QMainWindow):
             self._status_label.setText(v._flash_msg)
             return
 
-        grid_str = f"  grid:{v.axis_names[v._grid_axis]}" if v._grid_axis is not None else ""
+        grid_str = ""
+        if v._grid_axis is not None:
+            grid_str = f"  grid:{v.axis_names[v._grid_axis]}"
+            n_panes = len(v._grid_slots)
+            if n_panes > 1:    # say which pane the axis is acting on
+                grid_str += f"[pane {v._grid_focus + 1}/{n_panes}"
+                hidden = len(v._grid_indices()) - n_panes
+                grid_str += f" +{hidden}]" if hidden > 0 else "]"
         mode_str = f"[{v.nav_mode.label}{grid_str}]{'  ●' if v._watching else ''}"
 
         if v._cmd is not None:
