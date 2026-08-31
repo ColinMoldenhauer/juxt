@@ -216,20 +216,26 @@ class StartupDialog(QDialog):
     def _build_add_placeholder_button(self, parent: QWidget) -> QPushButton:
         button = QPushButton("Add placeholder", parent)
         menu = QMenu(button)
+        menu.addAction("{} (anonymous)", lambda: self._insert_placeholder("", land_inside=False))
         menu.addAction("Custom…", lambda: self._insert_placeholder(""))
         for name in sorted(placeholder_shapes()):
             menu.addAction(f"{{{name}}}", lambda name=name: self._insert_placeholder(name))
         button.setMenu(menu)
         return button
 
-    def _insert_placeholder(self, name: str) -> None:
+    def _insert_placeholder(self, name: str, *, land_inside: bool = True) -> None:
         edit = self._path_edit
         pos = edit.cursorPosition()
         text = edit.text()
         inserted = "{" + name + "}"
         edit.setText(text[:pos] + inserted + text[pos:])
-        # No name: land the caret inside the braces so the user can type one.
-        edit.setCursorPosition(pos + len(inserted) if name else pos + 1)
+        if name:
+            caret = pos + len(inserted)
+        else:
+            # Anonymous: land inside the braces to type a name, or past them
+            # to leave it auto-numbered and keep typing the rest of the path.
+            caret = pos + 1 if land_inside else pos + len(inserted)
+        edit.setCursorPosition(caret)
         edit.setFocus()
         self._on_template_edited(edit.text())
 

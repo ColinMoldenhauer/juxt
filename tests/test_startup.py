@@ -78,6 +78,16 @@ class TestBuildPathTab:
         assert dlg._path_edit.text() == "plots/{}.png"
         assert dlg._path_edit.cursorPosition() == len("plots/{")
 
+    def test_add_placeholder_button_inserts_anonymous_braces_past_cursor(self, qtbot, tmp_path):
+        dlg = StartupDialog(str(tmp_path))
+        qtbot.addWidget(dlg)
+        dlg.tabs.setCurrentIndex(1)
+        dlg._path_edit.setText("plots/.png")
+        dlg._path_edit.setCursorPosition(len("plots/"))
+        dlg._insert_placeholder("", land_inside=False)
+        assert dlg._path_edit.text() == "plots/{}.png"
+        assert dlg._path_edit.cursorPosition() == len("plots/{}")
+
     def test_add_placeholder_button_inserts_named_placeholder(self, qtbot, tmp_path):
         dlg = StartupDialog(str(tmp_path))
         qtbot.addWidget(dlg)
