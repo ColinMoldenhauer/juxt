@@ -28,7 +28,8 @@ class TestBrowseTab:
         dlg = StartupDialog(str(nested_plot_dir))
         qtbot.addWidget(dlg)
         dlg._browse.setDirectory(str(nested_plot_dir / "A"))
-        assert dlg._browse_selection() == str(nested_plot_dir / "A")
+        # Qt always reports paths with forward slashes, even on Windows.
+        assert dlg._browse_selection() == (nested_plot_dir / "A").as_posix()
 
     def test_open_enabled_with_a_directory_selected(self, qtbot, nested_plot_dir):
         dlg = StartupDialog(str(nested_plot_dir))
@@ -40,7 +41,8 @@ class TestBrowseTab:
         qtbot.addWidget(dlg)
         dlg._browse.setDirectory(str(nested_plot_dir / "B"))
         dlg._accept()
-        assert dlg.chosen_path() == str(nested_plot_dir / "B")
+        # Qt always reports paths with forward slashes, even on Windows.
+        assert dlg.chosen_path() == (nested_plot_dir / "B").as_posix()
 
 
 class TestBuildPathTab:

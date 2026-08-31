@@ -133,8 +133,39 @@ class TestHelperCommand:
 # The bash function itself
 # ---------------------------------------------------------------------------
 
-bash_required = pytest.mark.skipif(shutil.which("bash") is None,
-                                   reason="bash not installed")
+def _git_bash_candidate() -> str | None:
+    """The bash.exe shipped next to git.exe on Windows.
+
+    Windows Server images also ship a `bash.exe` stub in System32 that only
+    launches WSL, and fails outright when no distribution is installed. If it
+    sits earlier on PATH than Git's own bash, `shutil.which("bash")` picks it
+    up instead, so it has to be ruled out explicitly.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return None
+    candidate = Path(git).resolve().parent.parent / "bin" / "bash.exe"
+    return str(candidate) if candidate.is_file() else None
+
+
+def _find_bash() -> str | None:
+    """A bash that actually runs, preferring Git's over whatever is on PATH."""
+    candidates = [shutil.which("bash")]
+    if sys.platform == "win32":
+        candidates.insert(0, _git_bash_candidate())
+    for candidate in dict.fromkeys(c for c in candidates if c):
+        try:
+            subprocess.run([candidate, "-c", "true"], check=True,
+                           capture_output=True, timeout=10)
+        except (subprocess.CalledProcessError, OSError):
+            continue
+        return candidate
+    return None
+
+
+BASH = _find_bash()
+bash_required = pytest.mark.skipif(BASH is None,
+                                   reason="no working POSIX bash found")
 
 
 def _run_completion(cwd: Path, words: list[str], setup: str = "") -> list[str]:
@@ -153,7 +184,7 @@ def _run_completion(cwd: Path, words: list[str], setup: str = "") -> list[str]:
         _juxt_completion
         printf "%s\\n" "${{COMPREPLY[@]}}"
     '''
-    out = subprocess.run(["bash", "-c", script], cwd=cwd, text=True,
+    out = subprocess.run([BASH, "-c", script], cwd=cwd, text=True,
                          capture_output=True, check=True)
     return [line for line in out.stdout.split("\n") if line != ""]
 
@@ -182,7 +213,7 @@ def helper(tmp_path):
 
 def _run_bash(cwd: Path, script: str, check: bool = True) -> str:
     """Run *script* under bash and return its stdout."""
-    out = subprocess.run(["bash", "-c", script], cwd=cwd, text=True,
+    out = subprocess.run([BASH, "-c", script], cwd=cwd, text=True,
                          capture_output=True, check=check)
     return out.stdout
 
