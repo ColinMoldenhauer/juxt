@@ -221,6 +221,28 @@ Grid view tiles all (or a subset of) values from one axis into a grid of indepen
 
 The layout is chosen automatically to best match the viewport's aspect ratio given the image dimensions; use `NxM` to override.
 
+#### Layouts smaller than the value count
+
+`NxM` is a hard cap, not a hint: `:grid sensor 2x1` gives you exactly two cells
+even when the axis has more values. The grid then shows a **window** onto the
+values — the first `N×M` of them — and one cell is the **focused pane**, drawn
+with a highlighted border and label.
+
+Stepping the grid axis moves the focus. When the focus would leave the window,
+the window scrolls by one so the incoming value comes into view, the way a list
+scrolls to keep the selection visible:
+
+```
+:grid sensor 2x1        # sensor = ASCAT SMAP SMOS
+                        # shows  [ASCAT] SMAP
+s                       # shows   ASCAT [SMAP]
+s                       # shows   SMAP  [SMOS]   ← window scrolled
+```
+
+While a grid is paging, the status bar names the visible slice, e.g.
+`[tap  grid:sensor[2-3/3]]`. When every value fits, nothing scrolls and the
+focus simply moves between cells.
+
 ### The grid builder dialogue
 
 `Ctrl+Shift+G` (or `:grid-dialog`) opens a small dialogue that builds the same
@@ -231,11 +253,12 @@ spellings.
 |---|---|
 | **Axis** | Which axis to tile. Defaults to the current grid axis, or the `←`/`→` axis when not in grid view. |
 | **Values** | Tick the values to show. `All` / `None` / `Invert` set them in bulk. |
-| **Layout** | With `auto` ticked the spin boxes show the layout that fits the viewport; stepping either one takes it off `auto` and sets rows × cols by hand. Re-tick `auto` to go back. |
+| **Layout** | With `auto` ticked the spin boxes show the layout that fits the viewport; stepping either one takes it off `auto` and sets rows × cols by hand. Re-tick `auto` to go back. A layout smaller than the value count pages, as above. |
 | **Sync pan/zoom** | The `:grid-sharex` / `:grid-sharey` toggles. |
 
 The line above the buttons previews the result, e.g. `3 cells → 2×2 (auto)`, and
-warns when an explicit layout has fewer slots than selected values. **Show grid**
+says so when an explicit layout has fewer slots than selected values — those
+values are still reachable by paging. **Show grid**
 applies the settings; when opened from inside grid view the dialogue also offers
 **Exit grid**, equivalent to `:ungrid`.
 
@@ -258,7 +281,7 @@ Use `←`/`→` to cycle candidates or type a prefix to narrow them. Press **`Ta
 
 Press **`Tab`** again on each value to append it to the filter list. Press **`Enter`** to execute with the current selection — or just type the arguments manually if you know them.
 
-**Navigation in grid mode** works the same as normal: arrow keys and letter keys advance all other axes simultaneously — every cell updates together.
+**Navigation in grid mode** works the same as normal: arrow keys and letter keys advance all other axes simultaneously — every cell updates together. Stepping the *grid* axis moves the focused pane instead, paging the window when the layout is too small to show every value at once. With a value subset, stepping the grid axis visits only the values in that subset.
 
 **Pan and zoom** are synchronized across all cells by default. Each cell is an independent `QGraphicsView`, so you can also pan/drag within a single cell independently when sync is off.
 
@@ -276,7 +299,7 @@ juxt "plots/{sensor}_{date}.png" --grid sensor --grid-layout 1x3
 juxt "plots/{sensor}_{date}.png" --grid sensor --no-sharex --no-sharey
 ```
 
-The status bar shows the active grid axis in the mode indicator, e.g. `[tap  grid:sensor]`.
+The status bar shows the active grid axis in the mode indicator, e.g. `[tap  grid:sensor]`, and appends the visible slice while paging, e.g. `[tap  grid:sensor[2-3/4]]`.
 
 ---
 

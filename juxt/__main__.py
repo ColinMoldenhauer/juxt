@@ -442,6 +442,9 @@ def main():
         if not m:
             print(f"Warning: --grid-layout {args.grid_layout!r} is not a valid NxM layout, ignoring",
                   file=sys.stderr)
+        elif int(m.group(1)) < 1 or int(m.group(2)) < 1:
+            print(f"Warning: --grid-layout {args.grid_layout!r} needs rows and cols >= 1, ignoring",
+                  file=sys.stderr)
         else:
             grid_layout = (int(m.group(1)), int(m.group(2)))
 

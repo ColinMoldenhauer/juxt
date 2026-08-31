@@ -75,11 +75,12 @@ Open with `Ctrl+Shift+G` or `:grid-dialog` — a point-and-click front end for t
 |---|---|
 | **Axis** | The axis to tile across the grid. Pre-selected to the current grid axis, or the `←`/`→` axis when not yet in grid view. |
 | **Values** | One checkbox per value; only the ticked ones become cells. `All`, `None` and `Invert` set them in bulk. |
-| **Layout** | With `auto` ticked the spin boxes preview the layout fitted to the viewport aspect ratio. Stepping either spin box unticks `auto` and hands you rows × cols; re-tick it to return to the fitted layout. |
+| **Layout** | With `auto` ticked the spin boxes preview the layout fitted to the viewport aspect ratio. Stepping either spin box unticks `auto` and hands you rows × cols; re-tick it to return to the fitted layout. Rows × cols is a hard cap — pick fewer cells than values and the grid pages, with a highlighted focused pane. |
 | **Sync pan/zoom** | The per-axis equivalents of `:grid-sharex` and `:grid-sharey`. |
 
 The grey line above the buttons previews the outcome — `3 cells → 2×2 (auto)` —
-and warns when an explicit layout has too few slots for the selected values.
+and reports how many are shown at a time when an explicit layout has too few
+slots for the selected values.
 **Show grid** applies the settings, **Exit grid** (shown only while a grid is
 open) is the same as `:ungrid`, and every field is pre-filled from the active
 grid, so the dialogue doubles as an editor for the current view.

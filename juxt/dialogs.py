@@ -369,7 +369,9 @@ class GridDialog(QDialog):
         rows, cols = self.rows_spin.value(), self.cols_spin.value()
         slots = rows * cols
         if slots < n:
-            self.hint.setText(f"{n} cells → {rows}×{cols} shows only {slots}")
+            self.hint.setText(
+                f"{n} cells → {rows}×{cols}, {slots} at a time — step the axis to page"
+            )
         else:
             blank = slots - n
             extra = f", {blank} empty" if blank else ""

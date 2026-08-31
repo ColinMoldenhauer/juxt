@@ -374,3 +374,133 @@ class TestPlaceholderColouring:
         TestPatternCompletion._open(v, "plots/<b>/{sensor}.png")
         main_window._update_status()
         assert "&lt;b&gt;" in main_window._status_label._full_html
+
+
+# ---------------------------------------------------------------------------
+# Grid windowing — the layout caps how many cells exist; extra values page
+# ---------------------------------------------------------------------------
+
+class TestGridWindowing:
+    @staticmethod
+    def _view(qtbot, n_sensors=4):
+        """ImageView over an axis with enough values to overflow a small grid."""
+        from PySide6.QtGui import QColor, QPixmap
+        from juxt.config import Config, _auto_keys
+        from juxt.viewer import ImageView
+
+        axes = {"sensor": [chr(ord("A") + i) for i in range(n_sensors)],
+                "date": ["d1", "d2"]}
+        cfg = Config(template="fake/{sensor}_{date}.png", axes=axes,
+                     keys=_auto_keys(axes))
+        pms = {}
+        for i in range(n_sensors):
+            for j in range(2):
+                pm = QPixmap(80, 60)
+                pm.fill(QColor(40 + i * 40, 40 + j * 40, 120))
+                pms[(i, j)] = pm
+        v = ImageView(cfg, pms)
+        qtbot.addWidget(v)
+        v.resize(800, 600)
+        return v
+
+    @staticmethod
+    def _shown(v):
+        """(visible labels, focused label) for the current grid window."""
+        window, focused = v._grid_window()
+        labels = [v.axis_values[v._grid_axis][vi] for vi in window]
+        return labels, (labels[focused] if 0 <= focused < len(labels) else None)
+
+    def test_layout_caps_the_number_of_cells(self, qtbot):
+        """A 2x1 layout over 3 values must not silently become a 3x1 grid."""
+        v = self._view(qtbot, n_sensors=3)
+        v._enter_grid(0, None, (2, 1))
+        assert v._grid_widget.capacity() == 2
+        assert len(v._grid_widget._cells) == 2
+        assert v._grid_widget.layout().rowCount() == 2
+        assert v._grid_widget.layout().columnCount() == 1
+
+    def test_first_values_are_the_ones_shown(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        labels, focused = self._shown(v)
+        assert labels == ["A", "B"]
+        assert focused == "A"
+
+    def test_stepping_within_the_window_only_moves_focus(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        v._navigate(0, +1)
+        assert self._shown(v) == (["A", "B"], "B")
+        assert v._grid_offset == 0
+
+    def test_stepping_past_the_edge_scrolls_the_window(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        v._navigate(0, +1)
+        v._navigate(0, +1)                      # C is not on screen yet
+        assert self._shown(v) == (["B", "C"], "C")
+        v._navigate(0, +1)
+        assert self._shown(v) == (["C", "D"], "D")
+
+    def test_stepping_back_scrolls_the_other_way(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        for _ in range(3):
+            v._navigate(0, +1)                  # window now C D, focus D
+        v._navigate(0, -1)
+        assert self._shown(v) == (["C", "D"], "C")
+        v._navigate(0, -1)
+        assert self._shown(v) == (["B", "C"], "B")
+
+    def test_wrapping_returns_to_the_first_window(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        for _ in range(4):                      # A B C D then wrap
+            v._navigate(0, +1)
+        assert self._shown(v) == (["A", "B"], "A")
+        assert v._grid_offset == 0
+
+    def test_no_paging_when_every_value_fits(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 2))
+        assert v._grid_widget.capacity() == 4
+        labels, focused = self._shown(v)
+        assert labels == ["A", "B", "C", "D"]
+        assert focused == "A"
+        v._navigate(0, +1)                      # focus moves, window does not
+        assert self._shown(v) == (["A", "B", "C", "D"], "B")
+        assert v._grid_offset == 0
+
+    def test_filtered_values_page_and_skip_the_rest(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, [0, 2, 3], (2, 1))     # A, C, D — B excluded
+        assert self._shown(v) == (["A", "C"], "A")
+        v._navigate(0, +1)
+        assert self._shown(v) == (["A", "C"], "C")
+        v._navigate(0, +1)                      # steps to D, never to B
+        assert self._shown(v) == (["C", "D"], "D")
+        v._navigate(0, +1)
+        assert self._shown(v) == (["A", "C"], "A")
+
+    def test_entry_anchors_focus_on_a_shown_value(self, qtbot):
+        """Entering with the axis parked on a filtered-out value must not
+        leave the focus pointing at something the grid never draws."""
+        v = self._view(qtbot)
+        v.pos[0] = 1                            # B, which the filter excludes
+        v._enter_grid(0, [0, 2, 3], (2, 1))
+        assert v.pos[0] == 0
+        assert self._shown(v) == (["A", "C"], "A")
+
+    def test_exactly_one_cell_is_focused(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        v._navigate(0, +1)
+        assert [c._focused for c in v._grid_widget._cells] == [False, True]
+
+    def test_cell_labels_follow_the_window(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        assert [c._label_text for c in v._grid_widget._cells] == ["A", "B"]
+        for _ in range(3):
+            v._navigate(0, +1)
+        assert [c._label_text for c in v._grid_widget._cells] == ["C", "D"]
