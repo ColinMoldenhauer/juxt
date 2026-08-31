@@ -40,6 +40,8 @@ juxt config.yaml                            # explicit config file
 
 For directory and remote-directory modes, filenames are split on separators (`_` and `/` by default) and any position with more than one distinct value becomes an axis. You'll be prompted to name the axes on first run; use `-a` to skip.
 
+Run `juxt` with no argument and it opens a dialog instead: a **Browse** tab for picking a directory (auto-discover), and a **Build path** tab for typing a `{placeholder}` template by hand, with `Tab` completing real directories and files along the way.
+
 ## Config
 
 ### Auto-discover mode
@@ -118,6 +120,33 @@ Use `:mode tap|seek|pin` in the command bar to switch navigation modes.
 ## Command mode
 
 Press `:` to open the command bar (vim-style). Tab-completion narrows candidates as you type.
+
+Path arguments complete with `{placeholders}` in place: `:pattern plots/{sensor}/2⇥` lists what every sensor directory holds, so a template is built top-down instead of completing a concrete path and deleting the parts that should vary. `{` + `Tab` completes an existing axis name, and anonymous `{}` placeholders are numbered automatically.
+
+## Shell completion
+
+The same completion works at the shell prompt. Add one line to `~/.bashrc`:
+
+```bash
+eval "$(juxt --bash-completion)"
+```
+
+zsh needs `bashcompinit` first:
+
+```zsh
+autoload -U bashcompinit && bashcompinit
+eval "$(juxt --bash-completion)"
+```
+
+Then `juxt plots/{sensor}/2⇥` completes at the prompt, as do the command-line options. ble.sh is handled as well, through its own hook. Reload the shell (`source ~/.bashrc`, or open a new terminal) for it to take effect.
+
+Point `JUXT_COMPLETE` at `juxt-complete` if juxt lives in a virtualenv you do not activate:
+
+```bash
+export JUXT_COMPLETE=~/env/juxt/bin/juxt-complete
+```
+
+Placeholders standing for a known kind of value complete only as far as that value: `plots/{date}⇥` stops at `plots/{date}_` rather than swallowing the rest of the filename. The names that count are the ones listed under `placeholders:` in `~/.juxt/settings.yaml`, which juxt seeds with `date datetime time year month day doy` — edit or delete them, and completion follows. Date-style shorthands such as `{yyyy-mm-dd}` are recognised on sight, with or without an entry.
 
 | Command | Action |
 |---|---|
