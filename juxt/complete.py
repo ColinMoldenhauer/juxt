@@ -269,17 +269,23 @@ def complete_path(prefix: str, listdir, sep: str = "/") -> Completion:
     if not matched:
         return Completion()
 
+    closed_level = False
     if tail.endswith("}"):
         # The component ends on a placeholder: there is no partial word to
         # extend, so complete with what all candidates have in common instead.
         append = _append_after_placeholder(matched, sep, shaped)
+        # A placeholder stands for every name it matched, so once the
+        # separator closes the component those names are not a choice the
+        # user still has -- listing them offers a decision already made.
+        # The next Tab descends and lists the level below instead.
+        closed_level = append == sep
     elif len(matched) == 1:
         name, is_dir, rest = matched[0]
         append = rest + (sep if is_dir else "")
     else:
         append = os.path.commonprefix([rest for _, _, rest in matched])
 
-    if len(matched) == 1:
+    if len(matched) == 1 or closed_level:
         return Completion(append)
     shown = [name + (sep if is_dir else "") for name, is_dir, _ in matched]
     if len(shown) > _MAX_MATCHES:

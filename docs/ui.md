@@ -39,7 +39,7 @@ Triggered by pressing `:`.
 | # | Element | Description |
 |---|---|---|
 | 1 | **Cursor** | The command being typed, e.g. `:fit▌`. In a free-text argument (`:pattern`, `:write`), each `{placeholder}` is coloured by position. |
-| 2 | **Suggested values** | Prefix-matched command candidates; the selected entry is shown in `[brackets]`. After `Tab` on a path argument, this row lists the matching directory entries instead. |
+| 2 | **Suggested values** | Prefix-matched command candidates; the selected entry is shown in `[brackets]` and coloured like the highlighted value in the info sidebar. After `Tab` on a path argument, this row lists the matching directory entries instead. |
 | 3 | **Tooltip** | One-line description of the selected command, right-aligned. |
 
 ### Seek mode
@@ -52,7 +52,7 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 |---|---|---|
 | 1 | **Prompt** | `axis?` while selecting an axis; `<axis-name> ›` while selecting a value on that axis. |
 | 2 | **Cursor** | The query being typed. |
-| 3 | **Candidates** | Matching axes or values; the current selection is shown in `[brackets]`. Automatically confirmed when only one candidate remains (configurable via `seek.greedy` in `~/.juxt/settings.yaml`). |
+| 3 | **Candidates** | Matching axes or values; the current selection is shown in `[brackets]` and coloured like the highlighted value in the info sidebar. Automatically confirmed when only one candidate remains (configurable via `seek.greedy` in `~/.juxt/settings.yaml`). |
 
 ---
 
@@ -61,3 +61,51 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 ![Info sidebar open](assets/screenshots/info-sidebar.png)
 
 Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted.
+
+Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
+
+---
+
+## Highlight format
+
+Three places show the current selection in colour: the active value in the info sidebar, the active axis in the status-bar coordinates, and the selected entry in a candidate list. All three are configurable in `~/.juxt/settings.yaml`:
+
+```yaml
+highlight:
+  selected: "#6af:{}"       # info sidebar / active axis
+  candidates: "#6af:[{}]"   # status-bar candidate lists
+```
+
+Each value is a single format string:
+
+```
+[style:]template
+```
+
+| Part | Meaning |
+|---|---|
+| `style` | A colour (`#6af`, `#66aaff` or a CSS colour name) plus any of `bold`, `italic`, `underline`, separated by spaces. Omit the whole `style:` part to leave the colour untouched. |
+| `template` | Free text around `{}`, which stands for the value. The text is inserted literally, so `<{}>` really shows angle brackets. |
+
+```yaml
+highlight:
+  selected: "bold #f80:» {} «"
+  candidates: "underline #6af:{}"
+```
+
+Writing a single string instead of the two keys applies it to both contexts:
+
+```yaml
+highlight: "#f80:«{}»"
+```
+
+For anything the two fields cannot express, prefix the spec with `html:` and write the rich text yourself:
+
+```yaml
+highlight:
+  candidates: 'html:<span style="background:#334; color:#fff">[{}]</span>'
+```
+
+A spec without a `{}` placeholder is ignored: juxt logs a warning and keeps the default. Changes take effect as soon as the settings file is saved, no restart needed.
+
+Note that when the status bar is too narrow for its content, it falls back to plain text and the styling is dropped. Keeping visible delimiters in `candidates` means the selection stays identifiable in that case.
