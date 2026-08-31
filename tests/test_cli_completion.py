@@ -116,6 +116,24 @@ class TestHelperCommand:
         assert out.stdout.split() == ["plots/{sensor}/AM/", "plots/{sensor}/PM/"]
         assert "PySide6" not in out.stderr   # -X importtime lists every import
 
+    def test_output_is_lf_only(self, nested_plot_dir):
+        """A text-mode stdout on Windows would end every candidate with a CR.
+
+        Captured as bytes on purpose: `text=True` applies universal newlines,
+        which rewrites the CRLF away before an assertion can see it — which is
+        exactly why this went unnoticed until a candidate carrying a literal
+        ^M turned up on the command line.
+        """
+        import juxt
+
+        env = {**os.environ,
+               "PYTHONPATH": str(Path(juxt.__file__).resolve().parent.parent)}
+        out = subprocess.run(
+            [sys.executable, "-m", "juxt.complete", "--", "", "plots/{sensor}/"],
+            cwd=nested_plot_dir.parent, capture_output=True, env=env, check=True,
+        )
+        assert out.stdout == b"plots/{sensor}/AM/\nplots/{sensor}/PM/\n"
+
     def test_comments_carry_no_stray_quotes(self):
         """The script is eval'd, so an odd quote anywhere breaks the parse."""
         for n, line in enumerate(bash_script().splitlines(), 1):
@@ -299,6 +317,30 @@ class TestBashFunction:
         reply = _run_completion(tmp_path, ["juxt", "plots/{yyyy-mm-dd}"],
                                 self._with_helper(helper))
         assert reply == ["plots/{yyyy-mm-dd}_"]
+
+    def test_a_crlf_helper_yields_clean_candidates(self, nested_plot_dir, tmp_path):
+        """An older or foreign helper answering with CRLF must not leak the CR.
+
+        Only the last line loses its CR to command substitution, so the bug
+        shows up on every candidate but the final one.
+        """
+        crlf = _stub(tmp_path / "juxt-complete",
+                     r"printf 'plots/{sensor}/AM/\r\nplots/{sensor}/PM/\r\n'")
+        # Bracketed and captured as bytes: _run_completion decodes with
+        # universal newlines, which would swallow the very CR under test.
+        script = f'''
+            set -u
+            export PATH=/nonexistent
+            export JUXT_COMPLETE="{crlf}"
+            source "{COMPLETION_BASH}"
+            COMP_WORDS=(juxt "plots/{{sensor}}/")
+            COMP_CWORD=1
+            _juxt_completion
+            printf "[%s]" "${{COMPREPLY[@]}}"
+        '''
+        out = subprocess.run([BASH, "-c", script], cwd=nested_plot_dir.parent,
+                             capture_output=True, check=True).stdout
+        assert out == b"[plots/{sensor}/AM/][plots/{sensor}/PM/]"
 
     def test_options_are_completed(self, nested_plot_dir, helper):
         reply = _run_completion(nested_plot_dir.parent, ["juxt", "--squ"],
