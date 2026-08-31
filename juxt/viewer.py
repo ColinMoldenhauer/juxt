@@ -24,6 +24,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .complete import (
+    complete_path,
+    complete_placeholder_name,
+    local_listdir,
+    normalize_template,
+    placeholder_html,
+    reset_placeholder_shapes,
+    sftp_listdir,
+)
 from .config import Config
 from .settings import (
     DEFAULT_HIGHLIGHT,
@@ -1880,103 +1889,46 @@ class ImageView(QGraphicsView):
         dlg.setValue(value)
 
     def _complete_path(self):
-        """Tab-complete the path portion of a free-text command argument."""
+        """Tab-complete the path portion of a free-text command argument.
+
+        Placeholders count as wildcards, so a template can be completed from
+        the top down — `plots/{sensor}/2024-0` + Tab lists what every sensor
+        directory holds — instead of completing one concrete path first and
+        deleting the components that should vary.
+        """
         query = self._cmd["query"]
         caret = self._cmd.get("caret", len(query))
         prefix = query[:caret]
         suffix = query[caret:]
 
-        from .detect import _is_remote_pattern, _parse_remote_pattern
-        if _is_remote_pattern(prefix):
-            self._complete_path_remote(prefix, suffix, _parse_remote_pattern)
-        else:
-            self._complete_path_local(prefix, suffix)
-
-    def _complete_path_local(self, prefix: str, suffix: str):
-        import glob as _glob
-        import os as _os
-
-        expanded = _os.path.expanduser(prefix)
-        raw_matches = sorted(_glob.glob(expanded + "*"))
-        if not raw_matches:
-            self._tab_matches = []
-            self.state_changed.emit()
+        comp = complete_placeholder_name(prefix, self.axis_names)
+        if comp is None:
+            from .detect import _is_remote_pattern
+            if _is_remote_pattern(prefix):
+                comp = self._complete_path_remote(prefix)
+            else:
+                comp = complete_path(prefix, local_listdir())
+        if comp is None:
             return
 
-        home = _os.path.expanduser("~")
-        use_tilde = prefix.startswith("~") and expanded.startswith(home)
-
-        def _fmt(p: str) -> str:
-            s = ("~" + p[len(home):]) if use_tilde else p
-            return s + ("/" if _os.path.isdir(p) else "")
-
-        if len(raw_matches) == 1:
-            new_prefix = _fmt(raw_matches[0])
-            self._tab_matches = []
-        else:
-            lcp = _os.path.commonprefix(raw_matches)
-            new_prefix = ("~" + lcp[len(home):]) if use_tilde else lcp
-            self._tab_matches = [
-                _os.path.basename(m.rstrip("/")) + ("/" if _os.path.isdir(m) else "")
-                for m in raw_matches
-            ]
-
-        self._cmd["query"] = new_prefix + suffix
-        self._cmd["caret"] = len(new_prefix)
+        self._tab_matches = comp.matches
+        self._cmd["query"] = prefix + comp.append + suffix
+        self._cmd["caret"] = len(prefix) + len(comp.append)
         self.state_changed.emit()
 
-    def _complete_path_remote(self, prefix: str, suffix: str, _parse_remote_pattern):
+    def _complete_path_remote(self, prefix: str):
+        """Complete a `host:/path` prefix over the session's SFTP connection."""
         if self.config.remote is None or self._remote_conn[1] is None:
-            return
+            return None
+        from .detect import _parse_remote_pattern
         try:
             remote_cfg, remote_path = _parse_remote_pattern(prefix)
         except Exception:
-            return
-        # Only use the existing connection if the host matches
-        rc = self.config.remote
-        if remote_cfg.host != rc.host:
-            return
-
-        import posixpath
-        import stat as _stat
-        # Split into the directory to list and the partial filename to filter by
-        if remote_path.endswith("/") or not remote_path:
-            parent, partial = remote_path or "/", ""
-        else:
-            parent, partial = posixpath.split(remote_path)
-            parent = parent or "/"
-
-        host_prefix = f"{rc.user}@{rc.host}" if rc.user else rc.host
-
-        try:
-            entries = self._remote_conn[1].listdir_attr(parent)
-        except Exception:
-            return
-
-        matched = sorted((e for e in entries if e.filename.startswith(partial)),
-                         key=lambda e: e.filename)
-        if not matched:
-            self._tab_matches = []
-            self.state_changed.emit()
-            return
-
-        def _is_dir(e) -> bool:
-            return e.st_mode is not None and _stat.S_ISDIR(e.st_mode)
-
-        raw_paths = [posixpath.join(parent, e.filename) + ("/" if _is_dir(e) else "")
-                     for e in matched]
-
-        if len(matched) == 1:
-            new_prefix = f"{host_prefix}:{raw_paths[0]}"
-            self._tab_matches = []
-        else:
-            lcp = posixpath.commonprefix(raw_paths)
-            new_prefix = f"{host_prefix}:{lcp}"
-            self._tab_matches = [e.filename + ("/" if _is_dir(e) else "") for e in matched]
-
-        self._cmd["query"] = new_prefix + suffix
-        self._cmd["caret"] = len(new_prefix)
-        self.state_changed.emit()
+            return None
+        # Only the host we are already connected to can be listed
+        if remote_cfg.host != self.config.remote.host:
+            return None
+        return complete_path(remote_path, sftp_listdir(self._remote_conn[1]))
 
     def _pattern_str(self) -> str:
         """Reconstruct the full pattern string for the current config."""
@@ -1991,6 +1943,7 @@ class ImageView(QGraphicsView):
         if self._reload_in_progress:
             self._flash("reload already in progress")
             return
+        raw = normalize_template(raw)  # anonymous {} → {axis_1}, {axis_2}, …
         self._reload_in_progress = True
         if self._watching and self.config.remote is not None:
             self._poll_timer.stop()
@@ -2680,6 +2633,7 @@ class MainWindow(QMainWindow):
             query = v._cmd["query"]
             raw = v._cmd["cursor"]
             cursor = raw if raw < 0 else (min(raw, len(candidates) - 1) if candidates else 0)
+            prompt_html = None
             if v._cmd["phase"] == "verb":
                 prompt = f":{query}▌"
                 hlit = candidates[min(cursor, len(candidates) - 1)] if candidates and cursor >= 0 else None
@@ -2688,7 +2642,11 @@ class MainWindow(QMainWindow):
                 verb = v._cmd["verb"]
                 if verb in _FREE_TEXT_ARGS:
                     caret = v._cmd.get("caret", len(query))
-                    prompt = f":{verb} {_cmd_query_display(query, caret)}"
+                    shown = _cmd_query_display(query, caret)
+                    prompt = f":{verb} {shown}"
+                    # Colour each {placeholder} so a multi-axis template stays
+                    # readable while it is being typed.
+                    prompt_html = _sp(f":{verb} ") + placeholder_html(shown)
                 else:
                     prompt = f":{verb} {query}▌"
                 desc = _COMMAND_HELP.get(v._cmd["verb"], "")
@@ -2698,15 +2656,18 @@ class MainWindow(QMainWindow):
                 self._help_label.setText(f"( {desc} )")
             if candidates:
                 cand_html = _candidate_html(candidates, cursor, self._hl_candidates)
+                head = prompt_html if prompt_html is not None else _sp(prompt)
                 self._status_label.setText(
-                    _rich(f"{_sp(prompt)}&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}")
+                    _rich(f"{head}&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}")
                 )
             elif v._cmd["phase"] == "verb" and query:
                 self._status_label.setText(
                     _rich(f"{_sp(prompt)}&nbsp;&nbsp;(unknown&nbsp;command)")
                 )
             else:
-                self._status_label.setText(_rich(_sp(prompt)))
+                self._status_label.setText(
+                    _rich(prompt_html if prompt_html is not None else _sp(prompt))
+                )
             return
 
         if v._sel is not None:
@@ -2854,6 +2815,7 @@ class MainWindow(QMainWindow):
         self._info_panel.set_highlight(self._hl)
         self._refresh_info_panel()
         self._update_status()
+        reset_placeholder_shapes()  # {date} & friends may have been re-configured
         import juxt.detect as _detect
         _detect._MAX_VALS = settings.max_vals
         _detect._MAX_VALS_DISPLAY = settings.max_vals_display

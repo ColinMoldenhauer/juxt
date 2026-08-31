@@ -371,7 +371,70 @@ def _anchor_colours(panel) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Status bar: candidate highlighting
+# :pattern — placeholder-aware Tab completion
+# ---------------------------------------------------------------------------
+
+class TestPatternCompletion:
+    @staticmethod
+    def _open(view, query: str, caret: int | None = None):
+        """Put the view in `:pattern <query>` with the caret at *caret*."""
+        view._cmd = {
+            "phase": "arg", "verb": "pattern", "query": query,
+            "cursor": 0, "caret": len(query) if caret is None else caret,
+        }
+
+    def test_tab_key_triggers_completion(self, image_view, nested_plot_dir):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+
+        base = nested_plot_dir.as_posix()
+        self._open(image_view, f"{base}/A/A")
+        event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Tab,
+                          Qt.KeyboardModifier.NoModifier)
+        assert image_view._cmd_handle_key(event) is True
+        assert image_view._cmd["query"] == f"{base}/A/AM/"
+
+    def test_completes_below_a_placeholder(self, image_view, nested_plot_dir):
+        base = nested_plot_dir.as_posix()
+        self._open(image_view, f"{base}/{{sensor}}/A")
+        image_view._complete_path()
+        assert image_view._cmd["query"] == f"{base}/{{sensor}}/AM/"
+        assert image_view._cmd["caret"] == len(image_view._cmd["query"])
+
+    def test_ambiguous_completion_fills_the_hint_list(self, image_view, nested_plot_dir):
+        base = nested_plot_dir.as_posix()
+        self._open(image_view, f"{base}/{{sensor}}/{{overpass}}/")
+        image_view._complete_path()
+        assert image_view._tab_matches == ["d1.png", "d2.png"]
+
+    def test_completes_an_axis_name(self, image_view):
+        self._open(image_view, "plots/{s")
+        image_view._complete_path()
+        assert image_view._cmd["query"] == "plots/{sensor}"
+
+    def test_open_brace_lists_axis_names(self, image_view):
+        self._open(image_view, "plots/{")
+        image_view._complete_path()
+        assert image_view._tab_matches == ["{sensor}", "{date}"]
+
+    def test_text_after_the_caret_is_preserved(self, image_view, nested_plot_dir):
+        base = nested_plot_dir.as_posix()
+        query = f"{base}/{{sensor}}/A{{date}}.png"
+        self._open(image_view, query, caret=len(f"{base}/{{sensor}}/A"))
+        image_view._complete_path()
+        assert image_view._cmd["query"] == f"{base}/{{sensor}}/AM/{{date}}.png"
+        assert image_view._cmd["caret"] == len(f"{base}/{{sensor}}/AM/")
+
+    def test_no_match_leaves_the_query_alone(self, image_view, nested_plot_dir):
+        query = f"{nested_plot_dir.as_posix()}/{{sensor}}/ZZ"
+        self._open(image_view, query)
+        image_view._complete_path()
+        assert image_view._cmd["query"] == query
+        assert image_view._tab_matches == []
+
+
+# ---------------------------------------------------------------------------
+# Status bar: candidate highlighting & placeholder colouring
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -468,3 +531,29 @@ class TestStatusCandidateHighlight:
         }
         status = self._status(main_window)
         assert "a&lt;b&gt;&amp;c" in status
+
+
+class TestPlaceholderColouring:
+    def test_pattern_placeholders_are_coloured(self, main_window):
+        from juxt.complete import PLACEHOLDER_COLORS
+
+        v = main_window.view
+        TestPatternCompletion._open(v, "plots/{sensor}_{date}.png")
+        main_window._update_status()
+        html = main_window._status_label._full_html
+        assert f'color:{PLACEHOLDER_COLORS[0]}">{{sensor}}' in html
+        assert f'color:{PLACEHOLDER_COLORS[1]}">{{date}}' in html
+
+    def test_argument_without_placeholders_reads_as_plain_text(self, main_window):
+        v = main_window.view
+        TestPatternCompletion._open(v, "plots/dir")
+        main_window._update_status()
+        shown = main_window._status_label._full_plain
+        assert "&nbsp;" not in shown          # entities must not leak as text
+        assert shown.replace("\xa0", " ") == ":pattern plots/dir▌"
+
+    def test_markup_in_the_query_is_escaped(self, main_window):
+        v = main_window.view
+        TestPatternCompletion._open(v, "plots/<b>/{sensor}.png")
+        main_window._update_status()
+        assert "&lt;b&gt;" in main_window._status_label._full_html

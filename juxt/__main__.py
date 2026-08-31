@@ -7,10 +7,23 @@ import socket
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSocketNotifier, QTimer
-from PySide6.QtGui import QCursor, QIcon
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLineEdit, QProgressDialog
+from .complete import SCRIPT_FLAGS, WORDS_FLAG, normalize_template
+from .complete import main as _complete_main
 
+# Shell completion runs on every Tab press, so answer it here — before Qt is
+# imported — which also lets `juxt` itself back the completion when the
+# standalone binary is all a user has installed.
+if len(sys.argv) > 1 and sys.argv[1] in (*SCRIPT_FLAGS, WORDS_FLAG):
+    sys.exit(_complete_main(sys.argv[1:]))
+
+from PySide6.QtCore import Qt, QSocketNotifier, QTimer  # noqa: E402
+from PySide6.QtGui import QCursor, QIcon  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QInputDialog,
+    QLineEdit,
+    QProgressDialog,
+)
 from .config import Config, _auto_keys, dump_config, load_config
 from .detect import (
     _axes_from_local_template,
@@ -24,6 +37,7 @@ from .detect import (
 )
 from .loader import preload, preload_remote
 from .settings import load_settings
+from .startup import StartupDialog
 from .viewer import MainWindow
 
 log = logging.getLogger(__name__)
@@ -123,10 +137,11 @@ def _print_help() -> None:
   PATH accepts several forms (auto-detected):
     /path/to/dir              scan directory, detect axes from filenames
     plots/{sensor}_{date}.png local template with explicit placeholders
+    plots/{}/{}.png           anonymous placeholders, named axis_1, axis_2, …
     host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
     host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
     config.yaml               explicit YAML config file
-    (default: opens a directory picker)
+    (default: opens a dialog to browse a directory or build a template)
 
   -s, --separator SEP [...]   separator(s) for auto-detection
   -a, --auto                  skip axis naming prompt
@@ -146,6 +161,9 @@ def _print_help() -> None:
       --no-sharex             disable synchronized horizontal pan/zoom in grid view
       --no-sharey             disable synchronized vertical pan/zoom in grid view
   -h, --help                  show this message and exit
+
+  shell completion (bash / zsh)
+    eval "$(juxt --bash-completion)"  complete options and {placeholder} paths
 
   navigation modes (switch with :mode)
     tap   letter=+1/LETTER=-1 on that axis (default)
@@ -243,20 +261,17 @@ def main():
         return _pw_cache[0]
 
     if args.path is None:
-        dlg = QFileDialog(None, "Select image directory", str(Path.home()))
-        dlg.setFileMode(QFileDialog.FileMode.Directory)
-        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        if not app_icon.isNull():
-            dlg.setWindowIcon(app_icon)
+        dlg = StartupDialog(str(Path.home()), app_icon=app_icon)
+        QTimer.singleShot(0, lambda: dlg.move(
+            _startup_screen.geometry().center() - dlg.rect().center()))
         QTimer.singleShot(0, lambda: _force_focus(dlg))
-        chosen = dlg.selectedFiles()[0] if dlg.exec() else ""
+        chosen = dlg.chosen_path() if dlg.exec() else ""
         if not chosen:
             sys.exit(0)
         args.path = chosen
 
     try:
-        raw = args.path
+        raw = normalize_template(args.path)  # anonymous {} → {axis_1}, {axis_2}, …
         if _is_remote_pattern(raw):
             remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
             if '{' in remote_tmpl:

@@ -81,6 +81,38 @@ def parse_highlight(spec: str, fallback: str = DEFAULT_HIGHLIGHT) -> Highlight:
         hl = _parse_highlight(fallback) or Highlight()
     return hl
 
+def _render_placeholders_section() -> str:
+    """The placeholders block, written from the shapes juxt ships with.
+
+    The defaults live in the user's settings file rather than in the code, so
+    they can be seen and changed; this keeps the two from drifting apart.
+    """
+    from .complete import BUILTIN_SHAPES
+
+    lines = []
+    for name, values in BUILTIN_SHAPES.items():
+        rendered = ", ".join(values)
+        lines.append(f"  {name}: [{rendered}]" if len(values) > 1
+                     else f"  {name}: {rendered}")
+    lines.append("  # orbit: 'o\\d{5}'      # a regular expression works too")
+    return _PLACEHOLDERS_HEADER + "\n".join(lines) + "\n"
+
+
+_PLACEHOLDERS_HEADER = """
+# Placeholder value shapes used by Tab completion.
+# A placeholder whose name is listed here is completed only as far as the value
+# it stands for: with `date` known, `plots/{date}<TAB>` stops at the end of the
+# date (e.g. `{date}_`) instead of swallowing whatever the filenames share
+# after it.  Only what stands here counts, so an entry you delete stops
+# applying.
+# A value is either a date-style shorthand (yyyy yy mm dd hh ss and
+# separators), a regular expression, or a list of alternatives.
+placeholders:
+"""
+
+_PLACEHOLDERS_SECTION = _render_placeholders_section()
+
+
 _TEMPLATE = """\
 # juxt user settings
 # Edit this file and restart juxt for changes to take effect.
@@ -129,7 +161,7 @@ keybindings:
   Ctrl+Shift+H: toggle-statusbar   # toggle the status bar
   Ctrl+Shift+I: toggle-info        # toggle the info sidebar
   # F11: fullscreen                # example: bind F11 to fullscreen
-"""
+""" + _PLACEHOLDERS_SECTION
 
 _SECTION_TEMPLATES: dict[str, str] = {
     "seek": """
@@ -154,6 +186,7 @@ highlight:
   selected: "#6af:{}"       # current value in the info sidebar / active axis
   candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
 """,
+    "placeholders": _PLACEHOLDERS_SECTION,
     "keybindings": """
 # Key bindings — map a key chord to an action name.
 # Action names match any :command plus: toggle-statusbar  toggle-info
@@ -191,6 +224,7 @@ class Settings:
     keybindings: dict[str, str] = field(
         default_factory=lambda: dict(_DEFAULT_KEYBINDINGS)
     )
+    placeholders: dict[str, object] = field(default_factory=dict)
 
 
 def _write_missing_sections(path: Path, missing: set[str]) -> None:
@@ -201,11 +235,17 @@ def _write_missing_sections(path: Path, missing: set[str]) -> None:
     log.info("Added missing settings sections to %s: %s", path, sorted(missing))
 
 
-def load_settings(path: Path = SETTINGS_PATH) -> Settings:
+def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
+    """Read the user settings.
+
+    With *write* false the file is only read, never created or extended, which
+    is what the shell completion helper wants: it runs on every Tab press.
+    """
     if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_TEMPLATE, encoding="utf-8")
-        log.info("Created default settings file at %s", path)
+        if write:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_TEMPLATE, encoding="utf-8")
+            log.info("Created default settings file at %s", path)
         return Settings()
     try:
         with open(path, encoding="utf-8") as f:
@@ -234,9 +274,13 @@ def load_settings(path: Path = SETTINGS_PATH) -> Settings:
         kb = data.get("keybindings") or {}
         if isinstance(kb, dict):
             s.keybindings = {**_DEFAULT_KEYBINDINGS, **{str(k): str(v) for k, v in kb.items()}}
+        ph = data.get("placeholders") or {}
+        if isinstance(ph, dict):
+            # Values stay as written: a shorthand, a regex, or a list of either.
+            s.placeholders = {str(k): v for k, v in ph.items()}
         log.debug("Loaded settings from %s: %s", path, s)
         missing = _EXPECTED_SECTIONS - data.keys()
-        if missing:
+        if write and missing:
             _write_missing_sections(path, missing)
         return s
     except Exception as e:

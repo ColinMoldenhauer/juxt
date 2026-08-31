@@ -193,6 +193,14 @@ class TestAxesFromLocalTemplate:
         assert axes["sensor"] == ["A", "B"]
         assert axes["date"] == ["d1", "d2"]
 
+    def test_placeholder_name_may_be_a_date_shorthand(self, tmp_path):
+        """{yyyy-mm-dd} is a valid axis name, not just a completion hint."""
+        for date in ("2024-03-15", "2024-03-16"):
+            (tmp_path / f"A_{date}.png").write_bytes(b"")
+        axes = _axes_from_local_template(str(tmp_path / "{sensor}_{yyyy-mm-dd}.png"))
+        assert axes["sensor"] == ["A"]
+        assert axes["yyyy-mm-dd"] == ["2024-03-15", "2024-03-16"]
+
     def test_no_placeholders_raises(self, tmp_path):
         with pytest.raises(ValueError, match="no"):
             _axes_from_local_template(str(tmp_path / "fixed.png"))

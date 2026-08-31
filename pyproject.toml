@@ -50,6 +50,7 @@ test = [
 
 [project.scripts]
 juxt = "juxt.__main__:main"
+juxt-complete = "juxt.complete:main"
 
 [tool.hatch.version]
 source = "vcs"
