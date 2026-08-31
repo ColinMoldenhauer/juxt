@@ -102,10 +102,10 @@ class TestLayoutControls:
         assert (d.rows_spin.value(), d.cols_spin.value()) == (2, 3)
         assert d.rows_spin.isEnabled()
 
-    def test_hint_explains_paging_when_the_layout_is_smaller(self, dlg):
-        d = dlg(layout=(1, 2))          # 3 values, 2 slots
-        assert "2 at a time" in d.hint.text()
-        assert "page" in d.hint.text()
+    def test_hint_explains_cycling_when_the_layout_is_smaller(self, dlg):
+        d = dlg(layout=(1, 2))          # 3 values, 2 panes
+        assert "2 panes" in d.hint.text()
+        assert "cycles the other 1" in d.hint.text()
 
     def test_step_arrows_are_actually_drawn(self, dlg):
         """The dialog stylesheet suppresses Qt's native spin arrows, leaving two

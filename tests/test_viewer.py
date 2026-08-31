@@ -377,13 +377,14 @@ class TestPlaceholderColouring:
 
 
 # ---------------------------------------------------------------------------
-# Grid windowing — the layout caps how many cells exist; extra values page
+# Grid panes — the layout caps how many cells exist; each pane holds its own
+# value and the grid axis scrolls only the focused one
 # ---------------------------------------------------------------------------
 
-class TestGridWindowing:
+class TestGridPanes:
     @staticmethod
     def _view(qtbot, n_sensors=4):
-        """ImageView over an axis with enough values to overflow a small grid."""
+        """ImageView over an axis with more values than a small grid can show."""
         from PySide6.QtGui import QColor, QPixmap
         from juxt.config import Config, _auto_keys
         from juxt.viewer import ImageView
@@ -404,103 +405,165 @@ class TestGridWindowing:
         return v
 
     @staticmethod
-    def _shown(v):
-        """(visible labels, focused label) for the current grid window."""
-        window, focused = v._grid_window()
-        labels = [v.axis_values[v._grid_axis][vi] for vi in window]
-        return labels, (labels[focused] if 0 <= focused < len(labels) else None)
+    def _panes(v):
+        """(labels per pane, focused label)."""
+        vals = v.axis_values[v._grid_axis]
+        labels = [vals[vi] for vi in v._grid_slots]
+        return labels, vals[v._grid_slots[v._grid_focus]]
+
+    @staticmethod
+    def _candidates(v):
+        vals = v.axis_values[v._grid_axis]
+        return [vals[i] for i in v._grid_candidates()]
+
+    # -- layout is a hard cap ------------------------------------------------
 
     def test_layout_caps_the_number_of_cells(self, qtbot):
         """A 2x1 layout over 3 values must not silently become a 3x1 grid."""
         v = self._view(qtbot, n_sensors=3)
         v._enter_grid(0, None, (2, 1))
         assert v._grid_widget.capacity() == 2
-        assert len(v._grid_widget._cells) == 2
         assert v._grid_widget.layout().rowCount() == 2
         assert v._grid_widget.layout().columnCount() == 1
 
-    def test_first_values_are_the_ones_shown(self, qtbot):
+    def test_first_values_fill_the_panes(self, qtbot):
         v = self._view(qtbot)
         v._enter_grid(0, None, (2, 1))
-        labels, focused = self._shown(v)
-        assert labels == ["A", "B"]
-        assert focused == "A"
+        assert self._panes(v) == (["A", "B"], "A")
 
-    def test_stepping_within_the_window_only_moves_focus(self, qtbot):
+    # -- the axis scrolls the focused pane only ------------------------------
+
+    def test_stepping_changes_only_the_focused_pane(self, qtbot):
         v = self._view(qtbot)
         v._enter_grid(0, None, (2, 1))
         v._navigate(0, +1)
-        assert self._shown(v) == (["A", "B"], "B")
-        assert v._grid_offset == 0
+        assert self._panes(v) == (["C", "B"], "C")     # B untouched
+        assert v._grid_focus == 0                      # focus did not jump
 
-    def test_stepping_past_the_edge_scrolls_the_window(self, qtbot):
+    def test_stepping_skips_values_other_panes_hold(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))                 # panes A, B
+        assert self._candidates(v) == ["A", "C", "D"]  # never B
+        v._navigate(0, +1)
+        v._navigate(0, +1)
+        assert self._panes(v) == (["D", "B"], "D")
+        v._navigate(0, +1)                             # wraps past B
+        assert self._panes(v) == (["A", "B"], "A")
+
+    def test_stepping_backwards_walks_the_same_ring(self, qtbot):
         v = self._view(qtbot)
         v._enter_grid(0, None, (2, 1))
-        v._navigate(0, +1)
-        v._navigate(0, +1)                      # C is not on screen yet
-        assert self._shown(v) == (["B", "C"], "C")
-        v._navigate(0, +1)
-        assert self._shown(v) == (["C", "D"], "D")
-
-    def test_stepping_back_scrolls_the_other_way(self, qtbot):
-        v = self._view(qtbot)
-        v._enter_grid(0, None, (2, 1))
-        for _ in range(3):
-            v._navigate(0, +1)                  # window now C D, focus D
         v._navigate(0, -1)
-        assert self._shown(v) == (["C", "D"], "C")
+        assert self._panes(v) == (["D", "B"], "D")
         v._navigate(0, -1)
-        assert self._shown(v) == (["B", "C"], "B")
+        assert self._panes(v) == (["C", "B"], "C")
 
-    def test_wrapping_returns_to_the_first_window(self, qtbot):
-        v = self._view(qtbot)
-        v._enter_grid(0, None, (2, 1))
-        for _ in range(4):                      # A B C D then wrap
-            v._navigate(0, +1)
-        assert self._shown(v) == (["A", "B"], "A")
-        assert v._grid_offset == 0
-
-    def test_no_paging_when_every_value_fits(self, qtbot):
+    def test_axis_is_inert_when_every_value_is_on_screen(self, qtbot):
+        """Nothing is off screen, so the focused pane has nowhere to scroll."""
         v = self._view(qtbot)
         v._enter_grid(0, None, (2, 2))
-        assert v._grid_widget.capacity() == 4
-        labels, focused = self._shown(v)
-        assert labels == ["A", "B", "C", "D"]
-        assert focused == "A"
-        v._navigate(0, +1)                      # focus moves, window does not
-        assert self._shown(v) == (["A", "B", "C", "D"], "B")
-        assert v._grid_offset == 0
-
-    def test_filtered_values_page_and_skip_the_rest(self, qtbot):
-        v = self._view(qtbot)
-        v._enter_grid(0, [0, 2, 3], (2, 1))     # A, C, D — B excluded
-        assert self._shown(v) == (["A", "C"], "A")
+        assert self._candidates(v) == ["A"]
         v._navigate(0, +1)
-        assert self._shown(v) == (["A", "C"], "C")
-        v._navigate(0, +1)                      # steps to D, never to B
-        assert self._shown(v) == (["C", "D"], "D")
-        v._navigate(0, +1)
-        assert self._shown(v) == (["A", "C"], "A")
+        assert self._panes(v) == (["A", "B", "C", "D"], "A")
 
-    def test_entry_anchors_focus_on_a_shown_value(self, qtbot):
-        """Entering with the axis parked on a filtered-out value must not
-        leave the focus pointing at something the grid never draws."""
+    def test_other_axes_still_move_every_pane(self, qtbot):
         v = self._view(qtbot)
-        v.pos[0] = 1                            # B, which the filter excludes
-        v._enter_grid(0, [0, 2, 3], (2, 1))
-        assert v.pos[0] == 0
-        assert self._shown(v) == (["A", "C"], "A")
+        v._enter_grid(0, None, (2, 1))
+        before = list(v._grid_slots)
+        v._navigate(1, +1)                             # the date axis
+        assert v.pos[1] == 1
+        assert v._grid_slots == before                 # panes unchanged
 
-    def test_exactly_one_cell_is_focused(self, qtbot):
+    # -- focus ---------------------------------------------------------------
+
+    def test_clicking_a_pane_takes_focus(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        v._grid_widget.focus_requested.emit(1)
+        assert v._grid_focus == 1
+        assert self._panes(v) == (["A", "B"], "B")
+
+    def test_focus_follows_the_axis_position(self, qtbot):
+        """pos on the grid axis names the focused pane's value, so the status
+        bar and the next step both talk about the pane in hand."""
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        v._grid_widget.focus_requested.emit(1)
+        assert v.pos[0] == v._grid_slots[1]
+
+    def test_stepping_after_a_focus_change_moves_the_new_pane(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        v._grid_widget.focus_requested.emit(1)
+        v._navigate(0, +1)
+        assert self._panes(v) == (["A", "C"], "C")     # A untouched
+        assert v._grid_focus == 1
+
+    def test_exactly_one_cell_is_marked_focused(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        v._grid_widget.focus_requested.emit(1)
+        assert [c._focused for c in v._grid_widget._cells] == [False, True]
+
+    def test_clicking_the_focused_pane_is_a_no_op(self, qtbot):
         v = self._view(qtbot)
         v._enter_grid(0, None, (2, 1))
         v._navigate(0, +1)
-        assert [c._focused for c in v._grid_widget._cells] == [False, True]
+        before = list(v._grid_slots)
+        v._grid_widget.focus_requested.emit(0)
+        assert v._grid_slots == before and v._grid_focus == 0
 
-    def test_cell_labels_follow_the_window(self, qtbot):
+    def test_out_of_range_focus_is_ignored(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        v._grid_set_focus(9)
+        assert v._grid_focus == 0
+
+    # -- invariants ----------------------------------------------------------
+
+    def test_panes_never_show_the_same_value_twice(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))
+        for _ in range(6):
+            v._navigate(0, +1)
+            assert len(set(v._grid_slots)) == len(v._grid_slots)
+
+    def test_picking_a_value_another_pane_holds_swaps_them(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, None, (2, 1))                 # panes A, B
+        v.pos[0] = v._grid_slots[1]                    # pick B into pane 0
+        v._refresh()
+        assert self._panes(v) == (["B", "A"], "B")
+
+    def test_cell_labels_track_their_pane(self, qtbot):
         v = self._view(qtbot)
         v._enter_grid(0, None, (2, 1))
         assert [c._label_text for c in v._grid_widget._cells] == ["A", "B"]
-        for _ in range(3):
-            v._navigate(0, +1)
-        assert [c._label_text for c in v._grid_widget._cells] == ["C", "D"]
+        v._navigate(0, +1)
+        assert [c._label_text for c in v._grid_widget._cells] == ["C", "B"]
+
+    # -- value subsets -------------------------------------------------------
+
+    def test_filtered_values_are_the_only_ones_offered(self, qtbot):
+        v = self._view(qtbot)
+        v._enter_grid(0, [0, 2, 3], (2, 1))            # A, C, D -- B excluded
+        assert self._panes(v) == (["A", "C"], "A")
+        assert self._candidates(v) == ["A", "D"]       # never B; C is next door
+        v._navigate(0, +1)
+        assert self._panes(v) == (["D", "C"], "D")
+
+    def test_entry_anchors_focus_on_a_pane(self, qtbot):
+        """Entering with the axis parked on a filtered-out value must not leave
+        the focus pointing at something no pane shows."""
+        v = self._view(qtbot)
+        v.pos[0] = 1                                   # B, which the filter drops
+        v._enter_grid(0, [0, 2, 3], (2, 1))
+        assert v.pos[0] == v._grid_slots[v._grid_focus]
+        assert self._panes(v) == (["A", "C"], "A")
+
+    def test_entry_keeps_the_current_value_focused_when_shown(self, qtbot):
+        v = self._view(qtbot)
+        v.pos[0] = 1                                   # B
+        v._enter_grid(0, None, (2, 1))                 # panes A, B
+        assert v._grid_focus == 1
+        assert self._panes(v) == (["A", "B"], "B")

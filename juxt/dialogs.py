@@ -370,7 +370,8 @@ class GridDialog(QDialog):
         slots = rows * cols
         if slots < n:
             self.hint.setText(
-                f"{n} cells → {rows}×{cols}, {slots} at a time — step the axis to page"
+                f"{n} values → {rows}×{cols}, {slots} panes — "
+                f"the focused pane cycles the other {n - slots}"
             )
         else:
             blank = slots - n
