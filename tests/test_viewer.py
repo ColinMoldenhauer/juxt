@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 
 from juxt.viewer import ImageView, NavMode
 
@@ -273,6 +274,103 @@ class TestFocusStack:
 
 
 # ---------------------------------------------------------------------------
+# Info sidebar: clickable values
+# ---------------------------------------------------------------------------
+
+class TestInfoPanelLinks:
+    def _panel(self, image_view, qtbot):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.value_clicked.connect(image_view.goto_value)
+        panel.refresh(image_view)
+        return panel
+
+    def test_href_roundtrip(self):
+        from juxt.viewer import _parse_value_href, _value_href
+
+        assert _parse_value_href(_value_href(2, 7)) == (2, 7)
+        assert _parse_value_href("https://example.com") is None
+
+    def test_every_value_is_a_link(self, image_view, qtbot):
+        html = self._panel(image_view, qtbot).toHtml()
+        for i, vals in enumerate(image_view.axis_values):
+            for j in range(len(vals)):
+                assert f'href="juxt:value/{i}/{j}"' in html
+
+    def test_click_navigates(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        panel.value_clicked.emit(1, 1)
+        assert image_view.pos == [0, 1]
+
+    def test_click_focuses_axis(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        panel.value_clicked.emit(1, 1)
+        assert image_view.focus_stack[0] == 1
+
+    def test_click_stores_prev(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        old_pos = list(image_view.pos)
+        panel.value_clicked.emit(0, 1)
+        assert image_view.prev == old_pos
+
+    def test_click_on_current_value_keeps_prev(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        panel.value_clicked.emit(0, 0)  # already the current value
+        assert image_view.prev is None
+        assert image_view.pos == [0, 0]
+
+    def test_out_of_range_click_is_ignored(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        panel.value_clicked.emit(0, 99)
+        panel.value_clicked.emit(9, 0)
+        assert image_view.pos == [0, 0]
+
+    def test_current_value_uses_highlight_colour(self, image_view, qtbot):
+        from juxt.viewer import _HL_DEFAULT, _LINK_COLOR
+
+        panel = self._panel(image_view, qtbot)
+        colours = _anchor_colours(panel)
+        cur_hrefs = {
+            f"juxt:value/{i}/{image_view.pos[i]}"
+            for i in range(len(image_view.axis_values))
+        }
+        hl = QColor(_HL_DEFAULT.color).name()
+        assert cur_hrefs, "no axes to check"
+        for href, colour in colours.items():
+            expected = hl if href in cur_hrefs else QColor(_LINK_COLOR).name()
+            assert colour == expected, f"{href}: {colour} != {expected}"
+
+    def test_custom_highlight_format_applies(self, image_view, qtbot):
+        from juxt.settings import parse_highlight
+
+        panel = self._panel(image_view, qtbot)
+        panel.set_highlight(parse_highlight("bold #f80:«{}»"))
+        panel.refresh(image_view)
+        html = panel.toHtml()
+        cur = image_view.axis_values[0][image_view.pos[0]]
+        assert f"«{cur}»" in html
+        colours = _anchor_colours(panel)
+        assert colours[f"juxt:value/0/{image_view.pos[0]}"] == QColor("#f80").name()
+
+
+def _anchor_colours(panel) -> dict[str, str]:
+    """Map every anchor href in the panel document to its rendered colour."""
+    colours: dict[str, str] = {}
+    block = panel.document().begin()
+    while block.isValid():
+        it = block.begin()
+        while not it.atEnd():
+            fmt = it.fragment().charFormat()
+            if fmt.isAnchor() and fmt.anchorHref():
+                colours[fmt.anchorHref()] = fmt.foreground().color().name()
+            it += 1
+        block = block.next()
+    return colours
+
+
+# ---------------------------------------------------------------------------
 # :pattern — placeholder-aware Tab completion
 # ---------------------------------------------------------------------------
 
@@ -309,6 +407,18 @@ class TestPatternCompletion:
         image_view._complete_path()
         assert image_view._tab_matches == ["d1.png", "d2.png"]
 
+    def test_closing_a_level_clears_the_hint_list(self, image_view, nested_plot_dir):
+        # Tab on a trailing placeholder adds the separator; the values it
+        # stands for must not stay on offer as if a choice remained.
+        base = nested_plot_dir.as_posix()
+        self._open(image_view, f"{base}/{{sensor}}/{{overpass}}")
+        image_view._complete_path()
+        assert image_view._cmd["query"] == f"{base}/{{sensor}}/{{overpass}}/"
+        assert image_view._tab_matches == []
+        # The next Tab descends and lists the level below.
+        image_view._complete_path()
+        assert image_view._tab_matches == ["d1.png", "d2.png"]
+
     def test_completes_an_axis_name(self, image_view):
         self._open(image_view, "plots/{s")
         image_view._complete_path()
@@ -336,7 +446,7 @@ class TestPatternCompletion:
 
 
 # ---------------------------------------------------------------------------
-# Status bar: placeholder colouring
+# Status bar: candidate highlighting & placeholder colouring
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -346,8 +456,93 @@ def main_window(viewer_config, mini_pixmaps, qtbot):
 
     w = MainWindow(viewer_config, mini_pixmaps, watch=False)
     qtbot.addWidget(w)
-    w.resize(800, 600)
+    w.resize(1400, 800)
     return w
+
+
+class TestStatusCandidateHighlight:
+    def _status(self, main_window) -> str:
+        main_window._update_status()
+        lbl = main_window._status_label
+        return lbl._full_html if lbl._full_html is not None else lbl._full_plain
+
+    def test_candidate_html_highlights_cursor(self):
+        from juxt.viewer import _HL_DEFAULT_CANDIDATES, _candidate_html
+
+        html = _candidate_html(["alpha", "beta"], 1)
+        assert f'color:{_HL_DEFAULT_CANDIDATES.color}' in html
+        assert ">[beta]</span>" in html
+        assert "[alpha]" not in html
+
+    def test_candidate_html_honours_custom_format(self):
+        from juxt.settings import parse_highlight
+        from juxt.viewer import _candidate_html
+
+        hl = parse_highlight("bold red:» {} «")
+        html = _candidate_html(["alpha", "beta"], 0, hl)
+        assert "color:red" in html and "font-weight:bold" in html
+        assert "»&nbsp;alpha&nbsp;«" in html
+
+    def test_candidate_html_raw_template(self):
+        from juxt.settings import parse_highlight
+        from juxt.viewer import _candidate_html
+
+        hl = parse_highlight('html:<span style="background:#334">[{}]</span>')
+        html = _candidate_html(["alpha"], 0, hl)
+        assert html == '<span style="background:#334">[alpha]</span>'
+
+    def test_candidate_html_without_cursor(self):
+        from juxt.viewer import _candidate_html
+
+        html = _candidate_html(["alpha", "beta"], -1)
+        assert html == "alpha&nbsp;&nbsp;beta"
+
+    def test_seek_candidates_use_highlight_colour(self, main_window):
+        from juxt.viewer import _HL_DEFAULT_CANDIDATES
+
+        main_window.view._sel = {
+            "phase": "value", "query": "", "axis_idx": 0, "cursor": 1,
+        }
+        status = self._status(main_window)
+        vals = main_window.view.axis_values[0]
+        colour = _HL_DEFAULT_CANDIDATES.color
+        assert f'color:{colour}' in status
+        assert f">[{vals[1]}]</span>" in status
+        assert f"[{vals[0]}]" not in status
+
+    def test_configured_candidate_format_is_used(self, main_window):
+        from juxt.settings import parse_highlight
+
+        main_window._hl_candidates = parse_highlight("#0f0:<{}>")
+        main_window.view._sel = {
+            "phase": "value", "query": "", "axis_idx": 0, "cursor": 0,
+        }
+        status = self._status(main_window)
+        vals = main_window.view.axis_values[0]
+        assert "color:#0f0" in status
+        assert f"&lt;{vals[0]}&gt;" in status
+
+    def test_command_candidates_use_highlight_colour(self, main_window):
+        from juxt.viewer import _HL_DEFAULT_CANDIDATES
+
+        main_window.view._cmd = {"phase": "verb", "query": "fit", "cursor": 0}
+        status = self._status(main_window)
+        assert f'color:{_HL_DEFAULT_CANDIDATES.color}' in status
+        assert ">[fit]</span>" in status
+
+    def test_spaces_are_preserved_as_nbsp(self, main_window):
+        main_window.view._sel = {
+            "phase": "value", "query": "", "axis_idx": 0, "cursor": 0,
+        }
+        assert "&nbsp;" in self._status(main_window)
+
+    def test_markup_characters_are_escaped(self, main_window):
+        main_window.view._cmd = {
+            "phase": "arg", "verb": "pattern", "query": "a<b>&c",
+            "caret": 6, "cursor": -1,
+        }
+        status = self._status(main_window)
+        assert "a&lt;b&gt;&amp;c" in status
 
 
 class TestPlaceholderColouring:

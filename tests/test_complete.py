@@ -119,7 +119,22 @@ class TestPlaceholderPathCompletion:
     def test_trailing_placeholder_over_dirs_appends_separator(self, tree):
         comp = _complete(f"{tree}/{{sensor}}")
         assert comp.append == "/"
-        assert comp.matches == ["A/", "B/"]
+        # The separator closed the component, so the names the placeholder
+        # stands for are no longer a choice and must not be offered.
+        assert comp.matches == []
+
+    def test_next_tab_lists_the_level_below(self, tree):
+        # Completing again, now below the closed component, does list.
+        comp = _complete(f"{tree}/{{sensor}}/")
+        assert comp.matches == ["AM/", "PM/"]
+
+    def test_mid_component_placeholder_still_lists(self, tmp_path):
+        # Here the append does not close the component, so the hint stays.
+        for name in ("A_d1.png", "A_d2.png"):
+            (tmp_path / name).write_bytes(b"")
+        comp = _complete(f"{tmp_path.as_posix()}/{{sensor}}")
+        assert comp.append == ".png"
+        assert comp.matches == ["A_d1.png", "A_d2.png"]
 
     def test_trailing_placeholder_takes_common_suffix(self, tmp_path):
         for name in ("A_d1.png", "B_d1.png"):

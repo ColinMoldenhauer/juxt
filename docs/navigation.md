@@ -318,7 +318,11 @@ The status bar at the bottom shows:
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode; description of the highlighted command shown right-aligned
 
-Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted.
+Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted. Values in the sidebar are clickable: a left click jumps to that value and focuses its axis.
+
+### Highlight format
+
+The colour and delimiters used for the current value (info sidebar, active axis, candidate lists) are set in `~/.juxt/settings.yaml`; see [Highlight format](ui.md#highlight-format).
 
 ### Custom keybindings
 

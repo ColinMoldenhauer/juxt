@@ -35,9 +35,28 @@ from .complete import (
     sftp_listdir,
 )
 from .config import Config
-from .settings import SETTINGS_PATH, load_settings
+from .settings import (
+    DEFAULT_HIGHLIGHT,
+    DEFAULT_HIGHLIGHT_CANDIDATES,
+    SETTINGS_PATH,
+    Highlight,
+    load_settings,
+    parse_highlight,
+)
 
 log = logging.getLogger(__name__)
+
+# Fallback highlight formats, used until settings are applied.
+_HL_DEFAULT = parse_highlight(DEFAULT_HIGHLIGHT)
+_HL_DEFAULT_CANDIDATES = parse_highlight(DEFAULT_HIGHLIGHT_CANDIDATES)
+
+# Colour of a non-highlighted value link in the info sidebar.
+_LINK_COLOR = "#ddd"
+
+# ── info-sidebar links ────────────────────────────────────────────────────────
+
+_VALUE_HREF = "juxt:value/{axis}/{value}"
+_VALUE_HREF_RE = _re.compile(r"^juxt:value/(\d+)/(\d+)$")
 
 
 def _sp(text: str) -> str:
@@ -45,9 +64,51 @@ def _sp(text: str) -> str:
     return _html.escape(text).replace(" ", "&nbsp;")
 
 
+def _hl_css(hl: Highlight) -> str:
+    """Inline CSS for a parsed highlight format."""
+    parts = []
+    if hl.color:
+        parts.append(f"color:{hl.color}")
+    if hl.bold:
+        parts.append("font-weight:bold")
+    if hl.italic:
+        parts.append("font-style:italic")
+    parts.append("text-decoration:underline" if hl.underline else "text-decoration:none")
+    return ";".join(parts)
+
+
+def _hl(text: str, hl: Highlight = _HL_DEFAULT) -> str:
+    """Apply the highlight format *hl* to the already-escaped *text*."""
+    if hl.raw is not None:
+        return hl.raw.replace("{}", text)
+    return (f'<span style="{_hl_css(hl)}">'
+            f'{_sp(hl.prefix)}{text}{_sp(hl.suffix)}</span>')
+
+
 def _rich(text: str) -> str:
     """Mark *text* as rich text for _ElidingLabel, even without any tag."""
     return f"<span>{text}</span>"
+
+
+def _candidate_html(
+    candidates: list[str], cursor: int, hl: Highlight = _HL_DEFAULT_CANDIDATES
+) -> str:
+    """Render a status-bar candidate list, highlighting the one at *cursor*."""
+    return "&nbsp;&nbsp;".join(
+        _hl(_sp(c), hl) if i == cursor else _sp(c)
+        for i, c in enumerate(candidates)
+    )
+
+
+def _value_href(axis_idx: int, val_idx: int) -> str:
+    """Anchor target encoding one (axis, value) pair for the info sidebar."""
+    return _VALUE_HREF.format(axis=axis_idx, value=val_idx)
+
+
+def _parse_value_href(href: str) -> tuple[int, int] | None:
+    """Inverse of :func:`_value_href`; returns None for foreign hrefs."""
+    m = _VALUE_HREF_RE.match(href)
+    return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 # ── key-binding parser ────────────────────────────────────────────────────────
@@ -942,6 +1003,20 @@ class ImageView(QGraphicsView):
         if axis in self.focus_stack:
             self.focus_stack.remove(axis)
         self.focus_stack.insert(0, axis)
+
+    def goto_value(self, axis: int, val_idx: int):
+        """Jump to *val_idx* on *axis* and focus it (info-sidebar clicks)."""
+        if not 0 <= axis < len(self.axis_values):
+            return
+        if not 0 <= val_idx < len(self.axis_values[axis]):
+            return
+        self._focus(axis)
+        self._active_axis = axis
+        self._active_axis_timer.start(1000)
+        if self.pos[axis] != val_idx:
+            self.prev = list(self.pos)
+            self.pos[axis] = val_idx
+        self._refresh()
 
     # ── incremental-search (value picker / multi-select) ─────────────────────
 
@@ -2505,6 +2580,10 @@ class ImageView(QGraphicsView):
 
 
 class InfoPanel(QTextEdit):
+    """Read-only sidebar listing every axis; values are clickable links."""
+
+    value_clicked = Signal(int, int)  # axis index, value index
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
@@ -2515,12 +2594,36 @@ class InfoPanel(QTextEdit):
             "font-family: 'Courier New', monospace; font-size: 9pt; "
             "border: none; padding: 8px; }"
         )
+        # Anchors carry the value links; keep them looking like plain values.
+        self.document().setDefaultStyleSheet(
+            f"a {{ color: {_LINK_COLOR}; text-decoration: none; }}"
+        )
+        self.viewport().setMouseTracking(True)
+        self._highlight = _HL_DEFAULT
+
+    def set_highlight(self, hl: Highlight) -> None:
+        """Set the format used for the current value on each axis."""
+        self._highlight = hl
 
     def mousePressEvent(self, event):
+        href = self.anchorAt(event.position().toPoint())
         super().mousePressEvent(event)
         w = self.window()
         if hasattr(w, "view"):
             w.view.setFocus()
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        target = _parse_value_href(href)
+        if target is not None:
+            self.value_clicked.emit(*target)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        over_link = _parse_value_href(self.anchorAt(event.position().toPoint()))
+        self.viewport().setCursor(
+            Qt.CursorShape.PointingHandCursor if over_link is not None
+            else Qt.CursorShape.IBeamCursor
+        )
 
     def refresh(self, view: "ImageView"):
         e = _html.escape
@@ -2532,7 +2635,8 @@ class InfoPanel(QTextEdit):
         for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
             cur = view.pos[i]
             val_html = "&nbsp;&nbsp;".join(
-                f'<span style="color:#6af">{e(v)}</span>' if j == cur else e(v)
+                f'<a href="{_value_href(i, j)}">'
+                f'{_hl(_sp(v), self._highlight) if j == cur else _sp(v)}</a>'
                 for j, v in enumerate(vals)
             )
             parts.append(
@@ -2561,6 +2665,8 @@ class MainWindow(QMainWindow):
         session_name: str | None = None,
         seek_greedy: bool = True,
         keybindings: dict[str, str] | None = None,
+        highlight: Highlight | None = None,
+        highlight_candidates: Highlight | None = None,
         grid: str | None = None,
         grid_values: list[str] | None = None,
         grid_layout: tuple[int, int] | None = None,
@@ -2569,6 +2675,8 @@ class MainWindow(QMainWindow):
     ):
         super().__init__()
         self._session_name = session_name
+        self._hl = highlight or _HL_DEFAULT
+        self._hl_candidates = highlight_candidates or _HL_DEFAULT_CANDIDATES
         self.setWindowTitle(_window_title(config, session_name))
         self.view = ImageView(
             config, pixmaps, self,
@@ -2615,6 +2723,7 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(self._help_label)
 
         self._info_panel = InfoPanel()
+        self._info_panel.set_highlight(self._hl)
         self._info_dock = QDockWidget("Info", self)
         self._info_dock.setWidget(self._info_panel)
         self._info_dock.setAllowedAreas(
@@ -2626,6 +2735,7 @@ class MainWindow(QMainWindow):
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._info_dock)
         self._info_dock.hide()
+        self._info_panel.value_clicked.connect(self.view.goto_value)
 
         self.view.state_changed.connect(self._update_status)
         self.view.state_changed.connect(self._refresh_info_panel)
@@ -2725,21 +2835,18 @@ class MainWindow(QMainWindow):
             elif desc:
                 self._help_label.setText(f"( {desc} )")
             if candidates:
-                cand_str = "  ".join(
-                    f"[{c}]" if i == cursor else c
-                    for i, c in enumerate(candidates)
+                cand_html = _candidate_html(candidates, cursor, self._hl_candidates)
+                head = prompt_html if prompt_html is not None else _sp(prompt)
+                self._status_label.setText(
+                    _rich(f"{head}&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}")
                 )
-                if prompt_html is not None:
-                    self._status_label.setText(
-                        _rich(f"{prompt_html}&nbsp;&nbsp;→&nbsp;&nbsp;{_sp(cand_str)}")
-                    )
-                else:
-                    self._status_label.setText(f"{prompt}  →  {cand_str}")
             elif v._cmd["phase"] == "verb" and query:
-                self._status_label.setText(f"{prompt}  (unknown command)")
+                self._status_label.setText(
+                    _rich(f"{_sp(prompt)}&nbsp;&nbsp;(unknown&nbsp;command)")
+                )
             else:
                 self._status_label.setText(
-                    _rich(prompt_html) if prompt_html is not None else prompt
+                    _rich(prompt_html if prompt_html is not None else _sp(prompt))
                 )
             return
 
@@ -2753,14 +2860,14 @@ class MainWindow(QMainWindow):
             else:
                 axis_name = v.axis_names[v._sel["axis_idx"]]
                 prompt = f"{axis_name}? {query}▌"
-            if candidates:
-                cand_str = "  ".join(
-                    f"[{c}]" if i == cursor else c
-                    for i, c in enumerate(candidates)
-                )
-            else:
-                cand_str = "(no match)"
-            self._status_label.setText(f"{mode_str}  |  {prompt}  →  {cand_str}")
+            cand_html = (
+                _candidate_html(candidates, cursor, self._hl_candidates) if candidates
+                else _sp("(no match)")
+            )
+            self._status_label.setText(_rich(
+                f"{_sp(mode_str)}&nbsp;&nbsp;|&nbsp;&nbsp;{_sp(prompt)}"
+                f"&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}"
+            ))
             return
 
         h_idx = v._h_axis()
@@ -2775,13 +2882,12 @@ class MainWindow(QMainWindow):
         v_name = v.axis_names[v_idx] if v_idx is not None else "—"
         bind_str = f"→/← {h_name}  ↑/↓ {v_name}"
         sep = "  |  "
-        e = _html.escape
-        sp = lambda s: e(s).replace(" ", "&nbsp;")  # noqa: E731
+        sp = _sp
         sep_html = "&nbsp;&nbsp;|&nbsp;&nbsp;"
         active = v._active_axis
         coord_html = (
             "&nbsp;&nbsp;".join(
-                f'<span style="color:#6af">{sp(p)}</span>' if i == active else sp(p)
+                _hl(sp(p), self._hl) if i == active else sp(p)
                 for i, p in enumerate(coord_parts)
             ) if active is not None else None
         )
@@ -2884,6 +2990,11 @@ class MainWindow(QMainWindow):
             self._settings_watcher.addPath(str(SETTINGS_PATH))
         settings = load_settings(SETTINGS_PATH)
         self.view.apply_settings(settings)
+        self._hl = settings.highlight
+        self._hl_candidates = settings.highlight_candidates
+        self._info_panel.set_highlight(self._hl)
+        self._refresh_info_panel()
+        self._update_status()
         reset_placeholder_shapes()  # {date} & friends may have been re-configured
         import juxt.detect as _detect
         _detect._MAX_VALS = settings.max_vals
