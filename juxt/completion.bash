@@ -36,6 +36,10 @@ _juxt_complete_words() {
 
     _juxt_complete_reply=()
     while IFS= read -r line; do
+        # A helper on Windows may answer with CRLF -- an older build, or one
+        # from a different install.  A candidate must never carry the CR onto
+        # the command line, so drop it here as well as at the source.
+        line=${line%$'\r'}
         [[ -n $line ]] && _juxt_complete_reply+=("$line")
     done <<< "$out"
     return 0

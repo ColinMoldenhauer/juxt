@@ -530,6 +530,13 @@ WORDS_FLAG = "--complete-words"
 def main(argv: list[str] | None = None) -> int:
     """Entry point of the `juxt-complete` helper command."""
     import sys
+    # A text-mode stdout on Windows rewrites every newline as CRLF.  The shell
+    # reads this output a line at a time, so the CR survives into the candidate
+    # and lands on the command line.  Keep the stream byte-exact.
+    try:
+        sys.stdout.reconfigure(newline="\n")
+    except (AttributeError, ValueError):
+        pass  # stdout replaced by a plain object (pytest's capsys, a pipe wrapper)
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "--":
         args = args[1:]
