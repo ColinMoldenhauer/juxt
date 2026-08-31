@@ -68,12 +68,31 @@ class TestBuildPathTab:
         dlg._accept()
         assert dlg.chosen_path() == "plots/{sensor}_{date}.png"
 
-    def test_preview_colours_placeholders(self, qtbot, tmp_path):
+    def test_add_placeholder_button_inserts_custom_braces_at_cursor(self, qtbot, tmp_path):
+        dlg = StartupDialog(str(tmp_path))
+        qtbot.addWidget(dlg)
+        dlg.tabs.setCurrentIndex(1)
+        dlg._path_edit.setText("plots/.png")
+        dlg._path_edit.setCursorPosition(len("plots/"))
+        dlg._insert_placeholder("")
+        assert dlg._path_edit.text() == "plots/{}.png"
+        assert dlg._path_edit.cursorPosition() == len("plots/{")
+
+    def test_add_placeholder_button_inserts_named_placeholder(self, qtbot, tmp_path):
+        dlg = StartupDialog(str(tmp_path))
+        qtbot.addWidget(dlg)
+        dlg.tabs.setCurrentIndex(1)
+        dlg._path_edit.setText("plots/.png")
+        dlg._path_edit.setCursorPosition(len("plots/"))
+        dlg._insert_placeholder("date")
+        assert dlg._path_edit.text() == "plots/{date}.png"
+
+    def test_template_field_colours_placeholders(self, qtbot, tmp_path):
         dlg = StartupDialog(str(tmp_path))
         qtbot.addWidget(dlg)
         dlg._path_edit.setText("plots/{sensor}.png")
-        dlg._on_template_change(dlg._path_edit.text(), [])
-        assert "<span" in dlg._preview_label.text()
+        ranges = dlg._path_edit.document().firstBlock().layout().formats()
+        assert any(r.format.foreground().color().name() == "#e8913a" for r in ranges)
 
     def test_tab_completes_an_existing_directory(self, qtbot, nested_plot_dir):
         dlg = StartupDialog(str(nested_plot_dir))

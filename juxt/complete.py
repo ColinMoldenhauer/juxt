@@ -170,6 +170,14 @@ def normalize_template(template: str) -> str:
     return re.sub(r"\{\}", _name, template)
 
 
+def placeholder_spans(text: str) -> list[tuple[int, int, str]]:
+    """Each placeholder's `(start, end, colour)` in *text*, cycling the palette."""
+    return [
+        (m.start(), m.end(), PLACEHOLDER_COLORS[i % len(PLACEHOLDER_COLORS)])
+        for i, m in enumerate(_HIGHLIGHT_RE.finditer(text))
+    ]
+
+
 def placeholder_html(text: str) -> str:
     """Render *text* as rich text with each placeholder in its own colour."""
     def esc(s: str) -> str:
@@ -177,11 +185,10 @@ def placeholder_html(text: str) -> str:
 
     out: list[str] = []
     last = 0
-    for i, m in enumerate(_HIGHLIGHT_RE.finditer(text)):
-        out.append(esc(text[last:m.start()]))
-        colour = PLACEHOLDER_COLORS[i % len(PLACEHOLDER_COLORS)]
-        out.append(f'<span style="color:{colour}">{esc(m.group())}</span>')
-        last = m.end()
+    for start, end, colour in placeholder_spans(text):
+        out.append(esc(text[last:start]))
+        out.append(f'<span style="color:{colour}">{esc(text[start:end])}</span>')
+        last = end
     out.append(esc(text[last:]))
     return "".join(out)
 

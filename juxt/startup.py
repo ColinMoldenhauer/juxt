@@ -9,20 +9,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QColor, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
+    QMenu,
+    QPlainTextEdit,
+    QPushButton,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .complete import complete_path, complete_placeholder_name, local_listdir, placeholder_html
+from .complete import (
+    complete_path,
+    complete_placeholder_name,
+    local_listdir,
+    placeholder_shapes,
+    placeholder_spans,
+)
 
 _HINT = (
     "Type a path; use <code>{name}</code> for a segment that varies "
@@ -31,22 +40,57 @@ _HINT = (
 )
 
 
-class _TemplateLineEdit(QLineEdit):
-    """QLineEdit with Tab-driven, placeholder-aware path completion.
+class _PlaceholderHighlighter(QSyntaxHighlighter):
+    """Colours each `{placeholder}` in place, matching `placeholder_html`."""
+
+    def highlightBlock(self, text: str) -> None:
+        for start, end, colour in placeholder_spans(text):
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(colour))
+            self.setFormat(start, end - start, fmt)
+
+
+class _TemplateEdit(QPlainTextEdit):
+    """Single-line, placeholder-highlighted, Tab-completing path template field.
+
+    A QPlainTextEdit rather than a QLineEdit so the placeholders can be
+    colour-highlighted in place — QLineEdit only supports a single colour for
+    its whole text.
 
     Overriding `event()` (rather than `keyPressEvent()`) is required to
     intercept Tab before Qt's own focus-traversal handling consumes it.
     """
 
+    returnPressed = Signal()
+    textEdited = Signal(str)
+
     def __init__(self, on_change, parent: QWidget | None = None):
         super().__init__(parent)
         self._on_change = on_change
         self._listdir = local_listdir()
+        self._highlighter = _PlaceholderHighlighter(self.document())
+        self._user_editing = False
+
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        margin = self.document().documentMargin()
+        self.setFixedHeight(round(self.fontMetrics().height() + 2 * margin + 2 * self.frameWidth() + 6))
+        self.textChanged.connect(self._handle_text_changed)
 
     def event(self, e):
-        if e.type() == QEvent.Type.KeyPress and e.key() == Qt.Key.Key_Tab:
-            self._complete()
-            return True
+        if e.type() == QEvent.Type.KeyPress:
+            if e.key() == Qt.Key.Key_Tab:
+                self._complete()
+                return True
+            if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.returnPressed.emit()
+                return True
+            self._user_editing = True
+            try:
+                return super().event(e)
+            finally:
+                self._user_editing = False
         return super().event(e)
 
     def _complete(self):
@@ -60,6 +104,26 @@ class _TemplateLineEdit(QLineEdit):
             self.setText(text[:pos] + comp.append + text[pos:])
             self.setCursorPosition(pos + len(comp.append))
         self._on_change(self.text(), comp.matches)
+
+    def _handle_text_changed(self):
+        if self._user_editing:
+            self.textEdited.emit(self.toPlainText())
+
+    # -- QLineEdit-shaped API, so the rest of the dialog stays unchanged -------
+
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, text: str) -> None:
+        self.setPlainText(text)
+
+    def cursorPosition(self) -> int:
+        return self.textCursor().position()
+
+    def setCursorPosition(self, pos: int) -> None:
+        cursor = self.textCursor()
+        cursor.setPosition(pos)
+        self.setTextCursor(cursor)
 
 
 class StartupDialog(QDialog):
@@ -129,19 +193,16 @@ class StartupDialog(QDialog):
         hint.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(hint)
 
-        self._path_edit = _TemplateLineEdit(self._on_template_change, container)
+        self._path_edit = _TemplateEdit(self._on_template_change, container)
         self._path_edit.setPlaceholderText("plots/{sensor}_{date}.png")
         self._path_edit.setText(str(Path.home()) + "/")
         self._path_edit.returnPressed.connect(self._accept)
         self._path_edit.textEdited.connect(self._on_template_edited)
-        layout.addWidget(self._path_edit)
 
-        preview_row = QHBoxLayout()
-        preview_row.addWidget(QLabel("preview:", container))
-        self._preview_label = QLabel(container)
-        self._preview_label.setTextFormat(Qt.TextFormat.RichText)
-        preview_row.addWidget(self._preview_label, stretch=1)
-        layout.addLayout(preview_row)
+        edit_row = QHBoxLayout()
+        edit_row.addWidget(self._path_edit, stretch=1)
+        edit_row.addWidget(self._build_add_placeholder_button(container))
+        layout.addLayout(edit_row)
 
         self._candidates_label = QLabel(container)
         self._candidates_label.setWordWrap(True)
@@ -152,8 +213,27 @@ class StartupDialog(QDialog):
         self._on_template_change(self._path_edit.text(), [])
         return container
 
+    def _build_add_placeholder_button(self, parent: QWidget) -> QPushButton:
+        button = QPushButton("Add placeholder", parent)
+        menu = QMenu(button)
+        menu.addAction("Custom…", lambda: self._insert_placeholder(""))
+        for name in sorted(placeholder_shapes()):
+            menu.addAction(f"{{{name}}}", lambda name=name: self._insert_placeholder(name))
+        button.setMenu(menu)
+        return button
+
+    def _insert_placeholder(self, name: str) -> None:
+        edit = self._path_edit
+        pos = edit.cursorPosition()
+        text = edit.text()
+        inserted = "{" + name + "}"
+        edit.setText(text[:pos] + inserted + text[pos:])
+        # No name: land the caret inside the braces so the user can type one.
+        edit.setCursorPosition(pos + len(inserted) if name else pos + 1)
+        edit.setFocus()
+        self._on_template_edited(edit.text())
+
     def _on_template_change(self, text: str, matches: list[str]):
-        self._preview_label.setText(placeholder_html(text) or "&nbsp;")
         self._candidates_label.setText(", ".join(matches))
         self._update_button_state()
 
