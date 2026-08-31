@@ -407,6 +407,18 @@ class TestPatternCompletion:
         image_view._complete_path()
         assert image_view._tab_matches == ["d1.png", "d2.png"]
 
+    def test_closing_a_level_clears_the_hint_list(self, image_view, nested_plot_dir):
+        # Tab on a trailing placeholder adds the separator; the values it
+        # stands for must not stay on offer as if a choice remained.
+        base = nested_plot_dir.as_posix()
+        self._open(image_view, f"{base}/{{sensor}}/{{overpass}}")
+        image_view._complete_path()
+        assert image_view._cmd["query"] == f"{base}/{{sensor}}/{{overpass}}/"
+        assert image_view._tab_matches == []
+        # The next Tab descends and lists the level below.
+        image_view._complete_path()
+        assert image_view._tab_matches == ["d1.png", "d2.png"]
+
     def test_completes_an_axis_name(self, image_view):
         self._open(image_view, "plots/{s")
         image_view._complete_path()
