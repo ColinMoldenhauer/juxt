@@ -146,6 +146,15 @@ highlight:
   selected: "#6af:{}"       # current value in the info sidebar / active axis
   candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
 
+# How an axis' values are laid out in the info sidebar.
+# Normally every value sits on one line, joined by "separator". Once any
+# value on the axis contains a space or is longer than "list_larger_than"
+# characters, the axis switches to one value per line instead.
+sidebar:
+  value_list:
+    separator: "  "         # inserted between values on the same line
+    list_larger_than: 20    # length (in characters) that triggers one-per-line
+
 # Key bindings — map a key chord to an action name.
 # Action names match any :command (fit, zoom, fullscreen, reload, …) plus the
 # two UI toggles: toggle-statusbar  toggle-info
@@ -186,6 +195,16 @@ display:
 highlight:
   selected: "#6af:{}"       # current value in the info sidebar / active axis
   candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
+""",
+    "sidebar": """
+# How an axis' values are laid out in the info sidebar.
+# Normally every value sits on one line, joined by "separator". Once any
+# value on the axis contains a space or is longer than "list_larger_than"
+# characters, the axis switches to one value per line instead.
+sidebar:
+  value_list:
+    separator: "  "         # inserted between values on the same line
+    list_larger_than: 20    # length (in characters) that triggers one-per-line
 """,
     "placeholders": _PLACEHOLDERS_SECTION,
     "keybindings": """
@@ -228,6 +247,8 @@ class Settings:
         default_factory=lambda: dict(_DEFAULT_KEYBINDINGS)
     )
     placeholders: dict[str, object] = field(default_factory=dict)
+    sidebar_separator: str = "  "
+    sidebar_list_larger_than: int = 20
 
 
 def _write_missing_sections(path: Path, missing: set[str]) -> None:
@@ -274,6 +295,14 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
                 s.highlight_candidates = parse_highlight(
                     hl["candidates"], DEFAULT_HIGHLIGHT_CANDIDATES
                 )
+        sidebar = data.get("sidebar") or {}
+        if isinstance(sidebar, dict):
+            value_list = sidebar.get("value_list") or {}
+            if isinstance(value_list, dict):
+                if "separator" in value_list:
+                    s.sidebar_separator = str(value_list["separator"])
+                if "list_larger_than" in value_list:
+                    s.sidebar_list_larger_than = int(value_list["list_larger_than"])
         kb = data.get("keybindings") or {}
         if isinstance(kb, dict):
             s.keybindings = {**_DEFAULT_KEYBINDINGS, **{str(k): str(v) for k, v in kb.items()}}

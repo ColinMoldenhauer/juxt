@@ -96,3 +96,40 @@ class TestLoadHighlightSettings:
         path = self._write(tmp_path, 'highlight:\n  candidates: "nonsense"\n')
         s = load_settings(path)
         assert s.highlight_candidates.spec == DEFAULT_HIGHLIGHT_CANDIDATES
+
+
+class TestLoadSidebarSettings:
+    def _write(self, tmp_path, body: str):
+        path = tmp_path / "settings.yaml"
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_defaults_when_file_is_created(self, tmp_path):
+        s = load_settings(tmp_path / "settings.yaml")
+        assert s.sidebar_separator == "  "
+        assert s.sidebar_list_larger_than == 20
+
+    def test_custom_values(self, tmp_path):
+        path = self._write(
+            tmp_path,
+            "sidebar:\n"
+            "  value_list:\n"
+            "    separator: ' | '\n"
+            "    list_larger_than: 8\n",
+        )
+        s = load_settings(path)
+        assert s.sidebar_separator == " | "
+        assert s.sidebar_list_larger_than == 8
+
+    def test_missing_section_is_appended(self, tmp_path):
+        path = self._write(tmp_path, "seek:\n  greedy: false\n")
+        load_settings(path)
+        assert "sidebar:" in path.read_text(encoding="utf-8")
+
+    def test_partial_override_keeps_other_default(self, tmp_path):
+        path = self._write(
+            tmp_path, "sidebar:\n  value_list:\n    list_larger_than: 5\n"
+        )
+        s = load_settings(path)
+        assert s.sidebar_list_larger_than == 5
+        assert s.sidebar_separator == "  "

@@ -2600,10 +2600,20 @@ class InfoPanel(QTextEdit):
         )
         self.viewport().setMouseTracking(True)
         self._highlight = _HL_DEFAULT
+        self._separator = "  "
+        self._list_larger_than = 20
+        self._last_view: "ImageView | None" = None
+        self._path_lines_cache_key: tuple[str, int] | None = None
+        self._path_lines_cache: int = 1
 
     def set_highlight(self, hl: Highlight) -> None:
         """Set the format used for the current value on each axis."""
         self._highlight = hl
+
+    def set_value_list_style(self, separator: str, list_larger_than: int) -> None:
+        """Set the inline-value separator and the one-per-line length threshold."""
+        self._separator = separator
+        self._list_larger_than = list_larger_than
 
     def mousePressEvent(self, event):
         href = self.anchorAt(event.position().toPoint())
@@ -2625,19 +2635,72 @@ class InfoPanel(QTextEdit):
             else Qt.CursorShape.IBeamCursor
         )
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._last_view is not None:
+            self.refresh(self._last_view)
+
+    def _worst_case_path(self, view: "ImageView") -> str:
+        """The longest path *view*'s template could ever produce: every
+        placeholder resolved to its longest value on that axis.
+
+        Not necessarily a real combination, but its length is a true upper
+        bound on any actual path's length, which is all a wrap-height
+        reservation needs.
+        """
+        path = view.config.template
+        for name, vals in zip(view.axis_names, view.axis_values):
+            path = path.replace(f"{{{name}}}", max(vals, key=len))
+        return path
+
+    def _worst_case_line_count(self, worst_case_path: str) -> int:
+        """Number of lines the widest possible path wraps to at the current
+        width, cached per (text, width) so the common case — same config,
+        same size — costs nothing beyond a dict lookup."""
+        cache_key = (worst_case_path, self.viewport().width())
+        if cache_key != self._path_lines_cache_key:
+            self._path_lines_cache = self._line_count(worst_case_path)
+            self._path_lines_cache_key = cache_key
+        return self._path_lines_cache
+
+    def _line_count(self, text: str) -> int:
+        """Number of visual lines *text* wraps to at the panel's current
+        width. Renders *text* alone through this widget's own document —
+        reusing the real font and margins instead of guessing at them — and
+        never paints on screen since it's always immediately overwritten
+        within the same refresh() call."""
+        self.setHtml(
+            "<html><body style='font-family:\"Courier New\",monospace; "
+            "font-size:9pt; margin:8px;'>" + _html.escape(text) + "</body></html>"
+        )
+        return max(1, self.document().begin().layout().lineCount())
+
     def refresh(self, view: "ImageView"):
+        self._last_view = view
         e = _html.escape
         path = view._key_to_path(view._key())
+        # Pad the path with blank lines up to the widest path this config
+        # could ever show, so the axis list below never shifts when the
+        # current path's own wrapped height changes between navigations
+        # (most noticeable — and most disorienting — when it's a click on
+        # a sidebar value that triggers the change).
+        worst_lines = self._worst_case_line_count(self._worst_case_path(view))
+        pad = max(0, worst_lines - self._line_count(path))
         parts = [
             f"<span style='color:#888'>path</span><br>"
-            f"{e(path)}<br><br>"
+            f"{e(path)}" + "<br>" * pad + "<br><br>"
         ]
         for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
             cur = view.pos[i]
-            val_html = "&nbsp;&nbsp;".join(
+            links = [
                 f'<a href="{_value_href(i, j)}">'
                 f'{_hl(_sp(v), self._highlight) if j == cur else _sp(v)}</a>'
                 for j, v in enumerate(vals)
+            ]
+            as_list = any(" " in v or len(v) > self._list_larger_than for v in vals)
+            val_html = (
+                "<br>".join(f"&bull;&nbsp;{link}" for link in links) if as_list
+                else _sp(self._separator).join(links)
             )
             parts.append(
                 f"<span style='color:#888'>{e(name)}</span><br>{val_html}<br><br>"
@@ -2667,6 +2730,8 @@ class MainWindow(QMainWindow):
         keybindings: dict[str, str] | None = None,
         highlight: Highlight | None = None,
         highlight_candidates: Highlight | None = None,
+        sidebar_separator: str = "  ",
+        sidebar_list_larger_than: int = 20,
         grid: str | None = None,
         grid_values: list[str] | None = None,
         grid_layout: tuple[int, int] | None = None,
@@ -2724,6 +2789,7 @@ class MainWindow(QMainWindow):
 
         self._info_panel = InfoPanel()
         self._info_panel.set_highlight(self._hl)
+        self._info_panel.set_value_list_style(sidebar_separator, sidebar_list_larger_than)
         self._info_dock = QDockWidget("Info", self)
         self._info_dock.setWidget(self._info_panel)
         self._info_dock.setAllowedAreas(
@@ -2993,6 +3059,9 @@ class MainWindow(QMainWindow):
         self._hl = settings.highlight
         self._hl_candidates = settings.highlight_candidates
         self._info_panel.set_highlight(self._hl)
+        self._info_panel.set_value_list_style(
+            settings.sidebar_separator, settings.sidebar_list_larger_than
+        )
         self._refresh_info_panel()
         self._update_status()
         reset_placeholder_shapes()  # {date} & friends may have been re-configured

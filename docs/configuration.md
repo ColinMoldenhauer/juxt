@@ -20,6 +20,8 @@ PATH                        directory to scan or YAML config file
 -s, --separator SEP [...]   separator(s) for auto-detection
 -a, --auto                  skip the axis naming prompt
     --max-depth N           maximum subdirectory search depth
+    --NAME VALUE [...]      pin a {placeholder}'s values (template PATH only,
+                            must come after PATH) — see below
 -h, --help                  show usage and exit
 ```
 
@@ -114,6 +116,22 @@ You can skip the YAML file and pass the template string directly. juxt detects a
 ```bash
 juxt "plots/{sensor}_{date}_{overpass}_{source}.png"
 ```
+
+### Pinning placeholder values
+
+By default every `{placeholder}` in the template is resolved by globbing the filesystem for whatever values actually occur. Pass `--NAME VALUE [VALUE ...]` (after PATH) to pin one or more placeholders to an explicit value list instead — the remaining placeholders are still discovered by globbing, once per combination of pinned values, and merged into a shared axis space:
+
+```bash
+juxt "{root}/{dir}/images/{plot}.png" \
+  --root /data/run1 /data/run2 /data/run3
+```
+
+This is useful for two things a plain glob can't do:
+
+- **Filtering** — narrow an axis to a subset of what's on disk (e.g. only two of five sensors) without hand-editing a saved config.
+- **Values that don't line up with a `*` glob** — a pinned value may itself contain `/`, so unrelated directory trees (like the three `run*` roots above, which don't share a common naming pattern) can become one axis.
+
+Each `--NAME` must match a placeholder already in the template; repeat the flag once per placeholder to pin more than one. Values keep the order given on the command line rather than being sorted.
 
 ---
 

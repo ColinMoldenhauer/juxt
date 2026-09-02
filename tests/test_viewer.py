@@ -355,6 +355,146 @@ class TestInfoPanelLinks:
         assert colours[f"juxt:value/0/{image_view.pos[0]}"] == QColor("#f80").name()
 
 
+# ---------------------------------------------------------------------------
+# Info sidebar: value-list layout (inline vs. one-per-line)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def value_list_view(qtbot):
+    """ImageView with one short axis, one axis holding a spaced value, and
+    one axis holding a long value — enough to exercise every list-mode trigger."""
+    from itertools import product as _product
+
+    from juxt.config import Config, _auto_keys
+    from juxt.viewer import ImageView
+    from PySide6.QtGui import QColor, QPixmap
+
+    axes = {
+        "short": ["A", "B"],
+        "spacey": ["has space", "ok"],
+        "long": ["x" * 25, "y"],
+    }
+    config = Config(
+        template="fake/{short}_{spacey}_{long}.png",
+        axes=axes, keys=_auto_keys(axes),
+    )
+    pixmaps = {}
+    for i, j, k in _product(range(2), range(2), range(2)):
+        pm = QPixmap(10, 10)
+        pm.fill(QColor(10, 10, 10))
+        pixmaps[(i, j, k)] = pm
+
+    v = ImageView(config, pixmaps)
+    qtbot.addWidget(v)
+    return v
+
+
+class TestInfoPanelValueList:
+    def _panel(self, view, qtbot, separator="  ", list_larger_than=20):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.set_value_list_style(separator, list_larger_than)
+        panel.refresh(view)
+        return panel
+
+    def test_short_values_stay_inline(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot).toHtml()
+        # Both "A" and "B" links must appear on the same line (no <br> between them).
+        a = html.index('href="juxt:value/0/0"')
+        b = html.index('href="juxt:value/0/1"')
+        assert "<br" not in html[a:b]
+
+    def test_value_with_space_switches_to_list(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot).toHtml()
+        a = html.index('href="juxt:value/1/0"')
+        b = html.index('href="juxt:value/1/1"')
+        assert "<br" in html[a:b]
+
+    def test_value_over_threshold_switches_to_list(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot).toHtml()
+        a = html.index('href="juxt:value/2/0"')
+        b = html.index('href="juxt:value/2/1"')
+        assert "<br" in html[a:b]
+
+    def test_custom_threshold_keeps_long_value_inline(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot, list_larger_than=100).toHtml()
+        a = html.index('href="juxt:value/2/0"')
+        b = html.index('href="juxt:value/2/1"')
+        assert "<br" not in html[a:b]
+
+    def test_custom_separator_used_when_inline(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot, separator=" -- ").toHtml()
+        a = html.index('href="juxt:value/0/0"')
+        b = html.index('href="juxt:value/0/1"')
+        assert "--" in html[a:b]
+
+    def test_default_style_matches_settings_defaults(self):
+        from juxt.settings import Settings
+
+        assert Settings().sidebar_separator == "  "
+        assert Settings().sidebar_list_larger_than == 20
+
+    def test_axis_block_position_stable_across_path_lengths(self, value_list_view, qtbot):
+        """The path line's reserved height must keep the first axis block in
+        the same place whether the current path is short or long — this is
+        what stops the sidebar from jumping when clicking a value link."""
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(160, 400)
+        panel.show()
+        qtbot.waitExposed(panel)
+
+        def top_of_first_axis() -> float:
+            doc = panel.document()
+            cur = doc.find("short")  # first axis name's own text
+            assert not cur.isNull()
+            # cursorRect (not blockBoundingRect) is required here: the path
+            # line and every axis row share one QTextDocument block (<br>
+            # doesn't start a new block), so only a cursor-position query
+            # reflects where a wrapped line actually landed.
+            return panel.cursorRect(cur).top()
+
+        value_list_view.pos = [0, 0, 0]  # long path: A_has space_xxxxxxxxxxxxxxxxxxxxxxxxx
+        panel.refresh(value_list_view)
+        top_long = top_of_first_axis()
+
+        value_list_view.pos = [1, 1, 1]  # short path: B_ok_y
+        panel.refresh(value_list_view)
+        top_short = top_of_first_axis()
+
+        assert top_long == top_short
+
+    def test_reserved_lines_track_width(self, value_list_view, qtbot):
+        """The reservation must actually track the widest possible path at
+        the current width, not some arbitrary constant."""
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(160, 400)
+        panel.show()
+        qtbot.waitExposed(panel)
+        panel.refresh(value_list_view)
+
+        narrow_lines = panel._worst_case_line_count(panel._worst_case_path(value_list_view))
+        panel.resize(600, 400)
+        panel.refresh(value_list_view)
+        wide_lines = panel._worst_case_line_count(panel._worst_case_path(value_list_view))
+        # A wider panel needs fewer wrapped lines for the same worst-case text.
+        assert wide_lines <= narrow_lines
+
+    def test_worst_case_path_uses_longest_value_per_axis(self, value_list_view):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        worst = panel._worst_case_path(value_list_view)
+        assert worst == "fake/A_has space_" + "x" * 25 + ".png"
+
+
 def _anchor_colours(panel) -> dict[str, str]:
     """Map every anchor href in the panel document to its rendered colour."""
     colours: dict[str, str] = {}
