@@ -161,6 +161,7 @@ Placeholders standing for a known kind of value complete only as far as that val
 | `:mode tap\|seek\|pin` | switch navigation mode |
 | `:grid [AXIS]` | tile an axis into a grid of viewports |
 | `:grid AXIS VAL …` | grid with a value subset |
+| `:keys` | toggle the shortcut sidebar (`Ctrl+Shift+K`) |
 | `:grid-dialog` | open the grid builder dialogue (`Ctrl+Shift+G`) |
 | `:grid-layout NxM` | change grid layout without exiting |
 | `:ungrid` | return to single-image view |
@@ -186,4 +187,5 @@ Placeholders standing for a known kind of value complete only as far as that val
 | right-click | menu: copy image path / copy image |
 | `Ctrl+Shift+H` | toggle status bar  (start hidden with `--no-status-bar`) |
 | `Ctrl+Shift+I` | toggle info sidebar  (start open with `--info`) |
+| `Ctrl+Shift+K` | toggle shortcut sidebar  (start open with `--keys`) |
 | `Ctrl+Shift+G` | open the grid builder dialogue |

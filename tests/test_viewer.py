@@ -1040,3 +1040,112 @@ class TestModifierRoleConflicts:
 
     def test_a_non_axis_letter_is_still_clean_under_a_modifier(self):
         assert self._conflicts("Ctrl+Z", True) == []
+
+
+# ---------------------------------------------------------------------------
+# Shortcut sidebar (Ctrl+Shift+K)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def keys_window(viewer_config, mini_pixmaps, qtbot):
+    """MainWindow with the shortcut sidebar open and the default chords bound."""
+    from juxt.settings import _DEFAULT_KEYBINDINGS
+    from juxt.viewer import MainWindow
+
+    w = MainWindow(viewer_config, mini_pixmaps, watch=False, show_keys=True,
+                   keybindings=dict(_DEFAULT_KEYBINDINGS))
+    qtbot.addWidget(w)
+    w.show()
+    return w
+
+
+class TestShortcutPanel:
+    def _text(self, window) -> str:
+        return window._shortcut_panel.toPlainText()
+
+    def test_starts_closed_by_default(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.viewer import MainWindow
+
+        w = MainWindow(viewer_config, mini_pixmaps, watch=False)
+        qtbot.addWidget(w)
+        w.show()
+        assert not w._shortcut_dock.isVisible()
+
+    def test_show_keys_opens_it_populated(self, keys_window):
+        assert keys_window._shortcut_dock.isVisible()
+        assert "navigate" in self._text(keys_window)
+
+    def test_toggle_action_closes_and_reopens_it(self, keys_window):
+        keys_window._toggle_shortcut_panel()
+        assert not keys_window._shortcut_dock.isVisible()
+        keys_window._toggle_shortcut_panel()
+        assert keys_window._shortcut_dock.isVisible()
+
+    def test_chord_toggles_the_panel(self, keys_window, qtbot):
+        qtbot.keyClick(keys_window.view, Qt.Key.Key_K,
+                       Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        assert not keys_window._shortcut_dock.isVisible()
+
+    def test_keys_command_toggles_the_panel(self, keys_window):
+        keys_window.view._cmd_execute("keys")
+        assert not keys_window._shortcut_dock.isVisible()
+
+    def test_it_names_the_live_arrow_axes(self, keys_window):
+        assert "cycle sensor" in self._text(keys_window)
+
+    def test_it_lists_the_current_axis_keys(self, keys_window):
+        assert "s  sensor" in self._text(keys_window)
+
+    def test_it_lists_the_bound_chords(self, keys_window):
+        assert "Ctrl+Shift+K  toggle-keys" in self._text(keys_window)
+
+    def test_tap_mode_documents_both_modifiers(self, keys_window):
+        text = self._text(keys_window)
+        assert "Shift+letter  step −1 on that axis" in text
+        assert "Ctrl+letter  open the value picker for that axis" in text
+
+    def test_seek_mode_replaces_the_letter_section(self, keys_window):
+        keys_window.view._cmd_execute("mode seek")
+        text = self._text(keys_window)
+        assert "search axes, then values" in text
+        assert "step +1 on that axis" not in text
+
+    def test_seek_mode_drops_the_axis_key_list(self, keys_window):
+        keys_window.view._cmd_execute("mode seek")
+        assert "axis keys" not in self._text(keys_window)
+
+    def test_pin_mode_has_no_reverse_entry(self, keys_window):
+        keys_window.view._cmd_execute("mode pin")
+        text = self._text(keys_window)
+        assert "focus that axis" in text
+        assert "step −1 on that axis" not in text
+
+    def test_swapped_modifiers_are_reflected(self, keys_window):
+        keys_window.view._swap_modifiers = True
+        keys_window._shortcut_panel.refresh(keys_window.view)
+        text = self._text(keys_window)
+        assert "Shift+letter  open the value picker for that axis" in text
+        assert "Ctrl+letter  step −1 on that axis" in text
+
+    def test_it_follows_navigation(self, keys_window, qtbot):
+        keys_window.view._cmd_execute("mode pin")
+        qtbot.keyClick(keys_window.view, Qt.Key.Key_D)   # focus date on ←/→
+        assert "cycle date" in self._text(keys_window)
+
+    def test_a_closed_panel_is_not_refreshed(self, keys_window):
+        keys_window._toggle_shortcut_panel()             # close it
+        before = self._text(keys_window)
+        keys_window.view._cmd_execute("mode seek")
+        assert self._text(keys_window) == before
+
+
+class TestShortcutPanelDefaults:
+    def test_ctrl_shift_k_is_bound_out_of_the_box(self):
+        from juxt.settings import _DEFAULT_KEYBINDINGS
+
+        assert _DEFAULT_KEYBINDINGS["Ctrl+Shift+K"] == "toggle-keys"
+
+    def test_keys_is_a_command(self):
+        from juxt.viewer import _COMMANDS
+
+        assert "keys" in _COMMANDS

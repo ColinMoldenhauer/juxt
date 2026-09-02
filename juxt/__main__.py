@@ -123,6 +123,7 @@ def _print_help() -> None:
         "Ctrl+Shift+I    toggle info sidebar",
         "Ctrl+Shift+G    open the grid builder",
         "Ctrl+Shift+C    copy current image path",
+        "Ctrl+Shift+K    toggle shortcut sidebar",
         "",
         "view controls",
         None,  # horizontal rule
@@ -184,11 +185,13 @@ def _print_help() -> None:
       --squeeze               drop axes with only one value
       --name NAME             session name shown in window title (default: template basename)
 
-  panels (toggled at runtime with Ctrl+Shift+I / Ctrl+Shift+H)
+  panels (toggled at runtime with Ctrl+Shift+I / Ctrl+Shift+H / Ctrl+Shift+K)
       --info                  start with the info sidebar open   (default: closed)
       --no-info               start with the info sidebar closed
       --status-bar            start with the status bar shown    (default: shown)
       --no-status-bar         start with the status bar hidden
+      --keys                  start with the shortcut sidebar open (default: closed)
+      --no-keys               start with the shortcut sidebar closed
 
   grid view
       --grid AXIS             enter grid view for AXIS on startup
@@ -207,7 +210,7 @@ def _print_help() -> None:
     :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :ungrid
     :grid-sharex on|off  :grid-sharey on|off
     :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes
-    :mode tap|seek|pin  :switch-last  :info
+    :mode tap|seek|pin  :switch-last  :info  :keys
     :pattern PATH  :reload  :watch true|false
     :remove-axis NAME  :remove-value AXIS VALUE
     :change-key AXIS LETTER  :settings
@@ -243,6 +246,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--no-info", dest="info", action="store_false")
     p.add_argument("--status-bar", dest="status_bar", action="store_true", default=True)
     p.add_argument("--no-status-bar", dest="status_bar", action="store_false")
+    p.add_argument("--keys", dest="keys", action="store_true", default=False)
+    p.add_argument("--no-keys", dest="keys", action="store_false")
 
     g = p.add_argument_group("grid view")
     g.add_argument("--grid", metavar="AXIS", default=None)
@@ -495,6 +500,7 @@ def main():
         grid_sharey=not args.no_sharey,
         show_info=args.info,
         show_status_bar=args.status_bar,
+        show_keys=args.keys,
     )
     window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()

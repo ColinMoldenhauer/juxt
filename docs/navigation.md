@@ -36,6 +36,7 @@ These bindings work identically regardless of which mode is active.
 | `Ctrl+Shift+I` | Toggle the info sidebar |
 | `Ctrl+Shift+G` | Open the grid builder dialogue |
 | `Ctrl+Shift+C` | Copy the current image path to the clipboard |
+| `Ctrl+Shift+K` | Toggle the shortcut sidebar |
 
 ### Other
 
@@ -173,6 +174,7 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:mode tap` | Switch to tap mode |
 | `:mode seek` | Switch to seek mode |
 | `:mode pin` | Switch to pin mode |
+| `:keys` | Toggle the shortcut sidebar (same as `Ctrl+Shift+K`) |
 | `:switch-last` | Toggle between current and previous position (same as `Space`) |
 | `:axis-h NAME` | Lock `←`/`→` to a named axis |
 | `:axis-v NAME` | Lock `↑`/`↓` to a named axis |
@@ -374,13 +376,14 @@ The colour and delimiters used for the current value (info sidebar, active axis,
 
 ### Custom keybindings
 
-Any action (including every `:command` plus `toggle-statusbar` and `toggle-info`) can be bound to a key chord in `~/.juxt/settings.yaml`:
+Any action (including every `:command` plus `toggle-statusbar`, `toggle-info` and `toggle-keys`) can be bound to a key chord in `~/.juxt/settings.yaml`:
 
 ```yaml
 keybindings:
   Ctrl+Shift+H: toggle-statusbar
   Ctrl+Shift+G: grid-dialog
   Ctrl+Shift+C: copy-path
+  Ctrl+Shift+K: toggle-keys
   F11: fullscreen
   Ctrl+R: reload
 ```

@@ -247,6 +247,7 @@ _COMMANDS = [
     "grid-sharex",
     "grid-sharey",
     "info",
+    "keys",
     "mode",
     "pattern",
     "quit",
@@ -309,6 +310,7 @@ _COMMAND_HELP: dict[str, str] = {
     "grid-sharex":  "toggle or set synchronized horizontal pan/zoom  (on / off)",
     "grid-sharey":  "toggle or set synchronized vertical pan/zoom  (on / off)",
     "info":         "toggle the info sidebar",
+    "keys":         "toggle the keyboard shortcut sidebar  (Ctrl+Shift+K)",
     "mode":         "switch navigation mode  (tap / seek / pin)",
     "pattern":      "change the template / source path without restarting",
     "quit":         "quit juxt",
@@ -674,6 +676,7 @@ class ImageView(QGraphicsView):
     state_changed = Signal()
     toggle_bar = Signal()
     toggle_info = Signal()
+    toggle_keys = Signal()
     config_changed = Signal()           # emitted after reload/pattern successfully replaces config
     grid_mode_changed = Signal(object)  # emits GridWidget on enter, None on exit
     _poll_result = Signal(object)       # emitted from poll worker; carries list or Exception
@@ -1566,6 +1569,8 @@ class ImageView(QGraphicsView):
             self.state_changed.emit()
         elif verb == "info":
             self.toggle_info.emit()
+        elif verb == "keys":
+            self.toggle_keys.emit()
         elif verb == "remove-axis":
             name = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
             if not name:
@@ -1674,6 +1679,8 @@ class ImageView(QGraphicsView):
             self.toggle_bar.emit()
         elif action == "toggle-info":
             self.toggle_info.emit()
+        elif action == "toggle-keys":
+            self.toggle_keys.emit()
         else:
             self._cmd_execute(action)
 
@@ -2724,6 +2731,115 @@ class InfoPanel(QTextEdit):
         )
 
 
+class ShortcutPanel(QTextEdit):
+    """Read-only sidebar listing the shortcuts that are live right now.
+
+    Everything here is read back out of the view rather than hard-coded: the
+    navigation mode decides which letter-key section applies, the axis keys
+    are the ones currently assigned, the modifier roles follow modifiers.swap,
+    and the chords come from the user's own keybindings.  A panel that lists
+    keys the running juxt does not have would be worse than no panel at all.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setMinimumWidth(240)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet(
+            "QTextEdit { background: #111; color: #ddd; "
+            "font-family: 'Courier New', monospace; font-size: 9pt; "
+            "border: none; padding: 8px; }"
+        )
+
+    @staticmethod
+    def _sections(view: "ImageView") -> list[tuple[str, list[tuple[str, str]]]]:
+        picker_mod, reverse_mod = _modifier_roles(view._swap_modifiers)
+        picker = "Ctrl" if picker_mod == Qt.ControlModifier else "Shift"
+        reverse = "Ctrl" if reverse_mod == Qt.ControlModifier else "Shift"
+
+        navigate = [
+            ("← / →", f"cycle {view.axis_names[view._h_axis()]}"),
+            ("↑ / ↓", f"cycle {view.axis_names[view._v_axis()]}"
+                     if view._v_axis() is not None else "cycle the second axis"),
+            ("Space", "flip to the previous position"),
+            ("Home / End", "first / last value on the ←/→ axis"),
+            ("1–9", "Nth value on the ←/→ axis"),
+            (":", "command mode"),
+            ("Enter", "toggle fullscreen"),
+            ("Escape", "leave fullscreen / cancel"),
+        ]
+
+        if view.nav_mode == NavMode.TAP:
+            mode = [
+                ("letter", "step +1 on that axis"),
+                (f"{reverse}+letter", "step −1 on that axis"),
+                (f"{picker}+letter", "open the value picker for that axis"),
+            ]
+        elif view.nav_mode == NavMode.PIN:
+            mode = [
+                ("letter", "focus that axis on ←/→"),
+                (f"{picker}+letter", "open the value picker for that axis"),
+            ]
+        else:
+            mode = [
+                ("letter", "search axes, then values"),
+                ("Enter", "confirm the first candidate"),
+                ("Backspace", "undo one character / step back"),
+            ]
+
+        view_controls = [
+            ("0", "zoom back to 100%"),
+            ("double-click", "fit the image to the window"),
+            ("drag", "pan"),
+            ("wheel", "step the ←/→ axis"),
+            ("Shift+wheel", "step the ↑/↓ axis"),
+            ("Ctrl+wheel", "zoom under the cursor"),
+            ("right-click", "copy path / image menu"),
+        ]
+
+        sections = [
+            ("navigate", navigate),
+            (f"{view.nav_mode.label} mode", mode),
+        ]
+        if view.nav_mode != NavMode.SEEK:
+            axis_keys = [(ch, view.axis_names[i])
+                         for ch, i in sorted(view.key_to_axis.items())]
+            if axis_keys:
+                sections.append(("axis keys", axis_keys))
+        sections.append(("view", view_controls))
+
+        bound = sorted(
+            (_chord_str(k, m), action)
+            for (k, m), action in view._keybindings.items()
+        )
+        if bound:
+            sections.append(("bound to actions", bound))
+        return sections
+
+    def refresh(self, view: "ImageView"):
+        # quote=False: these land in text content, and Qt's rich-text reader
+        # leaves &#x27; standing where a plain apostrophe reads fine.
+        def e(s: str) -> str:
+            return _html.escape(s, quote=False)
+
+        parts = []
+        for title, rows in self._sections(view):
+            parts.append(f"<span style='color:#888'>{e(title)}</span><br>")
+            for key, desc in rows:
+                parts.append(
+                    f"<span style='color:{_LINK_COLOR}'>{_sp(e(key))}</span>"
+                    f"&nbsp;&nbsp;{_sp(e(desc))}<br>"
+                )
+            parts.append("<br>")
+        self.setHtml(
+            "<html><body style='font-family:\"Courier New\",monospace; "
+            "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+            + "".join(parts)
+            + "</body></html>"
+        )
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -2750,6 +2866,7 @@ class MainWindow(QMainWindow):
         grid_sharey: bool = True,
         show_info: bool = False,
         show_status_bar: bool = True,
+        show_keys: bool = False,
     ):
         super().__init__()
         self._session_name = session_name
@@ -2820,10 +2937,28 @@ class MainWindow(QMainWindow):
             self._info_panel.refresh(self.view)
         self._info_panel.value_clicked.connect(self.view.goto_value)
 
+        # Docked opposite the info sidebar so the two can be open at once.
+        self._shortcut_panel = ShortcutPanel()
+        self._shortcut_dock = QDockWidget("Shortcuts", self)
+        self._shortcut_dock.setWidget(self._shortcut_panel)
+        self._shortcut_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self._shortcut_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetClosable |
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+        )
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._shortcut_dock)
+        self._shortcut_dock.setVisible(show_keys)
+        if show_keys:
+            self._shortcut_panel.refresh(self.view)
+
         self.view.state_changed.connect(self._update_status)
         self.view.state_changed.connect(self._refresh_info_panel)
+        self.view.state_changed.connect(self._refresh_shortcut_panel)
         self.view.toggle_bar.connect(self._toggle_status_bar)
         self.view.toggle_info.connect(self._toggle_info_panel)
+        self.view.toggle_keys.connect(self._toggle_shortcut_panel)
         self.view.config_changed.connect(
             lambda: self.setWindowTitle(_window_title(self.view.config, self._session_name))
         )
@@ -3052,6 +3187,17 @@ class MainWindow(QMainWindow):
         if self._info_dock.isVisible():
             self._info_panel.refresh(self.view)
 
+    def _toggle_shortcut_panel(self):
+        if self._shortcut_dock.isVisible():
+            self._shortcut_dock.hide()
+        else:
+            self._shortcut_panel.refresh(self.view)
+            self._shortcut_dock.show()
+
+    def _refresh_shortcut_panel(self):
+        if self._shortcut_dock.isVisible():
+            self._shortcut_panel.refresh(self.view)
+
     def _warn_keybinding_conflicts(self, *, flash: bool = True) -> bool:
         """Log (and optionally flash) warnings for bindings that shadow navigation."""
         axis_letters = set(self.view.key_to_axis.keys())
@@ -3078,6 +3224,7 @@ class MainWindow(QMainWindow):
         self._hl_candidates = settings.highlight_candidates
         self._info_panel.set_highlight(self._hl)
         self._refresh_info_panel()
+        self._refresh_shortcut_panel()
         self._update_status()
         reset_placeholder_shapes()  # {date} & friends may have been re-configured
         import juxt.detect as _detect

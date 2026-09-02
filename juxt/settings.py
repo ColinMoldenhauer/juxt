@@ -158,7 +158,7 @@ modifiers:
 
 # Key bindings — map a key chord to an action name.
 # Action names match any :command (fit, zoom, fullscreen, reload, …) plus the
-# two UI toggles: toggle-statusbar  toggle-info
+# UI toggles: toggle-statusbar  toggle-info  toggle-keys
 # Modifiers: Ctrl  Shift  Alt  Meta
 # Keys: any letter, Return, Escape, Space, Tab, Backspace, Delete,
 #       Home, End, Left, Right, Up, Down, F1–F12, 0–9
@@ -172,6 +172,7 @@ keybindings:
   Ctrl+Shift+I: toggle-info        # toggle the info sidebar
   Ctrl+Shift+G: grid-dialog        # open the grid builder dialogue
   Ctrl+Shift+C: copy-path          # copy the current image path to the clipboard
+  Ctrl+Shift+K: toggle-keys        # toggle the keyboard shortcut sidebar
   # F11: fullscreen                # example: bind F11 to fullscreen
 """ + _PLACEHOLDERS_SECTION
 
@@ -211,7 +212,7 @@ modifiers:
     "placeholders": _PLACEHOLDERS_SECTION,
     "keybindings": """
 # Key bindings — map a key chord to an action name.
-# Action names match any :command plus: toggle-statusbar  toggle-info
+# Action names match any :command plus: toggle-statusbar  toggle-info  toggle-keys
 # Modifiers: Ctrl  Shift  Alt  Meta
 # Keys: any letter, Return, Escape, Space, Tab, Backspace, Delete,
 #       Home, End, Left, Right, Up, Down, F1–F12, 0–9
@@ -222,6 +223,7 @@ keybindings:
   Ctrl+Shift+I: toggle-info
   Ctrl+Shift+G: grid-dialog
   Ctrl+Shift+C: copy-path
+  Ctrl+Shift+K: toggle-keys
   # F11: fullscreen
 """,
 }
@@ -233,6 +235,7 @@ _DEFAULT_KEYBINDINGS: dict[str, str] = {
     "Ctrl+Shift+I": "toggle-info",
     "Ctrl+Shift+G": "grid-dialog",
     "Ctrl+Shift+C": "copy-path",
+    "Ctrl+Shift+K": "toggle-keys",
 }
 
 

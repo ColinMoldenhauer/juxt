@@ -33,3 +33,14 @@ class TestPanelFlags:
 
     def test_status_bar_flag_shows_it(self):
         assert parse("--no-status-bar", "--status-bar", "plots/").status_bar is True
+
+
+class TestKeysFlag:
+    def test_defaults_to_closed(self):
+        assert parse("plots/").keys is False
+
+    def test_flag_opens_the_sidebar(self):
+        assert parse("--keys", "plots/").keys is True
+
+    def test_no_keys_keeps_it_closed(self):
+        assert parse("--keys", "--no-keys", "plots/").keys is False

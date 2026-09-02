@@ -64,6 +64,22 @@ Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewp
 
 It starts closed; pass `--info` to open it right away. The status bar is the mirror case — shown by default, hidden at startup with `--no-status-bar`.
 
+---
+
+## Shortcut sidebar
+
+Toggle with `Ctrl+Shift+K` or `:keys`, or open it at startup with `--keys`. The panel docks to the left of the viewport, opposite the info sidebar, so both can be open at once.
+
+Everything it lists is read out of the running session rather than written down in advance:
+
+- the `←`/`→` and `↑`/`↓` rows name the axes those arrows currently cycle
+- the letter-key section is the one for the active navigation mode, and switching mode with `:mode` rewrites it
+- the axis-key list is the live letter assignment, including anything moved with `:change-key`
+- `Ctrl+letter` and `Shift+letter` appear in whichever role [`modifiers.swap`](navigation.md#modifier-roles) gives them
+- the last section lists your own [keybindings](navigation.md#custom-keybindings) with the action each one runs
+
+Saving `~/.juxt/settings.yaml` redraws the panel, so a rebound chord shows up without a restart.
+
 Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
 
 ---
