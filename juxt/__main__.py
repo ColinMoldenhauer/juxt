@@ -524,6 +524,8 @@ def main():
         keybindings=settings.keybindings,
         highlight=settings.highlight,
         highlight_candidates=settings.highlight_candidates,
+        sidebar_separator=settings.sidebar_separator,
+        sidebar_list_larger_than=settings.sidebar_list_larger_than,
         grid=args.grid,
         grid_values=args.grid_values,
         grid_layout=grid_layout,

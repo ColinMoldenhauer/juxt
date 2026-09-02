@@ -2600,10 +2600,17 @@ class InfoPanel(QTextEdit):
         )
         self.viewport().setMouseTracking(True)
         self._highlight = _HL_DEFAULT
+        self._separator = "  "
+        self._list_larger_than = 20
 
     def set_highlight(self, hl: Highlight) -> None:
         """Set the format used for the current value on each axis."""
         self._highlight = hl
+
+    def set_value_list_style(self, separator: str, list_larger_than: int) -> None:
+        """Set the inline-value separator and the one-per-line length threshold."""
+        self._separator = separator
+        self._list_larger_than = list_larger_than
 
     def mousePressEvent(self, event):
         href = self.anchorAt(event.position().toPoint())
@@ -2634,10 +2641,15 @@ class InfoPanel(QTextEdit):
         ]
         for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
             cur = view.pos[i]
-            val_html = "&nbsp;&nbsp;".join(
+            links = [
                 f'<a href="{_value_href(i, j)}">'
                 f'{_hl(_sp(v), self._highlight) if j == cur else _sp(v)}</a>'
                 for j, v in enumerate(vals)
+            ]
+            as_list = any(" " in v or len(v) > self._list_larger_than for v in vals)
+            val_html = (
+                "<br>".join(f"&bull;&nbsp;{link}" for link in links) if as_list
+                else _sp(self._separator).join(links)
             )
             parts.append(
                 f"<span style='color:#888'>{e(name)}</span><br>{val_html}<br><br>"
@@ -2667,6 +2679,8 @@ class MainWindow(QMainWindow):
         keybindings: dict[str, str] | None = None,
         highlight: Highlight | None = None,
         highlight_candidates: Highlight | None = None,
+        sidebar_separator: str = "  ",
+        sidebar_list_larger_than: int = 20,
         grid: str | None = None,
         grid_values: list[str] | None = None,
         grid_layout: tuple[int, int] | None = None,
@@ -2724,6 +2738,7 @@ class MainWindow(QMainWindow):
 
         self._info_panel = InfoPanel()
         self._info_panel.set_highlight(self._hl)
+        self._info_panel.set_value_list_style(sidebar_separator, sidebar_list_larger_than)
         self._info_dock = QDockWidget("Info", self)
         self._info_dock.setWidget(self._info_panel)
         self._info_dock.setAllowedAreas(
@@ -2993,6 +3008,9 @@ class MainWindow(QMainWindow):
         self._hl = settings.highlight
         self._hl_candidates = settings.highlight_candidates
         self._info_panel.set_highlight(self._hl)
+        self._info_panel.set_value_list_style(
+            settings.sidebar_separator, settings.sidebar_list_larger_than
+        )
         self._refresh_info_panel()
         self._update_status()
         reset_placeholder_shapes()  # {date} & friends may have been re-configured

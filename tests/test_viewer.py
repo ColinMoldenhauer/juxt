@@ -355,6 +355,88 @@ class TestInfoPanelLinks:
         assert colours[f"juxt:value/0/{image_view.pos[0]}"] == QColor("#f80").name()
 
 
+# ---------------------------------------------------------------------------
+# Info sidebar: value-list layout (inline vs. one-per-line)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def value_list_view(qtbot):
+    """ImageView with one short axis, one axis holding a spaced value, and
+    one axis holding a long value — enough to exercise every list-mode trigger."""
+    from itertools import product as _product
+
+    from juxt.config import Config, _auto_keys
+    from juxt.viewer import ImageView
+    from PySide6.QtGui import QColor, QPixmap
+
+    axes = {
+        "short": ["A", "B"],
+        "spacey": ["has space", "ok"],
+        "long": ["x" * 25, "y"],
+    }
+    config = Config(
+        template="fake/{short}_{spacey}_{long}.png",
+        axes=axes, keys=_auto_keys(axes),
+    )
+    pixmaps = {}
+    for i, j, k in _product(range(2), range(2), range(2)):
+        pm = QPixmap(10, 10)
+        pm.fill(QColor(10, 10, 10))
+        pixmaps[(i, j, k)] = pm
+
+    v = ImageView(config, pixmaps)
+    qtbot.addWidget(v)
+    return v
+
+
+class TestInfoPanelValueList:
+    def _panel(self, view, qtbot, separator="  ", list_larger_than=20):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.set_value_list_style(separator, list_larger_than)
+        panel.refresh(view)
+        return panel
+
+    def test_short_values_stay_inline(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot).toHtml()
+        # Both "A" and "B" links must appear on the same line (no <br> between them).
+        a = html.index('href="juxt:value/0/0"')
+        b = html.index('href="juxt:value/0/1"')
+        assert "<br" not in html[a:b]
+
+    def test_value_with_space_switches_to_list(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot).toHtml()
+        a = html.index('href="juxt:value/1/0"')
+        b = html.index('href="juxt:value/1/1"')
+        assert "<br" in html[a:b]
+
+    def test_value_over_threshold_switches_to_list(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot).toHtml()
+        a = html.index('href="juxt:value/2/0"')
+        b = html.index('href="juxt:value/2/1"')
+        assert "<br" in html[a:b]
+
+    def test_custom_threshold_keeps_long_value_inline(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot, list_larger_than=100).toHtml()
+        a = html.index('href="juxt:value/2/0"')
+        b = html.index('href="juxt:value/2/1"')
+        assert "<br" not in html[a:b]
+
+    def test_custom_separator_used_when_inline(self, value_list_view, qtbot):
+        html = self._panel(value_list_view, qtbot, separator=" -- ").toHtml()
+        a = html.index('href="juxt:value/0/0"')
+        b = html.index('href="juxt:value/0/1"')
+        assert "--" in html[a:b]
+
+    def test_default_style_matches_settings_defaults(self):
+        from juxt.settings import Settings
+
+        assert Settings().sidebar_separator == "  "
+        assert Settings().sidebar_list_larger_than == 20
+
+
 def _anchor_colours(panel) -> dict[str, str]:
     """Map every anchor href in the panel document to its rendered colour."""
     colours: dict[str, str] = {}

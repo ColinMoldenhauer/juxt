@@ -64,6 +64,15 @@ Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewp
 
 Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
 
+By default an axis' values sit on one line, separated by two spaces. Once any value on that axis contains a space or is longer than 20 characters, the axis switches to one value per line instead — long or spaced-out values (a full path pinned via `--NAME VALUE ...`, say) stay readable rather than running together. Both the separator and the length threshold are configurable in `~/.juxt/settings.yaml`:
+
+```yaml
+sidebar:
+  value_list:
+    separator: "  "         # inserted between values on the same line
+    list_larger_than: 20    # length (in characters) that triggers one-per-line
+```
+
 ---
 
 ## Grid builder
