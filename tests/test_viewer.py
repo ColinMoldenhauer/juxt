@@ -950,3 +950,93 @@ class TestCommandMatching:
 
     def test_grid_value_argument_skips_values_already_named(self, fuzzy_view):
         assert "SMAP" not in fuzzy_view._grid_cmd_candidates("sensor SMAP s")
+
+
+# ---------------------------------------------------------------------------
+# Swapping the Ctrl / Shift modifier roles on axis letter keys
+# ---------------------------------------------------------------------------
+
+CTRL = Qt.KeyboardModifier.ControlModifier
+SHIFT = Qt.KeyboardModifier.ShiftModifier
+
+
+@pytest.fixture
+def swapped_view(viewer_config, mini_pixmaps, qtbot):
+    """ImageView with modifiers.swap on: Shift picks, Ctrl reverses."""
+    from juxt.viewer import ImageView
+
+    v = ImageView(viewer_config, mini_pixmaps, swap_modifiers=True)
+    qtbot.addWidget(v)
+    return v
+
+
+class TestDefaultModifierRoles:
+    def test_ctrl_letter_opens_the_picker(self, image_view, qtbot):
+        qtbot.keyClick(image_view, Qt.Key.Key_S, CTRL)
+        assert image_view._sel is not None
+        assert image_view._sel["axis_idx"] == 0
+
+    def test_shift_letter_steps_backward(self, image_view, qtbot):
+        qtbot.keyClick(image_view, Qt.Key.Key_S, SHIFT)
+        assert image_view.pos[0] == 1     # wrapped from 0 backwards
+        assert image_view._sel is None
+
+    def test_bare_letter_steps_forward(self, image_view, qtbot):
+        qtbot.keyClick(image_view, Qt.Key.Key_S)
+        assert image_view.pos[0] == 1
+
+
+class TestSwappedModifierRoles:
+    def test_shift_letter_opens_the_picker(self, swapped_view, qtbot):
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S, SHIFT)
+        assert swapped_view._sel is not None
+        assert swapped_view._sel["axis_idx"] == 0
+
+    def test_ctrl_letter_steps_backward(self, swapped_view, qtbot):
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S, CTRL)
+        assert swapped_view.pos[0] == 1
+        assert swapped_view._sel is None
+
+    def test_bare_letter_still_steps_forward(self, swapped_view, qtbot):
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S)
+        assert swapped_view.pos[0] == 1
+
+    def test_pin_mode_picker_follows_the_swap(self, swapped_view, qtbot):
+        swapped_view.nav_mode = NavMode.PIN
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S, SHIFT)
+        assert swapped_view._sel is not None
+
+    def test_pin_mode_ignores_the_reverse_modifier(self, swapped_view, qtbot):
+        swapped_view.nav_mode = NavMode.PIN
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S, CTRL)
+        assert swapped_view.pos == [0, 0]     # pin never navigates on a letter
+        assert swapped_view._sel is None
+
+    def test_settings_reload_applies_the_swap(self, image_view):
+        from juxt.settings import Settings
+
+        image_view.apply_settings(Settings(swap_modifiers=True))
+        assert image_view._swap_modifiers is True
+
+
+class TestModifierRoleConflicts:
+    def _conflicts(self, chord, swap):
+        from juxt.viewer import _keybinding_conflicts, _parse_key
+
+        key, mods = _parse_key(chord)
+        return _keybinding_conflicts({(key, mods): "reload"}, {"s"}, swap)
+
+    def test_ctrl_axis_key_shadows_the_picker_by_default(self):
+        assert "tap/pin" in self._conflicts("Ctrl+S", False)[0]
+
+    def test_shift_axis_key_shadows_only_tap_by_default(self):
+        assert "tap mode" in self._conflicts("Shift+S", False)[0]
+
+    def test_swapping_moves_the_picker_warning_to_shift(self):
+        assert "tap/pin" in self._conflicts("Shift+S", True)[0]
+
+    def test_swapping_moves_the_reverse_warning_to_ctrl(self):
+        assert "tap mode" in self._conflicts("Ctrl+S", True)[0]
+
+    def test_a_non_axis_letter_is_still_clean_under_a_modifier(self):
+        assert self._conflicts("Ctrl+Z", True) == []

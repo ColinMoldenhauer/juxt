@@ -143,7 +143,9 @@ def _print_help() -> None:
         "       Ctrl+letter  open value picker",
         "",
         "Key bindings are configurable in",
-        "~/.juxt/settings.yaml  (also via :settings).",
+        "~/.juxt/settings.yaml  (also via :settings);",
+        "modifiers.swap there exchanges the Ctrl",
+        "and Shift roles on axis letter keys.",
         "",
     ]
     pad = 2
@@ -482,6 +484,7 @@ def main():
         session_name=args.name,
         seek_greedy=settings.seek_greedy,
         seek_fuzzy=settings.seek_fuzzy,
+        swap_modifiers=settings.swap_modifiers,
         keybindings=settings.keybindings,
         highlight=settings.highlight,
         highlight_candidates=settings.highlight_candidates,

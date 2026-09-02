@@ -71,6 +71,8 @@ Arrow keys still work and navigate the top two entries in the focus stack, as in
 
 **Trade-off vs. pin:** every step costs one keypress, but Shift is needed for the reverse direction. Pin removes the Shift cost for sustained cycling at the expense of an explicit focus step before navigating.
 
+**Swapping the modifiers:** which of `Ctrl` and `Shift` opens the picker and which reverses is a setting — see [Modifier roles](#modifier-roles).
+
 ---
 
 ## seek
@@ -111,6 +113,26 @@ Letter keys only shift focus — they do not advance the axis. Use arrow keys af
 ## Value picker
 
 `Ctrl` + a letter key opens an incremental value picker for that axis in any mode. Type to filter the list; the match is case-insensitive and [fuzzy](#fuzzy-matching). When exactly one candidate remains it is confirmed automatically; press `Enter` to confirm the first candidate explicitly at any point; press `Escape` to cancel.
+
+---
+
+## Modifier roles
+
+Two modifiers act on an axis letter key, and which does what is configurable:
+
+| | Value picker | Navigate −1 (tap only) |
+|---|---|---|
+| Default | `Ctrl` + letter | `Shift` + letter |
+| `modifiers.swap: true` | `Shift` + letter | `Ctrl` + letter |
+
+```yaml
+modifiers:
+  swap: true
+```
+
+Bare letters are unaffected — they still step +1 in tap mode and focus the axis in pin mode. Pin mode has no reverse binding, so under the swap `Ctrl` + letter simply does nothing there, exactly as `Shift` + letter does today.
+
+The startup warning about [custom keybindings](#custom-keybindings) that shadow navigation follows the swap, so it names the chord that is actually shadowed.
 
 ---
 
@@ -371,7 +393,9 @@ menu, so the menu always names the chord that actually works.
 | Chord type | Conflicts with |
 |---|---|
 | Bare letter (e.g. `H`) | seek mode always (any letter starts a search); tap + pin if the letter is an axis key |
-| `Shift+letter` axis key | tap mode (uppercase = navigate −1) |
+| `Shift+letter` axis key | tap mode (navigate −1) |
 | `Ctrl+letter` axis key | tap + pin mode (opens value picker) |
+
+The last two rows exchange places under [`modifiers.swap`](#modifier-roles).
 
 When juxt detects a conflict it logs a warning and flashes a notice in the status bar — both at startup and whenever the settings file is saved. The binding still takes effect; the warning is advisory.

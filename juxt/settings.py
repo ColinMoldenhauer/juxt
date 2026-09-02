@@ -148,6 +148,14 @@ highlight:
   selected: "#6af:{}"       # current value in the info sidebar / active axis
   candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
 
+# Modifier roles on axis letter keys (tap and pin modes).
+# Default:  Ctrl+letter  opens the value picker
+#           Shift+letter steps backward on that axis (tap only)
+# swap: true exchanges the two, so Shift+letter opens the picker and
+# Ctrl+letter steps backward.
+modifiers:
+  swap: false
+
 # Key bindings — map a key chord to an action name.
 # Action names match any :command (fit, zoom, fullscreen, reload, …) plus the
 # two UI toggles: toggle-statusbar  toggle-info
@@ -191,6 +199,15 @@ highlight:
   selected: "#6af:{}"       # current value in the info sidebar / active axis
   candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
 """,
+    "modifiers": """
+# Modifier roles on axis letter keys (tap and pin modes).
+# Default:  Ctrl+letter  opens the value picker
+#           Shift+letter steps backward on that axis (tap only)
+# swap: true exchanges the two, so Shift+letter opens the picker and
+# Ctrl+letter steps backward.
+modifiers:
+  swap: false
+""",
     "placeholders": _PLACEHOLDERS_SECTION,
     "keybindings": """
 # Key bindings — map a key chord to an action name.
@@ -223,6 +240,7 @@ _DEFAULT_KEYBINDINGS: dict[str, str] = {
 class Settings:
     seek_greedy: bool = True
     seek_fuzzy: bool = True
+    swap_modifiers: bool = False
     max_vals: int = 3
     max_vals_display: int = 10
     highlight: Highlight = field(
@@ -273,6 +291,9 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
                 s.max_vals = int(display["max_vals"])
             if "max_vals_display" in display:
                 s.max_vals_display = int(display["max_vals_display"])
+        modifiers = data.get("modifiers") or {}
+        if isinstance(modifiers, dict) and "swap" in modifiers:
+            s.swap_modifiers = bool(modifiers["swap"])
         hl = data.get("highlight")
         if isinstance(hl, str):          # one string sets both contexts
             s.highlight = parse_highlight(hl)

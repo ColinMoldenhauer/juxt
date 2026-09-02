@@ -126,3 +126,33 @@ class TestSeekFuzzy:
 
         p = ensure_settings_file(tmp_path / "settings.yaml")
         assert "fuzzy: true" in p.read_text(encoding="utf-8")
+
+
+class TestModifierSwap:
+    def test_defaults_to_off(self, tmp_path):
+        from juxt.settings import load_settings
+
+        p = tmp_path / "settings.yaml"
+        p.write_text("seek:\n  greedy: true\n", encoding="utf-8")
+        assert load_settings(p, write=False).swap_modifiers is False
+
+    def test_can_be_switched_on(self, tmp_path):
+        from juxt.settings import load_settings
+
+        p = tmp_path / "settings.yaml"
+        p.write_text("modifiers:\n  swap: true\n", encoding="utf-8")
+        assert load_settings(p, write=False).swap_modifiers is True
+
+    def test_generated_template_documents_it(self, tmp_path):
+        from juxt.settings import ensure_settings_file
+
+        text = ensure_settings_file(tmp_path / "settings.yaml").read_text(encoding="utf-8")
+        assert "modifiers:" in text and "swap: false" in text
+
+    def test_missing_section_is_appended_to_an_existing_file(self, tmp_path):
+        from juxt.settings import load_settings
+
+        p = tmp_path / "settings.yaml"
+        p.write_text("seek:\n  greedy: true\n", encoding="utf-8")
+        load_settings(p)
+        assert "modifiers:" in p.read_text(encoding="utf-8")

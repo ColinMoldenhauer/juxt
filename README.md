@@ -111,6 +111,7 @@ Default mode is **tap**. Each axis is assigned one letter key — tap it to step
 | lowercase letter | navigate +1 on that axis |
 | uppercase letter | navigate −1 on that axis |
 | `Ctrl`+letter | open value picker for that axis |
+| | (`modifiers.swap: true` exchanges the `Ctrl` and `Shift` roles) |
 | `Space` | toggle between current and previous position |
 | `Home` / `End` | jump to first / last value |
 | `1`–`9` | jump to the Nth value |

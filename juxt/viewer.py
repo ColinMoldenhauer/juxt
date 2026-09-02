@@ -177,19 +177,34 @@ def _chord_str(key: int, mods: int) -> str:
     return "+".join(parts) if parts else "?"
 
 
+def _modifier_roles(swap: bool) -> tuple[Qt.KeyboardModifier, Qt.KeyboardModifier]:
+    """(value-picker modifier, reverse-navigation modifier) for axis letter keys.
+
+    Ctrl picks and Shift reverses by default; *swap* exchanges the two for
+    users who would rather hold Shift for the picker.
+    """
+    if swap:
+        return Qt.ShiftModifier, Qt.ControlModifier
+    return Qt.ControlModifier, Qt.ShiftModifier
+
+
 def _keybinding_conflicts(
     parsed_bindings: dict[tuple[int, int], str],
     axis_letters: set[str],
+    swap_modifiers: bool = False,
 ) -> list[str]:
     """Return one human-readable description per binding that shadows navigation.
 
     Conflicts per mode (key type → affected modes):
       bare letter       → seek always; tap + pin if the letter is an axis key
-      Shift+letter      → tap if letter is an axis key (navigate -1)
-      Ctrl+letter       → tap + pin if letter is an axis key (value picker)
+      picker modifier   → tap + pin if letter is an axis key (value picker)
+      reverse modifier  → tap if letter is an axis key (navigate -1)
+
+    Which physical modifier plays which role follows *swap_modifiers*, so the
+    warning names the chord that is actually shadowed.
     """
-    ctrl = Qt.ControlModifier.value
-    shift = Qt.ShiftModifier.value
+    picker, reverse = _modifier_roles(swap_modifiers)
+    picker, reverse = picker.value, reverse.value
     conflicts = []
     for (key, mods), action in sorted(parsed_bindings.items()):
         if not (Qt.Key_A <= key <= Qt.Key_Z):
@@ -200,12 +215,12 @@ def _keybinding_conflicts(
             clashing.append("seek")
             if letter in axis_letters:
                 clashing += ["tap", "pin"]
-        elif mods == shift:
-            if letter in axis_letters:
-                clashing.append("tap")
-        elif mods == ctrl:
+        elif mods == picker:
             if letter in axis_letters:
                 clashing += ["tap", "pin"]
+        elif mods == reverse:
+            if letter in axis_letters:
+                clashing.append("tap")
         if clashing:
             axis_note = f" (axis key '{letter}')" if letter in axis_letters else ""
             conflicts.append(
@@ -680,6 +695,7 @@ class ImageView(QGraphicsView):
         axis_v: str | None = None,
         seek_greedy: bool = True,
         seek_fuzzy: bool = True,
+        swap_modifiers: bool = False,
         keybindings: dict[str, str] | None = None,
         grid: str | None = None,
         grid_values: list[str] | None = None,
@@ -726,6 +742,7 @@ class ImageView(QGraphicsView):
         self._pre_fullscreen_maximized: bool | None = None
         self._seek_greedy: bool = seek_greedy
         self._seek_fuzzy: bool = seek_fuzzy
+        self._swap_modifiers: bool = swap_modifiers
         self._keybindings: dict[tuple[int, int], str] = {}
         for _ks, _action in (keybindings or {}).items():
             try:
@@ -1642,6 +1659,7 @@ class ImageView(QGraphicsView):
         """Apply a freshly loaded Settings object without restarting."""
         self._seek_greedy = settings.seek_greedy
         self._seek_fuzzy = settings.seek_fuzzy
+        self._swap_modifiers = settings.swap_modifiers
         new_kb: dict[tuple[int, int], str] = {}
         for ks, action in settings.keybindings.items():
             try:
@@ -2547,8 +2565,10 @@ class ImageView(QGraphicsView):
         if mods == Qt.ControlModifier and Qt.Key_A <= k <= Qt.Key_Z:
             ch_lower = chr(k).lower()
 
+        picker_mod, reverse_mod = _modifier_roles(self._swap_modifiers)
+
         if self.nav_mode == NavMode.PIN:
-            if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
+            if mods == picker_mod and ch_lower in self.key_to_axis:
                 self._sel_open_value(self.key_to_axis[ch_lower])
             elif mods == Qt.NoModifier and ch_lower in self.key_to_axis:
                 self._focus(self.key_to_axis[ch_lower])
@@ -2563,13 +2583,14 @@ class ImageView(QGraphicsView):
                 super().keyPressEvent(event)
 
         elif self.nav_mode == NavMode.TAP:
-            if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
+            if mods == picker_mod and ch_lower in self.key_to_axis:
                 self._sel_open_value(self.key_to_axis[ch_lower])
-            elif ch_lower in self.key_to_axis and mods in (Qt.NoModifier, Qt.ShiftModifier):
+            elif ch_lower in self.key_to_axis and mods in (Qt.NoModifier, reverse_mod):
+                # The modifier decides the direction, not the letter's case:
+                # with the roles swapped an uppercase letter opens the picker.
                 axis = self.key_to_axis[ch_lower]
-                delta = -1 if ch.isupper() else 1
                 self._focus(axis)
-                self._navigate(axis, delta)
+                self._navigate(axis, -1 if mods == reverse_mod else 1)
             else:
                 super().keyPressEvent(event)
 
@@ -2718,6 +2739,7 @@ class MainWindow(QMainWindow):
         session_name: str | None = None,
         seek_greedy: bool = True,
         seek_fuzzy: bool = True,
+        swap_modifiers: bool = False,
         keybindings: dict[str, str] | None = None,
         highlight: Highlight | None = None,
         highlight_candidates: Highlight | None = None,
@@ -2745,6 +2767,7 @@ class MainWindow(QMainWindow):
             axis_v=axis_v,
             seek_greedy=seek_greedy,
             seek_fuzzy=seek_fuzzy,
+            swap_modifiers=swap_modifiers,
             keybindings=keybindings,
             grid=grid,
             grid_values=grid_values,
@@ -3032,7 +3055,8 @@ class MainWindow(QMainWindow):
     def _warn_keybinding_conflicts(self, *, flash: bool = True) -> bool:
         """Log (and optionally flash) warnings for bindings that shadow navigation."""
         axis_letters = set(self.view.key_to_axis.keys())
-        conflicts = _keybinding_conflicts(self.view._keybindings, axis_letters)
+        conflicts = _keybinding_conflicts(
+            self.view._keybindings, axis_letters, self.view._swap_modifiers)
         for msg in conflicts:
             log.warning("Keybinding conflict: %s", msg)
         if flash and conflicts:
