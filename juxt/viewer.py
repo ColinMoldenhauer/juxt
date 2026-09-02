@@ -8,7 +8,7 @@ from enum import IntEnum
 from typing import Literal
 
 from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -707,6 +707,12 @@ class ImageView(QGraphicsView):
         self._active_axis_timer.setSingleShot(True)
         self._active_axis_timer.timeout.connect(self._clear_active_axis)
 
+        # Set by _refresh() when the change that triggered it should force
+        # the info sidebar to scroll the given (axis, value) into view,
+        # e.g. letter-shortcut stepping in tap mode; None otherwise, which
+        # keeps the sidebar's current scroll position instead.
+        self._sidebar_target: tuple[int, int] | None = None
+
         self._watching = False
         self._watcher: QFileSystemWatcher | None = None
         self._path_to_key: dict[str, tuple] = {}
@@ -798,7 +804,8 @@ class ImageView(QGraphicsView):
     def _key(self) -> tuple:
         return tuple(self.pos)
 
-    def _refresh(self):
+    def _refresh(self, sidebar_target: tuple[int, int] | None = None):
+        self._sidebar_target = sidebar_target
         if self._grid_axis is not None:
             self._refresh_grid()
             return
@@ -983,7 +990,7 @@ class ImageView(QGraphicsView):
             return self._locked_v
         return self.focus_stack[1] if len(self.focus_stack) >= 2 else None
 
-    def _navigate(self, axis: int, delta: int):
+    def _navigate(self, axis: int, delta: int, ensure_visible: bool = False):
         n = len(self.axis_values[axis])
         self.prev = list(self.pos)
         if axis == self._grid_axis and self._grid_widget is not None:
@@ -997,7 +1004,7 @@ class ImageView(QGraphicsView):
             self.pos[axis] = (self.pos[axis] + delta) % n
         self._active_axis = axis
         self._active_axis_timer.start(1000)
-        self._refresh()
+        self._refresh(sidebar_target=(axis, self.pos[axis]) if ensure_visible else None)
 
     def _focus(self, axis: int):
         if axis in self.focus_stack:
@@ -2550,7 +2557,7 @@ class ImageView(QGraphicsView):
                 axis = self.key_to_axis[ch_lower]
                 delta = -1 if ch.isupper() else 1
                 self._focus(axis)
-                self._navigate(axis, delta)
+                self._navigate(axis, delta, ensure_visible=True)
             else:
                 super().keyPressEvent(event)
 
@@ -2675,8 +2682,28 @@ class InfoPanel(QTextEdit):
         )
         return max(1, self.document().begin().layout().lineCount())
 
+    def _fragment_span_for_href(self, href: str) -> tuple[int, int] | None:
+        """(start, end) document positions of the text fragment whose anchor
+        href is exactly *href*, or None if it isn't in the document.
+
+        Walks fragments directly rather than searching rendered text, since
+        the target value's text isn't necessarily unique across the sidebar
+        (e.g. the same value string on two different axes).
+        """
+        block = self.document().begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid() and frag.charFormat().anchorHref() == href:
+                    return frag.position(), frag.position() + frag.length()
+                it += 1
+            block = block.next()
+        return None
+
     def refresh(self, view: "ImageView"):
         self._last_view = view
+        saved_scroll = self.verticalScrollBar().value()
         e = _html.escape
         path = view._key_to_path(view._key())
         # Pad the path with blank lines up to the widest path this config
@@ -2711,6 +2738,32 @@ class InfoPanel(QTextEdit):
             + "".join(parts)
             + "</body></html>"
         )
+        # setHtml() always resets the scrollbar to the top; put it back where
+        # the user left it first, so a forced-visible target (below) is
+        # judged against the scroll position the user actually had, not
+        # against the fresh-document top setHtml() just reset it to.
+        self.verticalScrollBar().setValue(saved_scroll)
+
+        # A refresh triggered by e.g. tap-mode letter-shortcut stepping asks
+        # to keep a specific value visible. ensureCursorVisible() scrolls the
+        # minimum needed for that — or not at all when it's already on screen.
+        # A value long enough to word-wrap spans more than one document
+        # position, so ensure the end is visible first, then the start —
+        # last, so it wins if the whole span is taller than the viewport.
+        target = view._sidebar_target
+        if (
+            target is not None
+            and 0 <= target[0] < len(view.axis_names)
+            and target[1] == view.pos[target[0]]
+        ):
+            span = self._fragment_span_for_href(_value_href(*target))
+            if span is not None:
+                start, end = span
+                for pos in (end, start):
+                    cursor = QTextCursor(self.document())
+                    cursor.setPosition(pos)
+                    self.setTextCursor(cursor)
+                    self.ensureCursorVisible()
 
 
 class MainWindow(QMainWindow):
