@@ -6,6 +6,7 @@ import logging
 import math
 import re
 import sys
+from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
 
@@ -369,47 +370,98 @@ def _template_regex(template: str) -> str:
     )
 
 
-def _axes_from_local_template(template: str) -> dict[str, list[str]]:
+def _split_pinned(names: list[str], pinned: dict[str, list[str]]) -> tuple[list[str], list[str]]:
+    """Validate *pinned* against the template's placeholder *names* and split
+    them into (pinned_names, free_names), both in template order."""
+    unknown = sorted(set(pinned) - set(names))
+    if unknown:
+        raise ValueError(
+            f"--{unknown[0]} does not match any {{placeholder}} in the template. "
+            f"Known placeholders: {names}"
+        )
+    return [n for n in names if n in pinned], [n for n in names if n not in pinned]
+
+
+def _pinned_combos(pinned_names: list[str], pinned: dict[str, list[str]]) -> list[dict[str, str]]:
+    """Every combination of the given axes' pinned values, as `{name: value}` dicts."""
+    if not pinned_names:
+        return [{}]
+    return [dict(zip(pinned_names, vals)) for vals in product(*(pinned[n] for n in pinned_names))]
+
+
+def _axes_from_local_template(
+    template: str,
+    pinned: dict[str, list[str]] | None = None,
+) -> dict[str, list[str]]:
     """Detect axis values by globbing the local filesystem against *template*.
 
     Example: 'plots/{sensor}_{date}.png' scans for matching files and returns
     {'sensor': ['ASCAT', 'SMAP', ...], 'date': ['2024-03-15', ...]}.
+
+    *pinned*, if given, fixes one or more placeholders to an explicit list of
+    values (in the given order) instead of discovering them by globbing, e.g.
+    `{'root': ['/data/run1', '/data/run2']}`. Globbing then only resolves the
+    remaining placeholders, once per combination of pinned values, and the
+    results are merged into a shared axis space. This also lets a pinned
+    value contain '/', which plain globbing can't discover since '*' never
+    crosses a path separator.
     """
     names = PLACEHOLDER_NAME_RE.findall(template)
     if not names:
         raise ValueError(f"Template {template!r} has no {{placeholder}} variables")
 
+    pinned = pinned or {}
+    pinned_names, free_names = _split_pinned(names, pinned)
     norm = template.replace('\\', '/')
-    glob_pat = PLACEHOLDER_NAME_RE.sub('*', norm)
-    raw_files = _glob_mod.glob(glob_pat)
-    if not raw_files:
-        raise ValueError(f"No files match template {template!r}")
-
-    regex = _template_regex(norm)
 
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
-    for f in sorted(raw_files):
-        m = re.fullmatch(regex, f.replace('\\', '/'))
-        if m:
-            for i, n in enumerate(names):
-                v = m.group(i + 1)
-                if v not in seen[n]:
-                    seen[n].add(v)
-                    axes[n].append(v)
 
-    axes = {k: _numeric_sort(v) for k, v in axes.items() if v}
-    if not axes:
-        raise ValueError(f"Could not extract axis values from files matching {template!r}")
+    for combo in _pinned_combos(pinned_names, pinned):
+        for n, v in combo.items():
+            if v not in seen[n]:
+                seen[n].add(v)
+                axes[n].append(v)
+
+        if not free_names:
+            continue
+
+        sub = norm
+        for n, v in combo.items():
+            sub = sub.replace(f"{{{n}}}", v)
+        glob_pat = PLACEHOLDER_NAME_RE.sub('*', sub)
+        regex = _template_regex(sub)
+        for f in sorted(_glob_mod.glob(glob_pat)):
+            m = re.fullmatch(regex, f.replace('\\', '/'))
+            if m:
+                for i, n in enumerate(free_names):
+                    v = m.group(i + 1)
+                    if v not in seen[n]:
+                        seen[n].add(v)
+                        axes[n].append(v)
+
+    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
+    if any(not axes[n] for n in free_names):
+        raise ValueError(f"No files match template {template!r}")
     return axes
 
 
-def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
+def _axes_from_sftp_template(
+    template: str,
+    sftp,
+    pinned: dict[str, list[str]] | None = None,
+) -> dict[str, list[str]]:
     """Detect axis values from files matching *template* using an already-open SFTP client.
 
     Walks the remote directory tree starting at the fixed prefix before the
     first placeholder, then matches every file against the template pattern.
     The caller owns the SFTP session and is responsible for keeping it alive.
+
+    *pinned* fixes one or more placeholders to explicit values instead of
+    discovering them by walking the tree — see `_axes_from_local_template`
+    for the semantics. One walk is done per combination of pinned values,
+    since a pinned placeholder can shift where the fixed prefix (and so the
+    walk's starting directory) falls.
     """
     import stat
 
@@ -417,40 +469,56 @@ def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
     if not names:
         raise ValueError(f"Remote template {template!r} has no {{placeholder}} variables")
 
-    prefix = template[:template.index('{')]
-    last_slash = prefix.rfind('/')
-    base_dir = prefix[:last_slash] if last_slash > 0 else '/'
-
-    regex = _template_regex(template)
-
-    remote_files: list[str] = []
-    stack = [base_dir]
-    while stack:
-        path = stack.pop()
-        try:
-            entries = sftp.listdir_attr(path)
-        except IOError:
-            continue
-        for entry in entries:
-            full = f"{path}/{entry.filename}"
-            if stat.S_ISDIR(entry.st_mode):
-                stack.append(full)
-            else:
-                remote_files.append(full)
+    pinned = pinned or {}
+    pinned_names, free_names = _split_pinned(names, pinned)
 
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
-    for f in sorted(remote_files):
-        m = re.fullmatch(regex, f)
-        if m:
-            for i, n in enumerate(names):
-                v = m.group(i + 1)
-                if v not in seen[n]:
-                    seen[n].add(v)
-                    axes[n].append(v)
 
-    axes = {k: _numeric_sort(v) for k, v in axes.items() if v}
-    if not axes:
+    for combo in _pinned_combos(pinned_names, pinned):
+        for n, v in combo.items():
+            if v not in seen[n]:
+                seen[n].add(v)
+                axes[n].append(v)
+
+        if not free_names:
+            continue
+
+        sub = template
+        for n, v in combo.items():
+            sub = sub.replace(f"{{{n}}}", v)
+
+        prefix = sub[:sub.index('{')]
+        last_slash = prefix.rfind('/')
+        base_dir = prefix[:last_slash] if last_slash > 0 else '/'
+        regex = _template_regex(sub)
+
+        remote_files: list[str] = []
+        stack = [base_dir]
+        while stack:
+            path = stack.pop()
+            try:
+                entries = sftp.listdir_attr(path)
+            except IOError:
+                continue
+            for entry in entries:
+                full = f"{path}/{entry.filename}"
+                if stat.S_ISDIR(entry.st_mode):
+                    stack.append(full)
+                else:
+                    remote_files.append(full)
+
+        for f in sorted(remote_files):
+            m = re.fullmatch(regex, f)
+            if m:
+                for i, n in enumerate(free_names):
+                    v = m.group(i + 1)
+                    if v not in seen[n]:
+                        seen[n].add(v)
+                        axes[n].append(v)
+
+    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
+    if any(not axes[n] for n in free_names):
         raise ValueError(f"No files on remote match template {template!r}")
     return axes
 
@@ -459,12 +527,13 @@ def _axes_from_remote_template(
     template: str,
     remote: RemoteConfig,
     get_password: Callable[[str], str | None] | None = None,
+    pinned: dict[str, list[str]] | None = None,
 ) -> dict[str, list[str]]:
     """Connect via SFTP and detect axis values from files matching the remote template."""
     from .loader import _connect_sftp
     client, sftp = _connect_sftp(remote, get_password)
     try:
-        return _axes_from_sftp_template(template, sftp)
+        return _axes_from_sftp_template(template, sftp, pinned)
     finally:
         sftp.close()
         client.close()

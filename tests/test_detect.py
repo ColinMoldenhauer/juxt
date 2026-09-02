@@ -1,6 +1,8 @@
 """Tests for juxt/detect.py."""
 from __future__ import annotations
 
+from itertools import product
+
 import pytest
 
 from juxt.detect import (
@@ -208,3 +210,52 @@ class TestAxesFromLocalTemplate:
     def test_no_matching_files_raises(self, tmp_path):
         with pytest.raises(ValueError, match="No files match"):
             _axes_from_local_template(str(tmp_path / "{sensor}.png"))
+
+    def test_pinned_axis_filters_to_given_values(self, flat_plot_dir):
+        template = str(flat_plot_dir / "{sensor}_{date}.png")
+        axes = _axes_from_local_template(template, pinned={"sensor": ["A"]})
+        assert axes["sensor"] == ["A"]
+        assert set(axes["date"]) == {"d1", "d2"}
+
+    def test_pinned_axis_keeps_given_order_unsorted(self, flat_plot_dir):
+        template = str(flat_plot_dir / "{sensor}_{date}.png")
+        axes = _axes_from_local_template(template, pinned={"sensor": ["B", "A"]})
+        assert axes["sensor"] == ["B", "A"]
+
+    def test_pinned_axis_dedupes_repeated_values(self, flat_plot_dir):
+        template = str(flat_plot_dir / "{sensor}_{date}.png")
+        axes = _axes_from_local_template(template, pinned={"sensor": ["A", "A"]})
+        assert axes["sensor"] == ["A"]
+
+    def test_pinned_axis_can_span_path_separators(self, tmp_path):
+        """A pinned value may contain '/', unlike a discovered one — lets
+        unrelated directory trees become one axis."""
+        roots = []
+        for i in range(2):
+            root = tmp_path / f"run{i}" / "nested"
+            root.mkdir(parents=True)
+            (root / f"plot{i}.png").write_bytes(b"")
+            roots.append(str(root))
+
+        template = "{root}/plot{n}.png"
+        axes = _axes_from_local_template(template, pinned={"root": roots})
+        assert axes["root"] == roots
+        assert set(axes["n"]) == {"0", "1"}
+
+    def test_pinned_multiple_axes_cartesian_product(self, tmp_path):
+        for a, b in product(["x", "y"], ["1", "2"]):
+            (tmp_path / f"{a}_{b}.png").write_bytes(b"")
+        template = str(tmp_path / "{a}_{b}.png")
+        axes = _axes_from_local_template(template, pinned={"a": ["x", "y"], "b": ["1", "2"]})
+        assert axes["a"] == ["x", "y"]
+        assert axes["b"] == ["1", "2"]
+
+    def test_pinned_unknown_placeholder_raises(self, flat_plot_dir):
+        template = str(flat_plot_dir / "{sensor}_{date}.png")
+        with pytest.raises(ValueError, match="does not match any"):
+            _axes_from_local_template(template, pinned={"bogus": ["x"]})
+
+    def test_pinned_axis_no_matches_raises(self, flat_plot_dir):
+        template = str(flat_plot_dir / "{sensor}_{date}.png")
+        with pytest.raises(ValueError, match="No files match"):
+            _axes_from_local_template(template, pinned={"sensor": ["ZZZ"]})
