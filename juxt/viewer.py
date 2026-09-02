@@ -2672,6 +2672,8 @@ class MainWindow(QMainWindow):
         grid_layout: tuple[int, int] | None = None,
         grid_sharex: bool = True,
         grid_sharey: bool = True,
+        show_info: bool = False,
+        show_status_bar: bool = True,
     ):
         super().__init__()
         self._session_name = session_name
@@ -2721,6 +2723,7 @@ class MainWindow(QMainWindow):
             "white-space: pre;"
         )
         bar.addPermanentWidget(self._help_label)
+        bar.setVisible(show_status_bar)
 
         self._info_panel = InfoPanel()
         self._info_panel.set_highlight(self._hl)
@@ -2734,7 +2737,9 @@ class MainWindow(QMainWindow):
             QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._info_dock)
-        self._info_dock.hide()
+        self._info_dock.setVisible(show_info)
+        if show_info:
+            self._info_panel.refresh(self.view)
         self._info_panel.value_clicked.connect(self.view.goto_value)
 
         self.view.state_changed.connect(self._update_status)

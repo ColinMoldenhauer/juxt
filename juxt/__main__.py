@@ -180,6 +180,12 @@ def _print_help() -> None:
       --squeeze               drop axes with only one value
       --name NAME             session name shown in window title (default: template basename)
 
+  panels (toggled at runtime with Ctrl+Shift+I / Ctrl+Shift+H)
+      --info                  start with the info sidebar open   (default: closed)
+      --no-info               start with the info sidebar closed
+      --status-bar            start with the status bar shown    (default: shown)
+      --no-status-bar         start with the status bar hidden
+
   grid view
       --grid AXIS             enter grid view for AXIS on startup
                               (or build one in the UI with Ctrl+Shift+G)
@@ -228,6 +234,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--axis-v", metavar="NAME", default=None)
     p.add_argument("--squeeze", action="store_true", default=False)
     p.add_argument("--name", metavar="NAME", default=None)
+    # Initial panel visibility; both are still toggleable at runtime.
+    p.add_argument("--info", dest="info", action="store_true", default=False)
+    p.add_argument("--no-info", dest="info", action="store_false")
+    p.add_argument("--status-bar", dest="status_bar", action="store_true", default=True)
+    p.add_argument("--no-status-bar", dest="status_bar", action="store_false")
 
     g = p.add_argument_group("grid view")
     g.add_argument("--grid", metavar="AXIS", default=None)
@@ -476,6 +487,8 @@ def main():
         grid_layout=grid_layout,
         grid_sharex=not args.no_sharex,
         grid_sharey=not args.no_sharey,
+        show_info=args.info,
+        show_status_bar=args.status_bar,
     )
     window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()

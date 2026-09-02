@@ -179,6 +179,6 @@ Placeholders standing for a known kind of value complete only as far as that val
 | Key | Action |
 |---|---|
 | `Enter` | toggle fullscreen |
-| `Ctrl+Shift+H` | toggle status bar |
-| `Ctrl+Shift+I` | toggle info sidebar |
+| `Ctrl+Shift+H` | toggle status bar  (start hidden with `--no-status-bar`) |
+| `Ctrl+Shift+I` | toggle info sidebar  (start open with `--info`) |
 | `Ctrl+Shift+G` | open the grid builder dialogue |

@@ -11,7 +11,7 @@ A quick tour of the juxt interface and its interactive elements.
 | # | Element | Description |
 |---|---|---|
 | 1 | **Image viewport** | Displays the current image. Drag to pan, scroll to zoom, double-click to fit. |
-| 2 | **Status bar** | One-line summary of navigation state. Toggleable with `Ctrl+Shift+H`; auto-appears while command or value-picker is active. |
+| 2 | **Status bar** | One-line summary of navigation state. Toggleable with `Ctrl+Shift+H`; auto-appears while command or value-picker is active. Shown at startup unless `--no-status-bar` is passed. |
 | 3 | **Title bar** | Shows `juxt \| <session name>`. The session name defaults to the config filename and can be overridden with `--name`. |
 
 ---
@@ -61,6 +61,8 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 ![Info sidebar open](assets/screenshots/info-sidebar.png)
 
 Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted.
+
+It starts closed; pass `--info` to open it right away. The status bar is the mirror case — shown by default, hidden at startup with `--no-status-bar`.
 
 Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
 

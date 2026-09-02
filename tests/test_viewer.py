@@ -762,3 +762,44 @@ class TestGridPanes:
         v._enter_grid(0, None, (2, 1))                 # panes A, B
         assert v._grid_focus == 1
         assert self._panes(v) == (["A", "B"], "B")
+
+
+# ---------------------------------------------------------------------------
+# Initial panel visibility (--info / --status-bar)
+# ---------------------------------------------------------------------------
+
+class TestInitialPanelVisibility:
+    def _window(self, viewer_config, mini_pixmaps, qtbot, **kw):
+        from juxt.viewer import MainWindow
+
+        w = MainWindow(viewer_config, mini_pixmaps, watch=False, **kw)
+        qtbot.addWidget(w)
+        w.show()
+        return w
+
+    def test_defaults_keep_status_bar_and_hide_info(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot)
+        assert w.statusBar().isVisible()
+        assert not w._info_dock.isVisible()
+
+    def test_show_info_opens_the_sidebar(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_info=True)
+        assert w._info_dock.isVisible()
+
+    def test_sidebar_is_populated_when_opened_at_startup(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_info=True)
+        assert "sensor" in w._info_panel.toPlainText()
+
+    def test_hidden_status_bar_at_startup(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_status_bar=False)
+        assert not w.statusBar().isVisible()
+
+    def test_hidden_status_bar_still_toggles_back_on(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_status_bar=False)
+        w._toggle_status_bar()
+        assert w.statusBar().isVisible()
+
+    def test_open_sidebar_still_toggles_back_off(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_info=True)
+        w._toggle_info_panel()
+        assert not w._info_dock.isVisible()
