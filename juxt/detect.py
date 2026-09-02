@@ -410,7 +410,11 @@ def _axes_from_local_template(
     if not names:
         raise ValueError(f"Template {template!r} has no {{placeholder}} variables")
 
-    pinned = pinned or {}
+    # Normalise pinned values the same way the template itself is normalised
+    # below — otherwise a Windows path pinned with '\' survives into the glob
+    # pattern and its regex, while the matched files it's compared against
+    # (via f.replace('\\', '/')) never do, and nothing matches.
+    pinned = {k: [v.replace('\\', '/') for v in vs] for k, vs in (pinned or {}).items()}
     pinned_names, free_names = _split_pinned(names, pinned)
     norm = template.replace('\\', '/')
 

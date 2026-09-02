@@ -235,11 +235,29 @@ class TestAxesFromLocalTemplate:
             root = tmp_path / f"run{i}" / "nested"
             root.mkdir(parents=True)
             (root / f"plot{i}.png").write_bytes(b"")
-            roots.append(str(root))
+            roots.append(root.as_posix())
 
         template = "{root}/plot{n}.png"
         axes = _axes_from_local_template(template, pinned={"root": roots})
         assert axes["root"] == roots
+        assert set(axes["n"]) == {"0", "1"}
+
+    def test_pinned_axis_normalises_backslashes(self, tmp_path):
+        """A pinned value given with '\\' (e.g. str(a_windows_path)) must
+        still match, and come back normalised like every other path here."""
+        roots_posix = []
+        roots_native = []
+        for i in range(2):
+            root = tmp_path / f"run{i}" / "nested"
+            root.mkdir(parents=True)
+            (root / f"plot{i}.png").write_bytes(b"")
+            roots_posix.append(root.as_posix())
+            roots_native.append(root.as_posix().replace("/", "\\"))
+
+        axes = _axes_from_local_template(
+            "{root}/plot{n}.png", pinned={"root": roots_native}
+        )
+        assert axes["root"] == roots_posix
         assert set(axes["n"]) == {"0", "1"}
 
     def test_pinned_multiple_axes_cartesian_product(self, tmp_path):
