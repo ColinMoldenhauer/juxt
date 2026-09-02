@@ -60,7 +60,7 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 
 ![Info sidebar open](assets/screenshots/info-sidebar.png)
 
-Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted.
+Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted. The current path at the top always reserves as many lines as the longest path this config could ever show, so the axis list below it never shifts as you navigate — even though the actual path's own wrapped height varies from combination to combination.
 
 Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
 

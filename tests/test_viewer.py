@@ -436,6 +436,64 @@ class TestInfoPanelValueList:
         assert Settings().sidebar_separator == "  "
         assert Settings().sidebar_list_larger_than == 20
 
+    def test_axis_block_position_stable_across_path_lengths(self, value_list_view, qtbot):
+        """The path line's reserved height must keep the first axis block in
+        the same place whether the current path is short or long — this is
+        what stops the sidebar from jumping when clicking a value link."""
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(160, 400)
+        panel.show()
+        qtbot.waitExposed(panel)
+
+        def top_of_first_axis() -> float:
+            doc = panel.document()
+            cur = doc.find("short")  # first axis name's own text
+            assert not cur.isNull()
+            # cursorRect (not blockBoundingRect) is required here: the path
+            # line and every axis row share one QTextDocument block (<br>
+            # doesn't start a new block), so only a cursor-position query
+            # reflects where a wrapped line actually landed.
+            return panel.cursorRect(cur).top()
+
+        value_list_view.pos = [0, 0, 0]  # long path: A_has space_xxxxxxxxxxxxxxxxxxxxxxxxx
+        panel.refresh(value_list_view)
+        top_long = top_of_first_axis()
+
+        value_list_view.pos = [1, 1, 1]  # short path: B_ok_y
+        panel.refresh(value_list_view)
+        top_short = top_of_first_axis()
+
+        assert top_long == top_short
+
+    def test_reserved_lines_track_width(self, value_list_view, qtbot):
+        """The reservation must actually track the widest possible path at
+        the current width, not some arbitrary constant."""
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(160, 400)
+        panel.show()
+        qtbot.waitExposed(panel)
+        panel.refresh(value_list_view)
+
+        narrow_lines = panel._worst_case_line_count(panel._worst_case_path(value_list_view))
+        panel.resize(600, 400)
+        panel.refresh(value_list_view)
+        wide_lines = panel._worst_case_line_count(panel._worst_case_path(value_list_view))
+        # A wider panel needs fewer wrapped lines for the same worst-case text.
+        assert wide_lines <= narrow_lines
+
+    def test_worst_case_path_uses_longest_value_per_axis(self, value_list_view):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        worst = panel._worst_case_path(value_list_view)
+        assert worst == "fake/A_has space_" + "x" * 25 + ".png"
+
 
 def _anchor_colours(panel) -> dict[str, str]:
     """Map every anchor href in the panel document to its rendered colour."""
