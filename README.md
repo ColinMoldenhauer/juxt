@@ -33,9 +33,16 @@ pip install juxt[ssh]
 ```bash
 juxt /path/to/plots/                        # auto-detect axes from a directory of images
 juxt "plots/{sensor}_{date}.png"            # explicit local template
+juxt "plots/*.png"                          # wildcard match, recursing into subdirs
 juxt myhost:/path/to/plots/                 # remote directory over SSH
 juxt "myhost:/path/{sensor}_{date}.png"     # remote template over SSH
 juxt config.yaml                            # explicit config file
+```
+
+A `*` in the path is matched recursively (unlike a shell glob, it reaches into nested subdirectories), and the matched files are split into axes the same way directory auto-detection is. Combine it with `--NAME VALUE ...` to pin a `{placeholder}` to a fixed set of directories and aggregate congruent files found under each:
+
+```bash
+juxt "{root}/*.png" --root run1 run2       # pool plots/*.png-style files found under run1/ and run2/
 ```
 
 For directory and remote-directory modes, filenames are split on separators (`_` and `/` by default) and any position with more than one distinct value becomes an axis. You'll be prompted to name the axes on first run; use `-a` to skip.

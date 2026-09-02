@@ -34,6 +34,7 @@ from .detect import (
     detect_config,
     detect_config_remote,
     prompt_rename,
+    resolve_wildcard_template,
 )
 from .loader import preload, preload_remote
 from .settings import load_settings
@@ -164,6 +165,8 @@ def _print_help() -> None:
     /path/to/dir              scan directory, detect axes from filenames
     plots/{sensor}_{date}.png local template with explicit placeholders
     plots/{}/{}.png           anonymous placeholders, named axis_1, axis_2, …
+    plots/*.png               wildcard match, recursing into subdirs
+    {root}/*.png  --root A B  pin {root} then wildcard-match within each
     host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
     host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
     config.yaml               explicit YAML config file
@@ -174,8 +177,10 @@ def _print_help() -> None:
       --max-depth N           max subdirectory search depth
       --save PATH             save resolved config to PATH after detection
       --NAME VALUE [...]      pin a {placeholder}'s values instead of
-                              globbing for them (template PATH only, must
-                              come after PATH); repeatable per placeholder
+                              globbing for them (template/wildcard PATH
+                              only, must come after PATH); repeatable per
+                              placeholder; required for every {placeholder}
+                              before a '*' wildcard
       --no-watch              disable automatic file watching (local only)
       --watch-interval SEC    poll remote for changes every SEC seconds (default: 5, 0 to disable)
       --axis-h NAME           lock ←/→ to this axis on startup
@@ -377,6 +382,9 @@ def main():
                     "--<axis> VALUE pinning requires a {placeholder} template, not a YAML config"
                 )
             config = load_config(raw)
+        elif '*' in raw:
+            template, axes = resolve_wildcard_template(raw, pinned=pins)
+            config = Config(template=template, axes=axes, keys=_auto_keys(axes))
         elif '{' in raw:
             axes = _axes_from_local_template(raw, pinned=pins)
             config = Config(template=raw, axes=axes, keys=_auto_keys(axes))

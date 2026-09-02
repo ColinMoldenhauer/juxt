@@ -2145,7 +2145,7 @@ class ImageView(QGraphicsView):
                 from .detect import (
                     _is_remote_pattern, _parse_remote_pattern,
                     _axes_from_sftp_template, _axes_from_local_template,
-                    detect_config,
+                    detect_config, resolve_wildcard_template,
                 )
                 from .config import Config, _auto_keys, load_config
 
@@ -2229,6 +2229,25 @@ class ImageView(QGraphicsView):
                     key_to_path = {
                         tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
                         new_config.template.format(**dict(zip(axis_names, combo)))
+                        for combo in _product(*axis_values)
+                    }
+
+                elif '*' in raw:
+                    new_template, new_axes = resolve_wildcard_template(raw)
+                    if not new_axes:
+                        raise ValueError(f"no images found for pattern {raw!r}")
+                    new_config = Config(
+                        template=new_template, axes=new_axes, keys=_auto_keys(new_axes))
+                    axis_names = list(new_axes.keys())
+                    axis_values = list(new_axes.values())
+                    n = 1
+                    for vs in axis_values:
+                        n *= len(vs)
+                    _check()
+                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
+                    key_to_path = {
+                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
+                        new_template.format(**dict(zip(axis_names, combo)))
                         for combo in _product(*axis_values)
                     }
 

@@ -13,6 +13,7 @@ from juxt.detect import (
     _parse_remote_pattern,
     _split_with_seps,
     detect_config,
+    resolve_wildcard_template,
 )
 
 
@@ -277,3 +278,84 @@ class TestAxesFromLocalTemplate:
         template = str(flat_plot_dir / "{sensor}_{date}.png")
         with pytest.raises(ValueError, match="No files match"):
             _axes_from_local_template(template, pinned={"sensor": ["ZZZ"]})
+
+
+class TestResolveWildcardTemplate:
+    def test_flat_wildcard_discovers_axes(self, flat_plot_dir):
+        template = str(flat_plot_dir / "*.png")
+        resolved, axes = resolve_wildcard_template(template)
+        assert set(axes["axis_0"]) == {"A", "B"}
+        assert set(axes["axis_1"]) == {"d1", "d2"}
+        assert resolved.format(axis_0="A", axis_1="d1") == str(flat_plot_dir / "A_d1.png")
+
+    def test_wildcard_recurses_into_nested_subdirs(self, nested_plot_dir):
+        # Files live two levels down (sensor/overpass/date.png); a bare '*'
+        # must still find them, unlike a shell glob which stops at one level.
+        template = str(nested_plot_dir / "*.png")
+        _, axes = resolve_wildcard_template(template)
+        assert set(axes["axis_0"]) == {"A", "B"}
+        assert set(axes["axis_1"]) == {"AM", "PM"}
+        assert set(axes["axis_2"]) == {"d1", "d2"}
+
+    def test_wildcard_filters_by_extension(self, tmp_path):
+        (tmp_path / "A.png").write_bytes(b"")
+        (tmp_path / "B.png").write_bytes(b"")
+        (tmp_path / "C.jpg").write_bytes(b"")
+        _, axes = resolve_wildcard_template(str(tmp_path / "*.png"))
+        assert set(axes["axis_0"]) == {"A", "B"}
+
+    def test_pinned_root_aggregates_across_directories(self, tmp_path):
+        """The issue's motivating example: '{root}/*.png' --root r1 r2."""
+        roots = []
+        for i, root_name in enumerate(("r1", "r2")):
+            root = tmp_path / root_name
+            root.mkdir()
+            for sensor in ("A", "B"):
+                (root / f"{sensor}_d{i}.png").write_bytes(b"")
+            roots.append(root.as_posix())
+
+        template = "{root}/*.png"
+        resolved, axes = resolve_wildcard_template(template, pinned={"root": roots})
+        assert axes["root"] == roots
+        assert set(axes["axis_0"]) == {"A", "B"}
+        assert set(axes["axis_1"]) == {"d0", "d1"}
+        assert resolved.format(root=roots[0], axis_0="A", axis_1="d0") == f"{roots[0]}/A_d0.png"
+
+    def test_no_placeholder_needed(self, tmp_path):
+        (tmp_path / "A_d1.png").write_bytes(b"")
+        (tmp_path / "A_d2.png").write_bytes(b"")
+        resolved, axes = resolve_wildcard_template(str(tmp_path / "*.png"))
+        assert "axis_0" not in axes  # only one distinct value in that column
+        assert set(axes["axis_1"]) == {"d1", "d2"}
+
+    def test_placeholder_after_wildcard_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="cannot appear after"):
+            resolve_wildcard_template(str(tmp_path / "*/{sensor}.png"))
+
+    def test_unpinned_placeholder_before_wildcard_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="must be pinned"):
+            resolve_wildcard_template("{root}/*.png")
+
+    def test_pinned_unknown_placeholder_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="does not match any"):
+            resolve_wildcard_template("{root}/*.png", pinned={"bogus": ["x"]})
+
+    def test_no_matching_files_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="No files match"):
+            resolve_wildcard_template(str(tmp_path / "*.png"))
+
+    def test_incongruent_roots_raise(self, tmp_path):
+        root_a = tmp_path / "a"
+        root_a.mkdir()
+        (root_a / "X_d1.png").write_bytes(b"")
+
+        root_b = tmp_path / "b"
+        root_b.mkdir()
+        (root_b / "sub" / "Y_d1.png").parent.mkdir()
+        (root_b / "sub" / "Y_d1.png").write_bytes(b"")
+
+        template = "{root}/*.png"
+        with pytest.raises(ValueError, match="inconsistent number of parts"):
+            resolve_wildcard_template(
+                template, pinned={"root": [root_a.as_posix(), root_b.as_posix()]}
+            )

@@ -7,6 +7,7 @@ juxt accepts four kinds of input on the command line:
 | A directory path | Auto-detect axes from filenames in that directory |
 | A YAML config file | Load the config (template or discover mode) |
 | A template string with `{placeholders}` | Detect axis values by globbing the local filesystem |
+| A path containing a `*` wildcard | Recursively match files, then auto-detect axes the same way a directory scan does |
 | A remote path (`user@host:/path`) | Auto-detect axes from a remote directory via SFTP |
 
 ## CLI reference
@@ -20,8 +21,8 @@ PATH                        directory to scan or YAML config file
 -s, --separator SEP [...]   separator(s) for auto-detection
 -a, --auto                  skip the axis naming prompt
     --max-depth N           maximum subdirectory search depth
-    --NAME VALUE [...]      pin a {placeholder}'s values (template PATH only,
-                            must come after PATH) — see below
+    --NAME VALUE [...]      pin a {placeholder}'s values (template/wildcard
+                            PATH only, must come after PATH); see below
 -h, --help                  show usage and exit
 ```
 
@@ -132,6 +133,22 @@ This is useful for two things a plain glob can't do:
 - **Values that don't line up with a `*` glob** — a pinned value may itself contain `/`, so unrelated directory trees (like the three `run*` roots above, which don't share a common naming pattern) can become one axis.
 
 Each `--NAME` must match a placeholder already in the template; repeat the flag once per placeholder to pin more than one. Values keep the order given on the command line rather than being sorted.
+
+### Wildcard matching
+
+A `*` in the path is matched recursively: unlike a shell glob, it reaches into nested subdirectories, so `plots/*.png` finds every PNG under `plots/`, however deeply nested. The matched files are then split into axes exactly the way auto-discover mode splits a directory scan, so any part of the path (or filename) that varies becomes an `axis_N`.
+
+```bash
+juxt "plots/*.png"
+```
+
+Combine a wildcard with `--NAME VALUE ...` to pin a `{placeholder}` before it and aggregate congruent files found under each pinned value, instead of listing every directory by hand:
+
+```bash
+juxt "{root}/*.png" --root /data/run1 /data/run2
+```
+
+Every `{placeholder}` in the path must sit before the first `*` and be pinned; a wildcard replaces the need to name the remaining path components, so there is nothing left for a free `{placeholder}` to bind to.
 
 ---
 

@@ -450,6 +450,111 @@ def _axes_from_local_template(
     return axes
 
 
+def _wildcard_regex(pattern: str) -> str:
+    """Turn a '*'-only glob *pattern* into a regex matching it.
+
+    Unlike a shell glob, '*' here is expected to reach into nested
+    subdirectories (see `resolve_wildcard_template`), so it maps to '.*'
+    rather than a segment-bound '[^/]*'.
+    """
+    return ".*".join(re.escape(p) for p in pattern.split("*"))
+
+
+def resolve_wildcard_template(
+    template: str,
+    pinned: dict[str, list[str]] | None = None,
+) -> tuple[str, dict[str, list[str]]]:
+    """Resolve a template containing a '*' wildcard, e.g. '{root}/*.png'.
+
+    Every {placeholder} in *template* must sit before the first '*' and be
+    given a pinned value: a wildcard replaces the need to *name* the
+    remaining path components, so there is nothing left for a free
+    {placeholder} to bind to. Once the pinned prefix is resolved to a real
+    directory, per combination of pinned values, that directory is walked
+    recursively for image files ('*' crosses subdirectories, unlike a shell
+    glob) and matched against the pattern after it. The matched relative
+    paths are then split into axes exactly as directory auto-discovery does
+    (`detect_config`): any position that varies becomes an 'axis_N'.
+
+    Files found across every combination of pinned values are pooled before
+    detecting axes, so `{root}/*.png` with `root` pinned to several
+    directories aggregates them the same way a single auto-discovered
+    directory would, including a column that only varies *between* pinned
+    values (e.g. one date per root) rather than within any single one of
+    them. Returns `(resolved_template, axes)`, where *resolved_template* has
+    the '*' portion replaced by the discovered {axis_N} placeholders and can
+    be formatted like any other template.
+    """
+    norm = template.replace("\\", "/")
+    star_idx = norm.index("*")
+
+    names = PLACEHOLDER_NAME_RE.findall(norm)
+    if any(norm.index(f"{{{n}}}") > star_idx for n in names):
+        raise ValueError(
+            f"Template {template!r}: a {{placeholder}} cannot appear after a '*' wildcard"
+        )
+
+    pinned = {k: [v.replace("\\", "/") for v in vs] for k, vs in (pinned or {}).items()}
+    unknown = sorted(set(pinned) - set(names))
+    if unknown:
+        raise ValueError(
+            f"--{unknown[0]} does not match any {{placeholder}} in the template. "
+            f"Known placeholders: {names}"
+        )
+    unpinned = sorted(set(names) - set(pinned))
+    if unpinned:
+        raise ValueError(
+            f"Template {template!r} uses a '*' wildcard, so every {{placeholder}} "
+            f"before it must be pinned with --NAME VALUE; missing: {unpinned}"
+        )
+
+    slash_idx = norm.rfind("/", 0, star_idx)
+    dir_prefix = norm[:slash_idx] if slash_idx >= 0 else "."
+    rest_pattern = norm[slash_idx + 1:]
+    pattern_re = re.compile(_wildcard_regex(rest_pattern))
+
+    axes: dict[str, list[str]] = {n: [] for n in names}
+    seen: dict[str, set] = {n: set() for n in names}
+    ext: str | None = None
+    all_rel_stems: list[str] = []
+
+    for combo in _pinned_combos(names, pinned):
+        for n, v in combo.items():
+            if v not in seen[n]:
+                seen[n].add(v)
+                axes[n].append(v)
+
+        base_dir = dir_prefix
+        for n, v in combo.items():
+            base_dir = base_dir.replace(f"{{{n}}}", v)
+        base = Path(base_dir)
+        if not base.is_dir():
+            raise ValueError(f"{base_dir!r} is not a directory")
+
+        files = [
+            f for f in _iter_images(base)
+            if pattern_re.fullmatch(str(f.relative_to(base)).replace("\\", "/"))
+        ]
+        if not files:
+            continue
+
+        if ext is None:
+            ext = files[0].suffix
+        all_rel_stems.extend(
+            str(f.relative_to(base).with_suffix("")).replace("\\", "/") for f in files
+        )
+
+    if not all_rel_stems:
+        raise ValueError(f"No files match wildcard template {template!r}")
+
+    sub_config, _ = _detect_from_rel_stems(sorted(all_rel_stems), ext, dir_prefix, _DEFAULT_SEPS)
+    for col_name, values in sub_config.axes.items():
+        axes[col_name] = values
+
+    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
+    return sub_config.template, axes
+
+
 def _axes_from_sftp_template(
     template: str,
     sftp,
