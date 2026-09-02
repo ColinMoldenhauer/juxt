@@ -36,6 +36,12 @@ class TestArrowNavigation:
         qtbot.keyClick(image_view, Qt.Key.Key_Up)
         assert image_view.pos[1] == 1  # wraps from 0 to last
 
+    def test_arrow_keys_do_not_force_sidebar_scroll(self, image_view, qtbot):
+        """Arrow-key stepping must not ask the info sidebar to jump to the
+        new value -- only letter-shortcut stepping (tap mode) does that."""
+        qtbot.keyClick(image_view, Qt.Key.Key_Right)
+        assert image_view._sidebar_target is None
+
 
 class TestSpacebarToggle:
     def test_spacebar_toggles_to_prev(self, image_view, qtbot):
@@ -94,6 +100,24 @@ class TestStateChangedSignal:
             qtbot.keyClick(image_view, Qt.Key.Key_Space)
 
 
+class TestNavigateEnsureVisible:
+    """_navigate()'s ensure_visible flag: what tells the info sidebar to
+    force-scroll the newly selected value into view (see TestTapMode /
+    TestArrowNavigation for which key bindings pass it)."""
+
+    def test_default_does_not_set_sidebar_target(self, image_view):
+        image_view._navigate(0, 1)
+        assert image_view._sidebar_target is None
+
+    def test_ensure_visible_sets_sidebar_target_to_new_position(self, image_view):
+        image_view._navigate(0, 1, ensure_visible=True)
+        assert image_view._sidebar_target == (0, image_view.pos[0])
+
+    def test_ensure_visible_target_tracks_the_navigated_axis(self, image_view):
+        image_view._navigate(1, 1, ensure_visible=True)
+        assert image_view._sidebar_target == (1, image_view.pos[1])
+
+
 # ---------------------------------------------------------------------------
 # Mode 0 — CASE_SENSITIVE (default)
 # ---------------------------------------------------------------------------
@@ -118,6 +142,12 @@ class TestTapMode:
         assert image_view._sel is not None
         assert image_view._sel["phase"] == "value"
         assert image_view._sel["axis_idx"] == 0  # sensor
+
+    def test_letter_shortcut_forces_sidebar_scroll(self, image_view, qtbot):
+        """Letter-shortcut stepping asks the info sidebar to keep the newly
+        selected value visible, unlike arrow-key stepping."""
+        qtbot.keyClick(image_view, Qt.Key.Key_S)
+        assert image_view._sidebar_target == (0, image_view.pos[0])
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +538,111 @@ def _anchor_colours(panel) -> dict[str, str]:
             it += 1
         block = block.next()
     return colours
+
+
+# ---------------------------------------------------------------------------
+# Info sidebar: scroll position on refresh
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def scrollable_view(qtbot):
+    """ImageView with an axis long enough to need a sidebar scrollbar at
+    typical panel sizes."""
+    from itertools import product as _product
+
+    from juxt.config import Config, _auto_keys
+    from juxt.viewer import ImageView
+    from PySide6.QtGui import QColor, QPixmap
+
+    # Long enough (>20 chars) to switch the date axis to one-value-per-line
+    # rendering, so each value gets a distinct, predictable line position --
+    # short values pack into one wrapped inline block instead.
+    axes = {"sensor": ["A", "B"], "date": [f"date_value_number_{i:03d}" for i in range(60)]}
+    config = Config(template="fake/{sensor}_{date}.png", axes=axes, keys=_auto_keys(axes))
+    pixmaps = {}
+    for i, j in _product(range(2), range(60)):
+        pm = QPixmap(10, 10)
+        pm.fill(QColor(10, 10, 10))
+        pixmaps[(i, j)] = pm
+
+    v = ImageView(config, pixmaps)
+    qtbot.addWidget(v)
+    return v
+
+
+class TestInfoPanelScroll:
+    def _panel(self, view, qtbot, width=250, height=300):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(width, height)
+        panel.show()
+        qtbot.waitExposed(panel)
+        panel.refresh(view)
+        return panel
+
+    def test_repeated_refresh_does_not_duplicate_content(self, scrollable_view, qtbot):
+        """Regression: setHtml() growing the document past the point where
+        a scrollbar is needed can trigger a synchronous resizeEvent() that
+        reenters refresh() while the outer call is still building the
+        document, corrupting it into two copies of the content."""
+        panel = self._panel(scrollable_view, qtbot)
+        first = panel.toPlainText()
+        panel.refresh(scrollable_view)
+        assert panel.toPlainText() == first
+
+    def test_plain_refresh_preserves_scroll_position(self, scrollable_view, qtbot):
+        panel = self._panel(scrollable_view, qtbot)
+        sb = panel.verticalScrollBar()
+        assert sb.maximum() > 0, "test needs content tall enough to scroll"
+        sb.setValue(sb.maximum())
+        bottom = sb.value()
+
+        scrollable_view.pos = [0, 5]
+        scrollable_view._sidebar_target = None
+        panel.refresh(scrollable_view)
+        assert sb.value() == bottom
+
+    def test_forced_target_already_visible_does_not_move(self, scrollable_view, qtbot):
+        panel = self._panel(scrollable_view, qtbot)
+        sb = panel.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        bottom = sb.value()
+
+        # One step from the second-to-last to the last date value, while
+        # already scrolled to the bottom: both are near the end, so the
+        # target is already visible and the scroll position must not move.
+        scrollable_view.pos = [0, 59]
+        scrollable_view._sidebar_target = (1, 59)
+        panel.refresh(scrollable_view)
+        assert sb.value() == bottom
+
+    def test_forced_target_out_of_view_scrolls_to_reveal_it(self, scrollable_view, qtbot):
+        panel = self._panel(scrollable_view, qtbot)
+        sb = panel.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        bottom = sb.value()
+
+        # Jump to the first date value while scrolled to the bottom.
+        scrollable_view.pos = [0, 0]
+        scrollable_view._sidebar_target = (1, 0)
+        panel.refresh(scrollable_view)
+        assert sb.value() < bottom
+
+    def test_stale_target_not_matching_pos_is_ignored(self, scrollable_view, qtbot):
+        """_sidebar_target is only honoured when it still matches pos --
+        guards a stale target from an earlier navigation against surviving
+        into an unrelated refresh."""
+        panel = self._panel(scrollable_view, qtbot)
+        sb = panel.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        bottom = sb.value()
+
+        scrollable_view.pos = [0, 3]
+        scrollable_view._sidebar_target = (1, 0)  # doesn't match pos[1] == 3
+        panel.refresh(scrollable_view)
+        assert sb.value() == bottom
 
 
 # ---------------------------------------------------------------------------

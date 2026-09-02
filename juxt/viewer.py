@@ -1852,7 +1852,7 @@ class ImageView(QGraphicsView):
                         key_to_path[key] = lpath
                 else:
                     from .detect import _axes_from_local_template
-                    new_axes = _axes_from_local_template(config.template)
+                    _, new_axes = _axes_from_local_template(config.template)
                     if not new_axes:
                         raise ValueError("no images found for current template")
                     from itertools import product as _product
@@ -2152,7 +2152,7 @@ class ImageView(QGraphicsView):
                 from .detect import (
                     _is_remote_pattern, _parse_remote_pattern,
                     _axes_from_sftp_template, _axes_from_local_template,
-                    detect_config,
+                    detect_config, has_bare_wildcard, resolve_wildcard_template,
                 )
                 from .config import Config, _auto_keys, load_config
 
@@ -2239,11 +2239,12 @@ class ImageView(QGraphicsView):
                         for combo in _product(*axis_values)
                     }
 
-                elif '{' in raw:
-                    new_axes = _axes_from_local_template(raw)
+                elif has_bare_wildcard(raw):
+                    new_template, new_axes = resolve_wildcard_template(raw)
                     if not new_axes:
                         raise ValueError(f"no images found for pattern {raw!r}")
-                    new_config = Config(template=raw, axes=new_axes, keys=_auto_keys(new_axes))
+                    new_config = Config(
+                        template=new_template, axes=new_axes, keys=_auto_keys(new_axes))
                     axis_names = list(new_axes.keys())
                     axis_values = list(new_axes.values())
                     n = 1
@@ -2253,7 +2254,26 @@ class ImageView(QGraphicsView):
                     self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
                     key_to_path = {
                         tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
-                        raw.format(**dict(zip(axis_names, combo)))
+                        new_template.format(**dict(zip(axis_names, combo)))
+                        for combo in _product(*axis_values)
+                    }
+
+                elif '{' in raw:
+                    new_template, new_axes = _axes_from_local_template(raw)
+                    if not new_axes:
+                        raise ValueError(f"no images found for pattern {raw!r}")
+                    new_config = Config(
+                        template=new_template, axes=new_axes, keys=_auto_keys(new_axes))
+                    axis_names = list(new_axes.keys())
+                    axis_values = list(new_axes.values())
+                    n = 1
+                    for vs in axis_values:
+                        n *= len(vs)
+                    _check()
+                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
+                    key_to_path = {
+                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
+                        new_template.format(**dict(zip(axis_names, combo)))
                         for combo in _product(*axis_values)
                     }
 
@@ -2612,6 +2632,7 @@ class InfoPanel(QTextEdit):
         self._last_view: "ImageView | None" = None
         self._path_lines_cache_key: tuple[str, int] | None = None
         self._path_lines_cache: int = 1
+        self._refreshing = False
 
     def set_highlight(self, hl: Highlight) -> None:
         """Set the format used for the current value on each axis."""
@@ -2702,68 +2723,85 @@ class InfoPanel(QTextEdit):
         return None
 
     def refresh(self, view: "ImageView"):
-        self._last_view = view
-        saved_scroll = self.verticalScrollBar().value()
-        e = _html.escape
-        path = view._key_to_path(view._key())
-        # Pad the path with blank lines up to the widest path this config
-        # could ever show, so the axis list below never shifts when the
-        # current path's own wrapped height changes between navigations
-        # (most noticeable — and most disorienting — when it's a click on
-        # a sidebar value that triggers the change).
-        worst_lines = self._worst_case_line_count(self._worst_case_path(view))
-        pad = max(0, worst_lines - self._line_count(path))
-        parts = [
-            f"<span style='color:#888'>path</span><br>"
-            f"{e(path)}" + "<br>" * pad + "<br><br>"
-        ]
-        for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
-            cur = view.pos[i]
-            links = [
-                f'<a href="{_value_href(i, j)}">'
-                f'{_hl(_sp(v), self._highlight) if j == cur else _sp(v)}</a>'
-                for j, v in enumerate(vals)
+        # setHtml() below can grow or shrink the document enough to toggle
+        # the scrollbar's visibility, which changes the viewport's width and
+        # so fires a synchronous resizeEvent() *while still inside* this same
+        # setHtml() call. resizeEvent() calls refresh() again to reflow for
+        # the new width, reentering here before the outer setHtml() has
+        # returned, which corrupts the document (observed as its content
+        # appearing twice). The outer call already reflects whatever width
+        # is current by the time it reaches its own setHtml(), so the nested
+        # call has nothing correct left to do; skip it.
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self._last_view = view
+            saved_scroll = self.verticalScrollBar().value()
+            e = _html.escape
+            path = view._key_to_path(view._key())
+            # Pad the path with blank lines up to the widest path this config
+            # could ever show, so the axis list below never shifts when the
+            # current path's own wrapped height changes between navigations
+            # (most noticeable — and most disorienting — when it's a click on
+            # a sidebar value that triggers the change).
+            worst_lines = self._worst_case_line_count(self._worst_case_path(view))
+            pad = max(0, worst_lines - self._line_count(path))
+            parts = [
+                f"<span style='color:#888'>path</span><br>"
+                f"{e(path)}" + "<br>" * pad + "<br><br>"
             ]
-            as_list = any(" " in v or len(v) > self._list_larger_than for v in vals)
-            val_html = (
-                "<br>".join(f"&bull;&nbsp;{link}" for link in links) if as_list
-                else _sp(self._separator).join(links)
+            for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
+                cur = view.pos[i]
+                links = [
+                    f'<a href="{_value_href(i, j)}">'
+                    f'{_hl(_sp(v), self._highlight) if j == cur else _sp(v)}</a>'
+                    for j, v in enumerate(vals)
+                ]
+                as_list = any(" " in v or len(v) > self._list_larger_than for v in vals)
+                val_html = (
+                    "<br>".join(f"&bull;&nbsp;{link}" for link in links) if as_list
+                    else _sp(self._separator).join(links)
+                )
+                parts.append(
+                    f"<span style='color:#888'>{e(name)}</span><br>{val_html}<br><br>"
+                )
+            self.setHtml(
+                "<html><body style='font-family:\"Courier New\",monospace; "
+                "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+                + "".join(parts)
+                + "</body></html>"
             )
-            parts.append(
-                f"<span style='color:#888'>{e(name)}</span><br>{val_html}<br><br>"
-            )
-        self.setHtml(
-            "<html><body style='font-family:\"Courier New\",monospace; "
-            "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
-            + "".join(parts)
-            + "</body></html>"
-        )
-        # setHtml() always resets the scrollbar to the top; put it back where
-        # the user left it first, so a forced-visible target (below) is
-        # judged against the scroll position the user actually had, not
-        # against the fresh-document top setHtml() just reset it to.
-        self.verticalScrollBar().setValue(saved_scroll)
+            # setHtml() always resets the scrollbar to the top; put it back
+            # where the user left it first, so a forced-visible target
+            # (below) is judged against the scroll position the user
+            # actually had, not against the fresh-document top setHtml()
+            # just reset it to.
+            self.verticalScrollBar().setValue(saved_scroll)
 
-        # A refresh triggered by e.g. tap-mode letter-shortcut stepping asks
-        # to keep a specific value visible. ensureCursorVisible() scrolls the
-        # minimum needed for that — or not at all when it's already on screen.
-        # A value long enough to word-wrap spans more than one document
-        # position, so ensure the end is visible first, then the start —
-        # last, so it wins if the whole span is taller than the viewport.
-        target = view._sidebar_target
-        if (
-            target is not None
-            and 0 <= target[0] < len(view.axis_names)
-            and target[1] == view.pos[target[0]]
-        ):
-            span = self._fragment_span_for_href(_value_href(*target))
-            if span is not None:
-                start, end = span
-                for pos in (end, start):
-                    cursor = QTextCursor(self.document())
-                    cursor.setPosition(pos)
-                    self.setTextCursor(cursor)
-                    self.ensureCursorVisible()
+            # A refresh triggered by e.g. tap-mode letter-shortcut stepping
+            # asks to keep a specific value visible. ensureCursorVisible()
+            # scrolls the minimum needed for that, or not at all when it's
+            # already on screen. A value long enough to word-wrap spans more
+            # than one document position, so ensure the end is visible
+            # first and the start second, since the second call wins if the
+            # whole span is taller than the viewport.
+            target = view._sidebar_target
+            if (
+                target is not None
+                and 0 <= target[0] < len(view.axis_names)
+                and target[1] == view.pos[target[0]]
+            ):
+                span = self._fragment_span_for_href(_value_href(*target))
+                if span is not None:
+                    start, end = span
+                    for pos in (end, start):
+                        cursor = QTextCursor(self.document())
+                        cursor.setPosition(pos)
+                        self.setTextCursor(cursor)
+                        self.ensureCursorVisible()
+        finally:
+            self._refreshing = False
 
 
 class MainWindow(QMainWindow):
