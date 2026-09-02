@@ -121,6 +121,8 @@ Use `:mode tap|seek|pin` in the command bar to switch navigation modes.
 
 Press `:` to open the command bar (vim-style). Tab-completion narrows candidates as you type.
 
+Matching is fuzzy: the characters you type only have to appear in order, so `:fh` reaches `fit-height` and `smp` finds `SMAP` in the value picker. Candidates are ranked best-first, prefix matches ahead of looser ones. Set `seek.fuzzy: false` in `~/.juxt/settings.yaml` for strict prefix matching.
+
 Path arguments complete with `{placeholders}` in place: `:pattern plots/{sensor}/2⇥` lists what every sensor directory holds, so a template is built top-down instead of completing a concrete path and deleting the parts that should vary. `{` + `Tab` completes an existing axis name, and anonymous `{}` placeholders are numbered automatically.
 
 ## Shell completion

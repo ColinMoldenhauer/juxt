@@ -481,6 +481,7 @@ def main():
         axis_v=args.axis_v,
         session_name=args.name,
         seek_greedy=settings.seek_greedy,
+        seek_fuzzy=settings.seek_fuzzy,
         keybindings=settings.keybindings,
         highlight=settings.highlight,
         highlight_candidates=settings.highlight_candidates,

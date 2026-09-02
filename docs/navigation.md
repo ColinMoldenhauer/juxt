@@ -75,7 +75,7 @@ Arrow keys still work and navigate the top two entries in the focus stack, as in
 
 ## seek
 
-Every letter key starts an incremental prefix search, first for an axis name, then for a value on that axis. Good when there are many axes or you don't want to memorise per-axis letter bindings.
+Every letter key starts an incremental search, first for an axis name, then for a value on that axis. Good when there are many axes or you don't want to memorise per-axis letter bindings.
 
 | Key | Action |
 |---|---|
@@ -87,7 +87,9 @@ Every letter key starts an incremental prefix search, first for an axis name, th
 
 **Greedy auto-confirm:** when exactly one candidate remains, it is selected automatically without pressing Enter.
 
-**Phase transition:** after confirming an axis, the mode transitions immediately into value selection on that axis using the same prefix matching. Backspace on an empty value query returns to axis selection.
+**Phase transition:** after confirming an axis, the mode transitions immediately into value selection on that axis using the same matching. Backspace on an empty value query returns to axis selection.
+
+**Fuzzy matching:** see [Fuzzy matching](#fuzzy-matching) below — typed characters need only appear in order, so `smp` finds `SMAP`.
 
 ---
 
@@ -108,13 +110,35 @@ Letter keys only shift focus — they do not advance the axis. Use arrow keys af
 
 ## Value picker
 
-`Ctrl` + a letter key opens an incremental value picker for that axis in any mode. Type a prefix to filter the list; the match is case-insensitive. When exactly one candidate remains it is confirmed automatically; press `Enter` to confirm the first candidate explicitly at any point; press `Escape` to cancel.
+`Ctrl` + a letter key opens an incremental value picker for that axis in any mode. Type to filter the list; the match is case-insensitive and [fuzzy](#fuzzy-matching). When exactly one candidate remains it is confirmed automatically; press `Enter` to confirm the first candidate explicitly at any point; press `Escape` to cancel.
+
+---
+
+## Fuzzy matching
+
+Every search surface — command mode, seek mode, the value picker and the `:grid` argument list — matches the typed characters as a *subsequence*: they must appear in order, but need not be adjacent. `smp` finds `SMAP`, `fh` finds `fit-height`, `gsx` finds `grid-sharex`.
+
+Candidates are ranked so the likely reading comes first, which is what `Enter` takes and what greedy auto-confirm acts on:
+
+1. an exact match, then a prefix match, then a plain subsequence
+2. fewer jumps — a gap that lands right after `-`, `_`, `.`, `/`, `:` or a space reads as an initial, so `fh` prefers `fit-height` over `fit-width`
+3. an earlier first match, then a tighter span, then a shorter candidate
+
+Ties keep the order the candidates already had (axis order, value order, alphabetical for commands).
+
+Set `seek.fuzzy: false` in `~/.juxt/settings.yaml` for the older strict prefix matching:
+
+```yaml
+seek:
+  greedy: true
+  fuzzy: false
+```
 
 ---
 
 ## Command mode
 
-Press `:` to open command mode. The status bar shows your input and a prefix-filtered list of matching commands as you type; a short description of the highlighted command is shown right-aligned. Press `Enter` to execute, `Escape` or `Backspace`-to-empty to cancel.
+Press `:` to open command mode. The status bar shows your input and a [fuzzy-filtered](#fuzzy-matching) list of matching commands as you type; a short description of the highlighted command is shown right-aligned. Press `Enter` to execute, `Escape` or `Backspace`-to-empty to cancel.
 
 | Command | Action |
 |---|---|

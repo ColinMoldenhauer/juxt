@@ -875,3 +875,78 @@ class TestCopyPathShortcut:
         qtbot.keyClick(v, Qt.Key.Key_C,
                        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
         assert QApplication.clipboard().text() == "fake/A_d1.png"
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy matching across the search surfaces
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fuzzy_view(mini_pixmaps, qtbot):
+    """ImageView whose axis values are long enough to match loosely."""
+    from juxt.config import Config, _auto_keys
+    from juxt.viewer import ImageView
+
+    axes = {"sensor": ["ASCAT", "SMAP", "SMOS"], "date": ["d1", "d2"]}
+    cfg = Config(template="fake/{sensor}_{date}.png", axes=axes, keys=_auto_keys(axes))
+    pms = {(i, j): list(mini_pixmaps.values())[0] for i in range(3) for j in range(2)}
+    v = ImageView(cfg, pms, seek_greedy=True)
+    qtbot.addWidget(v)
+    return v
+
+
+class TestSelectionMatching:
+    def test_value_picker_matches_a_subsequence(self, fuzzy_view):
+        fuzzy_view._sel = {"phase": "value", "query": "smp", "axis_idx": 0, "cursor": 0}
+        assert fuzzy_view._sel_candidates() == ["SMAP"]
+
+    def test_value_picker_still_matches_a_prefix(self, fuzzy_view):
+        fuzzy_view._sel = {"phase": "value", "query": "sm", "axis_idx": 0, "cursor": 0}
+        assert fuzzy_view._sel_candidates() == ["SMAP", "SMOS"]
+
+    def test_greedy_auto_confirm_survives_a_unique_fuzzy_match(self, fuzzy_view):
+        fuzzy_view._sel_open_value(0, "smp")
+        assert fuzzy_view._sel is None          # confirmed without Enter
+        assert fuzzy_view.pos[0] == 1           # SMAP
+
+    def test_axis_search_matches_a_subsequence(self, fuzzy_view):
+        fuzzy_view._sel = {"phase": "axis", "query": "snr", "cursor": 0}
+        assert fuzzy_view._sel_candidates() == ["sensor"]
+
+    def test_strict_prefix_mode_rejects_the_subsequence(self, fuzzy_view):
+        fuzzy_view._seek_fuzzy = False
+        fuzzy_view._sel = {"phase": "value", "query": "smp", "axis_idx": 0, "cursor": 0}
+        assert fuzzy_view._sel_candidates() == []
+
+
+class TestCommandMatching:
+    def _verb_candidates(self, view, query):
+        view._cmd = {"phase": "verb", "query": query, "cursor": 0}
+        return view._cmd_candidates()
+
+    def test_initials_reach_a_hyphenated_command(self, image_view):
+        assert self._verb_candidates(image_view, "fh")[0] == "fit-height"
+
+    def test_prefix_matches_still_lead(self, image_view):
+        assert self._verb_candidates(image_view, "fit")[0] == "fit"
+
+    def test_aliases_are_untouched(self, image_view):
+        assert self._verb_candidates(image_view, "q") == ["quit"]
+
+    def test_empty_query_lists_every_command(self, image_view):
+        from juxt.viewer import _COMMANDS
+
+        assert self._verb_candidates(image_view, "") == _COMMANDS
+
+    def test_strict_prefix_mode_drops_the_initials_match(self, image_view):
+        image_view._seek_fuzzy = False
+        assert self._verb_candidates(image_view, "fh") == []
+
+    def test_grid_axis_argument_matches_loosely(self, fuzzy_view):
+        assert fuzzy_view._grid_cmd_candidates("snr") == ["sensor"]
+
+    def test_grid_value_argument_matches_loosely(self, fuzzy_view):
+        assert fuzzy_view._grid_cmd_candidates("sensor smp") == ["SMAP"]
+
+    def test_grid_value_argument_skips_values_already_named(self, fuzzy_view):
+        assert "SMAP" not in fuzzy_view._grid_cmd_candidates("sensor SMAP s")

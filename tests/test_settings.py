@@ -96,3 +96,33 @@ class TestLoadHighlightSettings:
         path = self._write(tmp_path, 'highlight:\n  candidates: "nonsense"\n')
         s = load_settings(path)
         assert s.highlight_candidates.spec == DEFAULT_HIGHLIGHT_CANDIDATES
+
+
+class TestSeekFuzzy:
+    def test_defaults_to_on(self, tmp_path):
+        from juxt.settings import load_settings
+
+        p = tmp_path / "settings.yaml"
+        p.write_text("seek:\n  greedy: true\n", encoding="utf-8")
+        assert load_settings(p, write=False).seek_fuzzy is True
+
+    def test_can_be_switched_off(self, tmp_path):
+        from juxt.settings import load_settings
+
+        p = tmp_path / "settings.yaml"
+        p.write_text("seek:\n  fuzzy: false\n", encoding="utf-8")
+        assert load_settings(p, write=False).seek_fuzzy is False
+
+    def test_greedy_is_read_alongside_it(self, tmp_path):
+        from juxt.settings import load_settings
+
+        p = tmp_path / "settings.yaml"
+        p.write_text("seek:\n  greedy: false\n  fuzzy: false\n", encoding="utf-8")
+        s = load_settings(p, write=False)
+        assert (s.seek_greedy, s.seek_fuzzy) == (False, False)
+
+    def test_generated_template_documents_it(self, tmp_path):
+        from juxt.settings import ensure_settings_file
+
+        p = ensure_settings_file(tmp_path / "settings.yaml")
+        assert "fuzzy: true" in p.read_text(encoding="utf-8")

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .fuzzy import fuzzy_filter, prefix_filter
 from .complete import (
     complete_path,
     complete_placeholder_name,
@@ -678,6 +679,7 @@ class ImageView(QGraphicsView):
         axis_h: str | None = None,
         axis_v: str | None = None,
         seek_greedy: bool = True,
+        seek_fuzzy: bool = True,
         keybindings: dict[str, str] | None = None,
         grid: str | None = None,
         grid_values: list[str] | None = None,
@@ -723,6 +725,7 @@ class ImageView(QGraphicsView):
         self._fit: Literal["image", "height", "width"] | None = None
         self._pre_fullscreen_maximized: bool | None = None
         self._seek_greedy: bool = seek_greedy
+        self._seek_fuzzy: bool = seek_fuzzy
         self._keybindings: dict[tuple[int, int], str] = {}
         for _ks, _action in (keybindings or {}).items():
             try:
@@ -1029,13 +1032,21 @@ class ImageView(QGraphicsView):
 
     # ── incremental-search (value picker / multi-select) ─────────────────────
 
+    def _match(self, query: str, pool) -> list[str]:
+        """Filter *pool* by *query*, best match first.
+
+        Fuzzy (subsequence) unless seek.fuzzy is off, in which case the older
+        case-insensitive prefix match applies.
+        """
+        return (fuzzy_filter if self._seek_fuzzy else prefix_filter)(query, pool)
+
     def _sel_candidates(self) -> list[str]:
-        """Items matching the current query by case-insensitive prefix."""
+        """Items matching the current query, best match first."""
         assert self._sel is not None
         q = self._sel["query"]
-        if self._sel["phase"] == "axis":
-            return [n for n in self.axis_names if n.lower().startswith(q)]
-        return [v for v in self.axis_values[self._sel["axis_idx"]] if v.lower().startswith(q)]
+        pool = (self.axis_names if self._sel["phase"] == "axis"
+                else self.axis_values[self._sel["axis_idx"]])
+        return self._match(q, pool)
 
     def _sel_open_axis(self, initial: str = ""):
         """Enter axis-selection phase (mode 1 entry point)."""
@@ -1152,12 +1163,12 @@ class ImageView(QGraphicsView):
                 return self._grid_cmd_candidates(self._cmd["query"])
             else:
                 pool = _CMD_ARGS.get(verb, [])
-        return [c for c in pool if c.startswith(q)] if q else list(pool)
+        return self._match(q, pool)
 
     def _grid_cmd_candidates(self, query: str) -> list[str]:
         """Multi-token candidate list for the :grid arg phase (axis [val …] [NxM])."""
         if " " not in query:
-            return [n for n in self.axis_names if n.lower().startswith(query.lower())] if query else list(self.axis_names)
+            return self._match(query, self.axis_names)
         tokens = query.split(" ")
         axis_name = tokens[0]
         axis_idx = next((i for i, n in enumerate(self.axis_names) if n.lower() == axis_name.lower()), None)
@@ -1167,9 +1178,7 @@ class ImageView(QGraphicsView):
         partial = "" if query.endswith(" ") else tokens[-1]
         used = set(t.lower() for t in (tokens[1:-1] if not query.endswith(" ") else tokens[1:]) if t)
         remaining = [v for v in all_vals if v.lower() not in used]
-        if partial:
-            remaining = [v for v in remaining if v.lower().startswith(partial.lower())]
-        return remaining
+        return self._match(partial, remaining)
 
     def _cmd_handle_key(self, event: QKeyEvent) -> bool:
         """Handle input while command mode is active. Returns True if consumed."""
@@ -1632,6 +1641,7 @@ class ImageView(QGraphicsView):
     def apply_settings(self, settings) -> None:
         """Apply a freshly loaded Settings object without restarting."""
         self._seek_greedy = settings.seek_greedy
+        self._seek_fuzzy = settings.seek_fuzzy
         new_kb: dict[tuple[int, int], str] = {}
         for ks, action in settings.keybindings.items():
             try:
@@ -2707,6 +2717,7 @@ class MainWindow(QMainWindow):
         axis_v: str | None = None,
         session_name: str | None = None,
         seek_greedy: bool = True,
+        seek_fuzzy: bool = True,
         keybindings: dict[str, str] | None = None,
         highlight: Highlight | None = None,
         highlight_candidates: Highlight | None = None,
@@ -2733,6 +2744,7 @@ class MainWindow(QMainWindow):
             axis_h=axis_h,
             axis_v=axis_v,
             seek_greedy=seek_greedy,
+            seek_fuzzy=seek_fuzzy,
             keybindings=keybindings,
             grid=grid,
             grid_values=grid_values,

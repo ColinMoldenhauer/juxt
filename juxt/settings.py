@@ -122,6 +122,8 @@ _TEMPLATE = """\
 seek:
   greedy: true      # auto-confirm when exactly one candidate remains
                     # set to false to always require Enter
+  fuzzy: true       # match typed characters anywhere in order, so "smp" finds
+                    # "SMAP"; set to false for strict prefix matching
 
 # Display options used in the axis-detection dialogue
 display:
@@ -170,6 +172,7 @@ _SECTION_TEMPLATES: dict[str, str] = {
 # Seek / value-picker behaviour
 seek:
   greedy: true      # auto-confirm when exactly one candidate remains (false = require Enter)
+  fuzzy: true       # subsequence matching ("smp" finds "SMAP"); false = strict prefix
 """,
     "display": """
 # Display options used in the axis-detection dialogue
@@ -219,6 +222,7 @@ _DEFAULT_KEYBINDINGS: dict[str, str] = {
 @dataclass
 class Settings:
     seek_greedy: bool = True
+    seek_fuzzy: bool = True
     max_vals: int = 3
     max_vals_display: int = 10
     highlight: Highlight = field(
@@ -258,8 +262,11 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
             data = yaml.safe_load(f) or {}
         s = Settings()
         seek = data.get("seek") or {}
-        if isinstance(seek, dict) and "greedy" in seek:
-            s.seek_greedy = bool(seek["greedy"])
+        if isinstance(seek, dict):
+            if "greedy" in seek:
+                s.seek_greedy = bool(seek["greedy"])
+            if "fuzzy" in seek:
+                s.seek_fuzzy = bool(seek["fuzzy"])
         display = data.get("display") or {}
         if isinstance(display, dict):
             if "max_vals" in display:
