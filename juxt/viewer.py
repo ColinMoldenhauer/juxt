@@ -1845,7 +1845,7 @@ class ImageView(QGraphicsView):
                         key_to_path[key] = lpath
                 else:
                     from .detect import _axes_from_local_template
-                    new_axes = _axes_from_local_template(config.template)
+                    _, new_axes = _axes_from_local_template(config.template)
                     if not new_axes:
                         raise ValueError("no images found for current template")
                     from itertools import product as _product
@@ -2145,7 +2145,7 @@ class ImageView(QGraphicsView):
                 from .detect import (
                     _is_remote_pattern, _parse_remote_pattern,
                     _axes_from_sftp_template, _axes_from_local_template,
-                    detect_config, resolve_wildcard_template,
+                    detect_config, has_bare_wildcard, resolve_wildcard_template,
                 )
                 from .config import Config, _auto_keys, load_config
 
@@ -2232,7 +2232,7 @@ class ImageView(QGraphicsView):
                         for combo in _product(*axis_values)
                     }
 
-                elif '*' in raw:
+                elif has_bare_wildcard(raw):
                     new_template, new_axes = resolve_wildcard_template(raw)
                     if not new_axes:
                         raise ValueError(f"no images found for pattern {raw!r}")
@@ -2252,10 +2252,11 @@ class ImageView(QGraphicsView):
                     }
 
                 elif '{' in raw:
-                    new_axes = _axes_from_local_template(raw)
+                    new_template, new_axes = _axes_from_local_template(raw)
                     if not new_axes:
                         raise ValueError(f"no images found for pattern {raw!r}")
-                    new_config = Config(template=raw, axes=new_axes, keys=_auto_keys(new_axes))
+                    new_config = Config(
+                        template=new_template, axes=new_axes, keys=_auto_keys(new_axes))
                     axis_names = list(new_axes.keys())
                     axis_values = list(new_axes.values())
                     n = 1
@@ -2265,7 +2266,7 @@ class ImageView(QGraphicsView):
                     self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
                     key_to_path = {
                         tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
-                        raw.format(**dict(zip(axis_names, combo)))
+                        new_template.format(**dict(zip(axis_names, combo)))
                         for combo in _product(*axis_values)
                     }
 

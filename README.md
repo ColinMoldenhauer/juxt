@@ -45,6 +45,14 @@ A `*` in the path is matched recursively (unlike a shell glob, it reaches into n
 juxt "{root}/*.png" --root run1 run2       # pool plots/*.png-style files found under run1/ and run2/
 ```
 
+If you'd rather have one *named* axis for an arbitrarily deep (and possibly differently-shaped) subtree, instead of it being auto-split into several anonymous axes, write `{**name}` in place of a regular placeholder. It captures across `/`, and any leading path segments shared by every match are pruned out of the axis value and folded into the template as fixed text, so `dir/AM/plot.png` and `dir/PM/plot.png` become axis values `AM/plot` and `PM/plot` rather than the full `dir/AM/plot`:
+
+```bash
+juxt "{root}/{**plot}.png" --root run1 run2   # one 'plot' axis per run, however deep it's nested
+```
+
+`{**name}` is limited to one per template (two independent `/`-crossing captures in one path would be ambiguous), and pass `--full-path` to see the whole matched path instead of the pruned suffix.
+
 For directory and remote-directory modes, filenames are split on separators (`_` and `/` by default) and any position with more than one distinct value becomes an axis. You'll be prompted to name the axes on first run; use `-a` to skip.
 
 Run `juxt` with no argument and it opens a dialog instead: a **Browse** tab for picking a directory (auto-discover), and a **Build path** tab for typing a `{placeholder}` template by hand, with `Tab` completing real directories and files along the way.

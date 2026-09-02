@@ -346,6 +346,17 @@ def _is_remote_pattern(arg: str) -> bool:
     return False
 
 
+def has_bare_wildcard(path: str) -> bool:
+    """True if *path* has a '*' outside of any {placeholder} (including a
+    `{**name}` one), i.e. one dispatching to `resolve_wildcard_template`
+    rather than the `**name` support in `_axes_from_local_template`.
+
+    '{**name}' itself contains '*' characters, so a plain `'*' in path`
+    check would misroute it.
+    """
+    return '*' in PLACEHOLDER_NAME_RE.sub('', path)
+
+
 def _parse_remote_pattern(arg: str) -> tuple[RemoteConfig, str]:
     """Split 'user@host:/remote/template' into (RemoteConfig, remote_template_path)."""
     colon = arg.index(':')
@@ -362,12 +373,81 @@ def _template_regex(template: str) -> str:
 
     Groups are numbered rather than named: a placeholder may be called
     `{yyyy-mm-dd}`, which is not a valid Python group name.
+
+    A placeholder named `**name` (see `_axes_from_local_template`) captures
+    across '/' rather than stopping at the next path separator.
     """
     segs = PLACEHOLDER_NAME_RE.split(template)
     return ''.join(
-        re.escape(s) if i % 2 == 0 else '([^/]+)'
+        re.escape(s) if i % 2 == 0 else ('(.+)' if s.startswith('**') else '([^/]+)')
         for i, s in enumerate(segs)
     )
+
+
+def _strip_recursive_marker(name: str) -> tuple[str, bool]:
+    """Split a placeholder name into (axis_name, is_recursive).
+
+    `{**plot}` is written with a `**` marker prefix, mirroring `**` in a
+    glob: the axis it names is allowed to capture across '/'.
+    """
+    return (name[2:], True) if name.startswith('**') else (name, False)
+
+
+def _parse_template_names(template: str) -> tuple[list[str], dict[str, str], str | None]:
+    """Parse a template's placeholders into (names, raw_token_of, recursive_name).
+
+    *names* are axis names with any `**` marker stripped, in template order.
+    *raw_token_of* maps each axis name back to the literal text inside its
+    `{...}` in *template* (e.g. `'plot': '**plot'`), needed to substitute
+    pinned values or build glob patterns against the template as written.
+    *recursive_name* is the one axis name allowed to capture across '/', or
+    None. At most one `**name` placeholder is allowed per template, since
+    more than one greedy '/'-crossing capture group makes the match ambiguous.
+    """
+    names: list[str] = []
+    raw_token_of: dict[str, str] = {}
+    recursive_name: str | None = None
+    for raw in PLACEHOLDER_NAME_RE.findall(template):
+        name, is_recursive = _strip_recursive_marker(raw)
+        if name in raw_token_of and raw_token_of[name] != raw:
+            raise ValueError(
+                f"Template {template!r} uses both {{{raw_token_of[name]}}} and "
+                f"{{{raw}}} for the same axis; use '**{name}' consistently or not at all"
+            )
+        if is_recursive:
+            if recursive_name is not None and recursive_name != name:
+                raise ValueError(
+                    f"Template {template!r} has more than one '**name' placeholder; "
+                    "only one axis may capture across '/'"
+                )
+            recursive_name = name
+        names.append(name)
+        raw_token_of[name] = raw
+    return names, raw_token_of, recursive_name
+
+
+def _prune_common_prefix(values: list[str]) -> tuple[str, list[str]]:
+    """Strip the longest run of leading '/'-delimited segments shared by
+    every value, moving it out as a literal prefix.
+
+    At least one segment is always kept in the shortest value, so no value
+    is ever pruned down to ''. Returns ('', values) unchanged when nothing
+    is shared or there is only one value to compare.
+    """
+    if len(values) < 2:
+        return '', values
+    split = [v.split('/') for v in values]
+    shortest = min(len(s) for s in split)
+    common = 0
+    for i in range(shortest - 1):
+        if all(s[i] == split[0][i] for s in split):
+            common += 1
+        else:
+            break
+    if common == 0:
+        return '', values
+    prefix = '/'.join(split[0][:common])
+    return prefix, ['/'.join(s[common:]) for s in split]
 
 
 def _split_pinned(names: list[str], pinned: dict[str, list[str]]) -> tuple[list[str], list[str]]:
@@ -392,8 +472,9 @@ def _pinned_combos(pinned_names: list[str], pinned: dict[str, list[str]]) -> lis
 def _axes_from_local_template(
     template: str,
     pinned: dict[str, list[str]] | None = None,
-) -> dict[str, list[str]]:
-    """Detect axis values by globbing the local filesystem against *template*.
+    full_path: bool = False,
+) -> tuple[str, dict[str, list[str]]]:
+    """Detect axis values by matching the local filesystem against *template*.
 
     Example: 'plots/{sensor}_{date}.png' scans for matching files and returns
     {'sensor': ['ASCAT', 'SMAP', ...], 'date': ['2024-03-15', ...]}.
@@ -405,8 +486,23 @@ def _axes_from_local_template(
     results are merged into a shared axis space. This also lets a pinned
     value contain '/', which plain globbing can't discover since '*' never
     crosses a path separator.
+
+    One placeholder may be written `{**name}` to capture across '/' instead
+    of stopping at the next path separator, so it can stand for an entire
+    (and possibly differently-shaped) subtree below it, e.g.
+    '{root}/{**plot}.png' with 'root' pinned to several directories. Since
+    globbing can't express a '/'-crossing match, that combination walks the
+    filesystem recursively instead. Unless *full_path* is set, any leading
+    path segments shared by every matched value are pruned out of the
+    '**name' axis (and folded into the template as fixed text instead), so
+    e.g. 'dir/AM/plot' and 'dir/PM/plot' become 'AM/plot' and 'PM/plot'.
+
+    Returns `(resolved_template, axes)`. *resolved_template* is *template*
+    unchanged unless it used `{**name}`, in which case the marker is
+    stripped (and any pruned prefix spliced in) so it can be formatted like
+    any other template.
     """
-    names = PLACEHOLDER_NAME_RE.findall(template)
+    names, raw_token_of, recursive_name = _parse_template_names(template)
     if not names:
         raise ValueError(f"Template {template!r} has no {{placeholder}} variables")
 
@@ -417,6 +513,7 @@ def _axes_from_local_template(
     pinned = {k: [v.replace('\\', '/') for v in vs] for k, vs in (pinned or {}).items()}
     pinned_names, free_names = _split_pinned(names, pinned)
     norm = template.replace('\\', '/')
+    recursive_free = recursive_name is not None and recursive_name in free_names
 
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
@@ -432,10 +529,22 @@ def _axes_from_local_template(
 
         sub = norm
         for n, v in combo.items():
-            sub = sub.replace(f"{{{n}}}", v)
-        glob_pat = PLACEHOLDER_NAME_RE.sub('*', sub)
+            sub = sub.replace(f"{{{raw_token_of[n]}}}", v)
         regex = _template_regex(sub)
-        for f in sorted(_glob_mod.glob(glob_pat)):
+
+        if recursive_free:
+            first_brace = sub.index('{')
+            prefix = sub[:first_brace]
+            last_slash = prefix.rfind('/')
+            base_dir = prefix[:last_slash] if last_slash >= 0 else '.'
+            if not Path(base_dir).is_dir():
+                raise ValueError(f"{base_dir!r} is not a directory")
+            matches = sorted(str(f) for f in _iter_images(Path(base_dir)))
+        else:
+            glob_pat = PLACEHOLDER_NAME_RE.sub('*', sub)
+            matches = sorted(_glob_mod.glob(glob_pat))
+
+        for f in matches:
             m = re.fullmatch(regex, f.replace('\\', '/'))
             if m:
                 for i, n in enumerate(free_names):
@@ -447,7 +556,18 @@ def _axes_from_local_template(
     axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
     if any(not axes[n] for n in free_names):
         raise ValueError(f"No files match template {template!r}")
-    return axes
+
+    resolved_template = template
+    if recursive_name is not None:
+        # Pruning only makes sense for a discovered ('free') axis: a pinned
+        # {**name} is a literal value the caller chose, not ours to rewrite.
+        prefix = ''
+        if recursive_free and not full_path:
+            prefix, axes[recursive_name] = _prune_common_prefix(axes[recursive_name])
+        replacement = (prefix + '/' if prefix else '') + '{' + recursive_name + '}'
+        resolved_template = norm.replace('{' + raw_token_of[recursive_name] + '}', replacement)
+
+    return resolved_template, axes
 
 
 def _wildcard_regex(pattern: str) -> str:
