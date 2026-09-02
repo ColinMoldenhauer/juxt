@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QSizePolicy,
     QStackedWidget,
     QTextEdit,
@@ -387,6 +388,7 @@ class _CellView(QGraphicsView):
 
     zoomed = Signal(object)  # emits self.transform() after a wheel-zoom
     clicked = Signal()       # emits on mouse press, to claim grid focus
+    menu_requested = Signal(object)  # emits the global QPoint of a right-click
 
     def __init__(self, label: str, parent=None):
         scene = QGraphicsScene()
@@ -500,6 +502,12 @@ class _CellView(QGraphicsView):
     def mouseDoubleClickEvent(self, _event):
         self.fit_image()
 
+    def contextMenuEvent(self, event):
+        # The press that opened the menu already claimed grid focus, so the
+        # menu speaks about this pane.
+        self.menu_requested.emit(event.globalPos())
+        event.accept()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._fit is not None:
@@ -548,6 +556,7 @@ class GridWidget(QWidget):
             )
             cell.zoomed.connect(lambda t, c=cell: self._on_zoom(t, c))
             cell.clicked.connect(lambda i=i: self.focus_requested.emit(i))
+            cell.menu_requested.connect(self._image_view.show_image_menu)
 
     # ── sync handlers ─────────────────────────────────────────────────────────
 
@@ -2553,6 +2562,40 @@ class ImageView(QGraphicsView):
                 self._navigate(axis, delta)
             else:
                 super().keyPressEvent(event)
+
+    # ── context menu ─────────────────────────────────────────────────────────
+
+    def _shortcut_for(self, action: str) -> str:
+        """The chord currently bound to *action*, or "" when it is unbound."""
+        for (key, mods), bound in self._keybindings.items():
+            if bound == action:
+                return _chord_str(key, mods)
+        return ""
+
+    def build_image_menu(self) -> QMenu:
+        """The right-click menu for the image currently on screen.
+
+        Also serves the grid panes: the press that opened the menu has already
+        moved grid focus, so the current position names the pane in hand.
+        Each entry carries the chord bound to its action, so rebinding
+        copy-path in settings.yaml moves the shortcut shown here too.
+        """
+        menu = QMenu(self)
+        for label, action in (("Copy image &path", "copy-path"),
+                              ("Copy &image", "copy-image")):
+            act = menu.addAction(label)
+            chord = self._shortcut_for(action)
+            if chord:
+                act.setShortcut(chord)
+            act.triggered.connect(lambda _checked=False, a=action: self._cmd_execute(a))
+        return menu
+
+    def show_image_menu(self, global_pos):
+        self.build_image_menu().exec(global_pos)
+
+    def contextMenuEvent(self, event):
+        self.show_image_menu(event.globalPos())
+        event.accept()
 
     def mouseDoubleClickEvent(self, _event):
         self.fit_image()

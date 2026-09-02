@@ -161,6 +161,7 @@ keybindings:
   Ctrl+Shift+H: toggle-statusbar   # toggle the status bar
   Ctrl+Shift+I: toggle-info        # toggle the info sidebar
   Ctrl+Shift+G: grid-dialog        # open the grid builder dialogue
+  Ctrl+Shift+C: copy-path          # copy the current image path to the clipboard
   # F11: fullscreen                # example: bind F11 to fullscreen
 """ + _PLACEHOLDERS_SECTION
 
@@ -200,6 +201,7 @@ keybindings:
   Ctrl+Shift+H: toggle-statusbar
   Ctrl+Shift+I: toggle-info
   Ctrl+Shift+G: grid-dialog
+  Ctrl+Shift+C: copy-path
   # F11: fullscreen
 """,
 }
@@ -210,6 +212,7 @@ _DEFAULT_KEYBINDINGS: dict[str, str] = {
     "Ctrl+Shift+H": "toggle-statusbar",
     "Ctrl+Shift+I": "toggle-info",
     "Ctrl+Shift+G": "grid-dialog",
+    "Ctrl+Shift+C": "copy-path",
 }
 
 

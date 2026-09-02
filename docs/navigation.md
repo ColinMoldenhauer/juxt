@@ -30,10 +30,12 @@ These bindings work identically regardless of which mode is active.
 | `0` | Reset zoom to 100% |
 | `Ctrl` + scroll wheel | Zoom in/out, anchored under the cursor |
 | Click + drag | Pan the image |
+| Right-click | Context menu: copy the image path or the image itself |
 | `Enter` | Toggle fullscreen |
 | `Ctrl+Shift+H` | Toggle the status bar |
 | `Ctrl+Shift+I` | Toggle the info sidebar |
 | `Ctrl+Shift+G` | Open the grid builder dialogue |
+| `Ctrl+Shift+C` | Copy the current image path to the clipboard |
 
 ### Other
 
@@ -332,9 +334,13 @@ Any action (including every `:command` plus `toggle-statusbar` and `toggle-info`
 keybindings:
   Ctrl+Shift+H: toggle-statusbar
   Ctrl+Shift+G: grid-dialog
+  Ctrl+Shift+C: copy-path
   F11: fullscreen
   Ctrl+R: reload
 ```
+
+Rebinding an action moves the shortcut shown next to it in the right-click
+menu, so the menu always names the chord that actually works.
 
 **Conflict warning.** Navigation keys are mode-specific:
 

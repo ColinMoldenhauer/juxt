@@ -803,3 +803,75 @@ class TestInitialPanelVisibility:
         w = self._window(viewer_config, mini_pixmaps, qtbot, show_info=True)
         w._toggle_info_panel()
         assert not w._info_dock.isVisible()
+
+
+# ---------------------------------------------------------------------------
+# Right-click copy menu
+# ---------------------------------------------------------------------------
+
+class TestImageContextMenu:
+    def _menu(self, view):
+        """The menu itself — built without entering QMenu.exec's event loop."""
+        return view.build_image_menu()
+
+    def test_menu_offers_both_copy_actions(self, image_view):
+        labels = [a.text() for a in self._menu(image_view).actions()]
+        assert labels == ["Copy image &path", "Copy &image"]
+
+    def test_menu_shows_the_bound_shortcut(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.viewer import ImageView
+
+        v = ImageView(viewer_config, mini_pixmaps,
+                      keybindings={"Ctrl+Shift+C": "copy-path"})
+        qtbot.addWidget(v)
+        act = self._menu(v).actions()[0]
+        assert act.shortcut().toString() == "Ctrl+Shift+C"
+
+    def test_unbound_action_shows_no_shortcut(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.viewer import ImageView
+
+        v = ImageView(viewer_config, mini_pixmaps, keybindings={})
+        qtbot.addWidget(v)
+        assert self._menu(v).actions()[0].shortcut().isEmpty()
+
+    def test_rebinding_moves_the_shortcut_shown(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.viewer import ImageView
+
+        v = ImageView(viewer_config, mini_pixmaps,
+                      keybindings={"Ctrl+Alt+P": "copy-path"})
+        qtbot.addWidget(v)
+        assert self._menu(v).actions()[0].shortcut().toString() == "Ctrl+Alt+P"
+
+    def test_copy_path_action_puts_the_current_path_on_the_clipboard(self, image_view, qtbot):
+        from PySide6.QtWidgets import QApplication
+
+        qtbot.keyClick(image_view, Qt.Key.Key_Right)   # sensor -> B
+        self._menu(image_view).actions()[0].trigger()
+        assert QApplication.clipboard().text() == "fake/B_d1.png"
+
+    def test_copy_path_follows_the_focused_grid_pane(self, image_view, qtbot):
+        image_view._enter_grid(0, None, (1, 2))
+        image_view._grid_set_focus(1)
+        self._menu(image_view).actions()[0].trigger()
+        from PySide6.QtWidgets import QApplication
+        assert QApplication.clipboard().text() == "fake/B_d1.png"
+
+
+class TestCopyPathShortcut:
+    def test_default_binding_is_wired(self):
+        from juxt.settings import _DEFAULT_KEYBINDINGS
+
+        assert _DEFAULT_KEYBINDINGS["Ctrl+Shift+C"] == "copy-path"
+
+    def test_chord_copies_the_path(self, viewer_config, mini_pixmaps, qtbot):
+        from PySide6.QtWidgets import QApplication
+
+        from juxt.viewer import ImageView
+
+        v = ImageView(viewer_config, mini_pixmaps,
+                      keybindings={"Ctrl+Shift+C": "copy-path"})
+        qtbot.addWidget(v)
+        QApplication.clipboard().setText("")
+        qtbot.keyClick(v, Qt.Key.Key_C,
+                       Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        assert QApplication.clipboard().text() == "fake/A_d1.png"
