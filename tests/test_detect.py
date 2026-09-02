@@ -292,9 +292,9 @@ class TestRecursivePlaceholder:
             (p / "plot.png").write_bytes(b"")
 
         resolved, axes = _axes_from_local_template(str(tmp_path / "{**plot}.png"))
-        assert resolved == str(tmp_path / "dir" / "{plot}.png")
+        assert resolved == (tmp_path / "dir" / "{plot}.png").as_posix()
         assert set(axes["plot"]) == {"AM/plot", "PM/plot"}
-        assert resolved.format(plot="AM/plot") == str(tmp_path / "dir" / "AM" / "plot.png")
+        assert resolved.format(plot="AM/plot") == (tmp_path / "dir" / "AM" / "plot.png").as_posix()
 
     def test_full_path_disables_pruning(self, tmp_path):
         for overpass in ("AM", "PM"):
@@ -303,7 +303,7 @@ class TestRecursivePlaceholder:
             (p / "plot.png").write_bytes(b"")
 
         resolved, axes = _axes_from_local_template(str(tmp_path / "{**plot}.png"), full_path=True)
-        assert resolved == str(tmp_path / "{plot}.png")
+        assert resolved == (tmp_path / "{plot}.png").as_posix()
         assert set(axes["plot"]) == {"dir/AM/plot", "dir/PM/plot"}
 
     def test_no_common_prefix_keeps_raw_values(self, tmp_path):
@@ -313,7 +313,7 @@ class TestRecursivePlaceholder:
         (tmp_path / "b" / "sub" / "plot.png").write_bytes(b"")
 
         resolved, axes = _axes_from_local_template(str(tmp_path / "{**plot}.png"))
-        assert resolved == str(tmp_path / "{plot}.png")
+        assert resolved == (tmp_path / "{plot}.png").as_posix()
         assert set(axes["plot"]) == {"a/plot", "b/sub/plot"}
 
     def test_combined_with_pinned_root_aggregates_across_directories(self, tmp_path):
@@ -326,7 +326,7 @@ class TestRecursivePlaceholder:
                 p.mkdir(parents=True)
                 (p / "plot.png").write_bytes(b"")
 
-        roots = [str(tmp_path / "r1"), str(tmp_path / "r2")]
+        roots = [(tmp_path / "r1").as_posix(), (tmp_path / "r2").as_posix()]
         resolved, axes = _axes_from_local_template(
             "{root}/{**plot}.png", pinned={"root": roots}
         )
@@ -342,7 +342,7 @@ class TestRecursivePlaceholder:
             str(tmp_path / "{**plot}.png"), pinned={"plot": ["dir/AM/plot", "dir/PM/plot"]}
         )
         assert axes["plot"] == ["dir/AM/plot", "dir/PM/plot"]
-        assert resolved == str(tmp_path / "{plot}.png")
+        assert resolved == (tmp_path / "{plot}.png").as_posix()
 
     def test_two_recursive_placeholders_raise(self, tmp_path):
         with pytest.raises(ValueError, match="more than one"):
@@ -359,7 +359,7 @@ class TestResolveWildcardTemplate:
         resolved, axes = resolve_wildcard_template(template)
         assert set(axes["axis_0"]) == {"A", "B"}
         assert set(axes["axis_1"]) == {"d1", "d2"}
-        assert resolved.format(axis_0="A", axis_1="d1") == str(flat_plot_dir / "A_d1.png")
+        assert resolved.format(axis_0="A", axis_1="d1") == (flat_plot_dir / "A_d1.png").as_posix()
 
     def test_wildcard_recurses_into_nested_subdirs(self, nested_plot_dir):
         # Files live two levels down (sensor/overpass/date.png); a bare '*'
