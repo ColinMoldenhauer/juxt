@@ -55,6 +55,19 @@ _HL_DEFAULT_CANDIDATES = parse_highlight(DEFAULT_HIGHLIGHT_CANDIDATES)
 # Colour of a non-highlighted value link in the info sidebar.
 _LINK_COLOR = "#ddd"
 
+# Section headers in both sidebars ("path", an axis name, "view", …).  Warm
+# against the blue used for anything interactive, so a header reads as a label
+# rather than as something to click.
+_HEADER_COLOR = "#d8a657"
+
+# Key chords in the shortcut sidebar, picking up the app's accent so the chord
+# separates from its description at a glance.
+_KEY_COLOR = "#66aaff"
+
+# Floor for the shortcut sidebar's key column; the real width is measured from
+# the chords actually on show (see ShortcutPanel._key_column_px).
+_KEY_COL_MIN_PX = 90
+
 # ── info-sidebar links ────────────────────────────────────────────────────────
 
 _VALUE_HREF = "juxt:value/{axis}/{value}"
@@ -2830,7 +2843,7 @@ class InfoPanel(QTextEdit):
             worst_lines = self._worst_case_line_count(self._worst_case_path(view))
             pad = max(0, worst_lines - self._line_count(path))
             parts = [
-                f"<span style='color:#888'>path</span><br>"
+                f"<span style='color:{_HEADER_COLOR}'>path</span><br>"
                 f"{e(path)}" + "<br>" * pad + "<br><br>"
             ]
             for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
@@ -2846,7 +2859,8 @@ class InfoPanel(QTextEdit):
                     else _sp(self._separator).join(links)
                 )
                 parts.append(
-                    f"<span style='color:#888'>{e(name)}</span><br>{val_html}<br><br>"
+                    f"<span style='color:{_HEADER_COLOR}'>{e(name)}</span>"
+                    f"<br>{val_html}<br><br>"
                 )
             self.setHtml(
                 "<html><body style='font-family:\"Courier New\",monospace; "
@@ -2906,6 +2920,15 @@ class ShortcutPanel(QTextEdit):
             "font-family: 'Courier New', monospace; font-size: 9pt; "
             "border: none; padding: 8px; }"
         )
+        self._last_view: "ImageView | None" = None
+        self._refreshing = False
+
+    def resizeEvent(self, event):
+        # The key column is measured against the viewport, which is not laid
+        # out yet at construction; re-measure whenever the dock is resized.
+        super().resizeEvent(event)
+        if self._last_view is not None:
+            self.refresh(self._last_view)
 
     @staticmethod
     def _sections(view: "ImageView") -> list[tuple[str, list[tuple[str, str]]]]:
@@ -2972,27 +2995,69 @@ class ShortcutPanel(QTextEdit):
             sections.append(("bound to actions", bound))
         return sections
 
+    def _key_column_px(self, sections) -> int:
+        """Width the key column needs for the widest chord on show.
+
+        Measured rather than fixed: the panel's font is whatever the platform
+        resolves 'Courier New' to, so a hard-coded width wraps chords like
+        Ctrl+Shift+H on some systems and leaves a gap on others.  Capped at
+        half the viewport so a stray long entry cannot squeeze the
+        descriptions out.
+        """
+        fm = self.fontMetrics()
+        widest = max(
+            (fm.horizontalAdvance(key) for _title, rows in sections for key, _d in rows),
+            default=0,
+        )
+        ceiling = max(_KEY_COL_MIN_PX, self.viewport().width() // 2)
+        return min(max(widest + 12, _KEY_COL_MIN_PX), ceiling)
+
     def refresh(self, view: "ImageView"):
-        # quote=False: these land in text content, and Qt's rich-text reader
+        # quote=False: this lands in cell content, and Qt's rich-text reader
         # leaves &#x27; standing where a plain apostrophe reads fine.
         def e(s: str) -> str:
             return _html.escape(s, quote=False)
 
+        # setHtml() can toggle the scrollbar, which resizes the viewport and
+        # re-enters here through resizeEvent() before the outer call returns —
+        # the same reentrancy InfoPanel guards against, with the same fix.
+        if self._refreshing:
+            return
+        self._refreshing = True
+        self._last_view = view
+        sections = self._sections(view)
+        key_col = self._key_column_px(sections)
         parts = []
-        for title, rows in self._sections(view):
-            parts.append(f"<span style='color:#888'>{e(title)}</span><br>")
-            for key, desc in rows:
-                parts.append(
-                    f"<span style='color:{_LINK_COLOR}'>{_sp(e(key))}</span>"
-                    f"&nbsp;&nbsp;{_sp(e(desc))}<br>"
-                )
-            parts.append("<br>")
-        self.setHtml(
-            "<html><body style='font-family:\"Courier New\",monospace; "
-            "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
-            + "".join(parts)
-            + "</body></html>"
-        )
+        for title, rows in sections:
+            # A table, not two spans on one line: a description long enough to
+            # wrap continues in its own column instead of running back under
+            # the chord, where the two were impossible to tell apart.
+            cells = "".join(
+                "<tr>"
+                f"<td valign='top' width='{key_col}' style='color:{_KEY_COLOR}'>"
+                # The chord itself must not break across lines, so its spaces
+                # ("Home / End") stay non-breaking.
+                f"{e(key).replace(' ', '&nbsp;')}</td>"
+                # The description keeps ordinary spaces, so it wraps at word
+                # boundaries within the column.
+                f"<td valign='top'>{e(desc)}</td>"
+                "</tr>"
+                for key, desc in rows
+            )
+            parts.append(
+                f"<div style='color:{_HEADER_COLOR}; font-weight:bold'>{e(title)}</div>"
+                f"<table cellspacing='0' cellpadding='1' width='100%'>{cells}</table>"
+                "<br>"
+            )
+        try:
+            self.setHtml(
+                "<html><body style='font-family:\"Courier New\",monospace; "
+                "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+                + "".join(parts)
+                + "</body></html>"
+            )
+        finally:
+            self._refreshing = False
 
 
 class MainWindow(QMainWindow):

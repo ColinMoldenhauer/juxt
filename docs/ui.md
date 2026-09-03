@@ -78,6 +78,8 @@ Everything it lists is read out of the running session rather than written down 
 - `Ctrl+letter` and `Shift+letter` appear in whichever role [`modifiers.swap`](navigation.md#modifier-roles) gives them
 - the last section lists your own [keybindings](navigation.md#custom-keybindings) with the action each one runs
 
+Chords sit in their own column, coloured apart from their descriptions, so a description long enough to wrap stays inside its column instead of running back under the chord. The column is measured against the widest chord actually on show — never wider than half the panel — so it fits whatever font the platform resolves for the sidebar.
+
 Saving `~/.juxt/settings.yaml` redraws the panel, so a rebound chord shows up without a restart.
 
 Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.

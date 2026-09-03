@@ -1368,16 +1368,39 @@ class TestShortcutPanel:
     def test_it_names_the_live_arrow_axes(self, keys_window):
         assert "cycle sensor" in self._text(keys_window)
 
+    def _rows(self, window) -> list[tuple[str, str]]:
+        """Every (key, description) pair the panel is showing, flattened.
+
+        Asserted against the section data rather than the rendered text: the
+        two now sit in separate table cells, so toPlainText() puts them on
+        separate lines and says nothing about which key goes with which
+        description.
+        """
+        sections = window._shortcut_panel._sections(window.view)
+        return [row for _title, rows in sections for row in rows]
+
     def test_it_lists_the_current_axis_keys(self, keys_window):
-        assert "s  sensor" in self._text(keys_window)
+        assert ("s", "sensor") in self._rows(keys_window)
 
     def test_it_lists_the_bound_chords(self, keys_window):
-        assert "Ctrl+Shift+K  toggle-keys" in self._text(keys_window)
+        assert ("Ctrl+Shift+K", "toggle-keys") in self._rows(keys_window)
 
     def test_tap_mode_documents_both_modifiers(self, keys_window):
-        text = self._text(keys_window)
-        assert "Shift+letter  step −1 on that axis" in text
-        assert "Ctrl+letter  open the value picker for that axis" in text
+        rows = self._rows(keys_window)
+        assert ("Shift+letter", "step −1 on that axis") in rows
+        assert ("Ctrl+letter", "open the value picker for that axis") in rows
+
+    def test_key_and_description_are_separate_cells(self, keys_window):
+        html = keys_window._shortcut_panel.toHtml()
+        assert "<table" in html.lower()
+
+    def test_headers_and_keys_are_coloured_apart(self, keys_window):
+        from juxt.viewer import _HEADER_COLOR, _KEY_COLOR
+
+        html = keys_window._shortcut_panel.toHtml().lower()
+        assert _HEADER_COLOR.lower() in html
+        assert _KEY_COLOR.lower() in html
+        assert _HEADER_COLOR.lower() != _KEY_COLOR.lower()
 
     def test_seek_mode_replaces_the_letter_section(self, keys_window):
         keys_window.view._cmd_execute("mode seek")
@@ -1398,9 +1421,9 @@ class TestShortcutPanel:
     def test_swapped_modifiers_are_reflected(self, keys_window):
         keys_window.view._swap_modifiers = True
         keys_window._shortcut_panel.refresh(keys_window.view)
-        text = self._text(keys_window)
-        assert "Shift+letter  open the value picker for that axis" in text
-        assert "Ctrl+letter  step −1 on that axis" in text
+        rows = self._rows(keys_window)
+        assert ("Shift+letter", "open the value picker for that axis") in rows
+        assert ("Ctrl+letter", "step −1 on that axis") in rows
 
     def test_it_follows_navigation(self, keys_window, qtbot):
         keys_window.view._cmd_execute("mode pin")
@@ -1424,3 +1447,50 @@ class TestShortcutPanelDefaults:
         from juxt.viewer import _COMMANDS
 
         assert "keys" in _COMMANDS
+
+
+class TestShortcutPanelLayout:
+    """The key column is measured, not fixed, so no chord wraps."""
+
+    def _panel(self, viewer_config, mini_pixmaps, qtbot, width):
+        from juxt.settings import _DEFAULT_KEYBINDINGS
+        from juxt.viewer import ImageView, ShortcutPanel
+
+        v = ImageView(viewer_config, mini_pixmaps, keybindings=dict(_DEFAULT_KEYBINDINGS))
+        qtbot.addWidget(v)
+        p = ShortcutPanel()
+        qtbot.addWidget(p)
+        p.resize(width, 600)
+        p.refresh(v)
+        return p, v
+
+    def test_column_fits_the_widest_chord(self, viewer_config, mini_pixmaps, qtbot):
+        p, v = self._panel(viewer_config, mini_pixmaps, qtbot, 400)
+        sections = p._sections(v)
+        widest = max(p.fontMetrics().horizontalAdvance(k)
+                     for _t, rows in sections for k, _d in rows)
+        assert p._key_column_px(sections) >= widest
+
+    def test_column_never_takes_more_than_half_the_panel(self, viewer_config, mini_pixmaps, qtbot):
+        p, v = self._panel(viewer_config, mini_pixmaps, qtbot, 200)
+        assert p._key_column_px(p._sections(v)) <= max(90, p.viewport().width() // 2)
+
+    def test_resizing_remeasures_instead_of_going_stale(self, viewer_config, mini_pixmaps, qtbot):
+        p, _v = self._panel(viewer_config, mini_pixmaps, qtbot, 200)
+        narrow = p.toHtml()
+        p.resize(600, 600)
+        qtbot.wait(10)
+        assert p.toHtml() != narrow      # re-rendered against the new width
+
+    def test_refresh_is_not_reentered_by_its_own_resize(self, viewer_config, mini_pixmaps, qtbot):
+        p, _v = self._panel(viewer_config, mini_pixmaps, qtbot, 240)
+        p.resize(150, 300)
+        qtbot.wait(10)
+        assert p.toPlainText().count("navigate") == 1   # content not duplicated
+
+    def test_a_long_description_does_not_widen_the_key_column(self, viewer_config, mini_pixmaps, qtbot):
+        p, v = self._panel(viewer_config, mini_pixmaps, qtbot, 400)
+        before = p._key_column_px(p._sections(v))
+        v.axis_names[0] = "an extremely long axis name that wraps for certain"
+        after = p._key_column_px(p._sections(v))
+        assert after == before
