@@ -124,12 +124,15 @@ def _print_help() -> None:
         "Ctrl+Shift+H    toggle status bar",
         "Ctrl+Shift+I    toggle info sidebar",
         "Ctrl+Shift+G    open the grid builder",
+        "Ctrl+Shift+C    copy current image path",
+        "Ctrl+Shift+K    toggle shortcut sidebar",
         "",
         "view controls",
         None,  # horizontal rule
         "0               reset zoom to 100%",
         "double-click    fit image to window",
         "drag            pan the image",
+        "right-click     copy path / image menu",
         "wheel           step the ←/→ axis",
         "Shift+wheel     step the ↑/↓ axis",
         "Ctrl+wheel      zoom under the cursor",
@@ -143,7 +146,9 @@ def _print_help() -> None:
         "       Ctrl+letter  open value picker",
         "",
         "Key bindings are configurable in",
-        "~/.juxt/settings.yaml  (also via :settings).",
+        "~/.juxt/settings.yaml  (also via :settings);",
+        "modifiers.swap there exchanges the Ctrl",
+        "and Shift roles on axis letter keys.",
         "",
     ]
     pad = 2
@@ -194,6 +199,14 @@ def _print_help() -> None:
       --squeeze               drop axes with only one value
       --name NAME             session name shown in window title (default: template basename)
 
+  panels (toggled at runtime with Ctrl+Shift+I / Ctrl+Shift+H / Ctrl+Shift+K)
+      --info                  start with the info sidebar open   (default: closed)
+      --no-info               start with the info sidebar closed
+      --status-bar            start with the status bar shown    (default: shown)
+      --no-status-bar         start with the status bar hidden
+      --keys                  start with the shortcut sidebar open (default: closed)
+      --no-keys               start with the shortcut sidebar closed
+
   grid view
       --grid AXIS             enter grid view for AXIS on startup
                               (or build one in the UI with Ctrl+Shift+G)
@@ -211,7 +224,7 @@ def _print_help() -> None:
     :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :ungrid
     :grid-sharex on|off  :grid-sharey on|off
     :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes
-    :mode tap|seek|pin  :switch-last  :info
+    :mode tap|seek|pin  :switch-last  :info  :keys
     :pattern PATH  :reload  :watch true|false
     :remove-axis NAME  :remove-value AXIS VALUE
     :change-key AXIS LETTER  :settings
@@ -275,6 +288,15 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     p.add_argument("--squeeze", action="store_true", default=False)
     p.add_argument("--name", metavar="NAME", default=None)
     p.add_argument("--full-path", action="store_true", default=False)
+    # Initial panel visibility; both are still toggleable at runtime.
+    # These are declared here so parse_known_args recognises them; an
+    # unrecognised --flag after PATH is read as an axis pin instead.
+    p.add_argument("--info", dest="info", action="store_true", default=False)
+    p.add_argument("--no-info", dest="info", action="store_false")
+    p.add_argument("--status-bar", dest="status_bar", action="store_true", default=True)
+    p.add_argument("--no-status-bar", dest="status_bar", action="store_false")
+    p.add_argument("--keys", dest="keys", action="store_true", default=False)
+    p.add_argument("--no-keys", dest="keys", action="store_false")
 
     g = p.add_argument_group("grid view")
     g.add_argument("--grid", metavar="AXIS", default=None)
@@ -536,6 +558,8 @@ def main():
         axis_v=args.axis_v,
         session_name=args.name,
         seek_greedy=settings.seek_greedy,
+        seek_fuzzy=settings.seek_fuzzy,
+        swap_modifiers=settings.swap_modifiers,
         keybindings=settings.keybindings,
         highlight=settings.highlight,
         highlight_candidates=settings.highlight_candidates,
@@ -546,6 +570,9 @@ def main():
         grid_layout=grid_layout,
         grid_sharex=not args.no_sharex,
         grid_sharey=not args.no_sharey,
+        show_info=args.info,
+        show_status_bar=args.status_bar,
+        show_keys=args.keys,
     )
     window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()

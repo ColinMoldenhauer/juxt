@@ -478,11 +478,14 @@ CLI_OPTIONS = [
     "--axis-h", "--axis-v",
     "--full-path",
     "--grid", "--grid-layout", "--grid-values",
+    "--info", "--no-info",
+    "--keys", "--no-keys",
     "--max-depth",
     "--name",
     "--no-sharex", "--no-sharey", "--no-watch",
     "--save",
     "--squeeze",
+    "--status-bar", "--no-status-bar",
     "--watch-interval",
 ]
 

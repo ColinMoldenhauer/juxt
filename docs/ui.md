@@ -10,8 +10,8 @@ A quick tour of the juxt interface and its interactive elements.
 
 | # | Element | Description |
 |---|---|---|
-| 1 | **Image viewport** | Displays the current image. Drag to pan, scroll to zoom, double-click to fit. |
-| 2 | **Status bar** | One-line summary of navigation state. Toggleable with `Ctrl+Shift+H`; auto-appears while command or value-picker is active. |
+| 1 | **Image viewport** | Displays the current image. Drag to pan, scroll to zoom, double-click to fit, right-click for the copy menu. |
+| 2 | **Status bar** | One-line summary of navigation state. Toggleable with `Ctrl+Shift+H`; auto-appears while command or value-picker is active. Shown at startup unless `--no-status-bar` is passed. |
 | 3 | **Title bar** | Shows `juxt \| <session name>`. The session name defaults to the config filename and can be overridden with `--name`. |
 
 ---
@@ -39,7 +39,7 @@ Triggered by pressing `:`.
 | # | Element | Description |
 |---|---|---|
 | 1 | **Cursor** | The command being typed, e.g. `:fit▌`. In a free-text argument (`:pattern`, `:write`), each `{placeholder}` is coloured by position. |
-| 2 | **Suggested values** | Prefix-matched command candidates; the selected entry is shown in `[brackets]` and coloured like the highlighted value in the info sidebar. After `Tab` on a path argument, this row lists the matching directory entries instead. |
+| 2 | **Suggested values** | Fuzzy-matched command candidates, best match first; the selected entry is shown in `[brackets]` and coloured like the highlighted value in the info sidebar. After `Tab` on a path argument, this row lists the matching directory entries instead. |
 | 3 | **Tooltip** | One-line description of the selected command, right-aligned. |
 
 ### Seek mode
@@ -52,7 +52,7 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 |---|---|---|
 | 1 | **Prompt** | `axis?` while selecting an axis; `<axis-name> ›` while selecting a value on that axis. |
 | 2 | **Cursor** | The query being typed. |
-| 3 | **Candidates** | Matching axes or values; the current selection is shown in `[brackets]` and coloured like the highlighted value in the info sidebar. Automatically confirmed when only one candidate remains (configurable via `seek.greedy` in `~/.juxt/settings.yaml`). |
+| 3 | **Candidates** | Matching axes or values, best match first; the current selection is shown in `[brackets]` and coloured like the highlighted value in the info sidebar. Matching is fuzzy — `smp` finds `SMAP` (`seek.fuzzy`) — and a lone candidate is confirmed automatically (`seek.greedy`); both live in `~/.juxt/settings.yaml`. |
 
 ---
 
@@ -61,6 +61,26 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 ![Info sidebar open](assets/screenshots/info-sidebar.png)
 
 Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted. The current path at the top always reserves as many lines as the longest path this config could ever show, so the axis list below it never shifts as you navigate — even though the actual path's own wrapped height varies from combination to combination.
+
+It starts closed; pass `--info` to open it right away. The status bar is the mirror case — shown by default, hidden at startup with `--no-status-bar`.
+
+---
+
+## Shortcut sidebar
+
+Toggle with `Ctrl+Shift+K` or `:keys`, or open it at startup with `--keys`. The panel docks to the left of the viewport, opposite the info sidebar, so both can be open at once.
+
+Everything it lists is read out of the running session rather than written down in advance:
+
+- the `←`/`→` and `↑`/`↓` rows name the axes those arrows currently cycle
+- the letter-key section is the one for the active navigation mode, and switching mode with `:mode` rewrites it
+- the axis-key list is the live letter assignment, including anything moved with `:change-key`
+- `Ctrl+letter` and `Shift+letter` appear in whichever role [`modifiers.swap`](navigation.md#modifier-roles) gives them
+- the last section lists your own [keybindings](navigation.md#custom-keybindings) with the action each one runs
+
+Chords sit in their own column, coloured apart from their descriptions, so a description long enough to wrap stays inside its column instead of running back under the chord. The column is measured against the widest chord actually on show — never wider than half the panel — so it fits whatever font the platform resolves for the sidebar.
+
+Saving `~/.juxt/settings.yaml` redraws the panel, so a rebound chord shows up without a restart.
 
 Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
 

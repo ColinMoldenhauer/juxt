@@ -1037,3 +1037,460 @@ class TestGridPanes:
         v._enter_grid(0, None, (2, 1))                 # panes A, B
         assert v._grid_focus == 1
         assert self._panes(v) == (["A", "B"], "B")
+
+
+# ---------------------------------------------------------------------------
+# Initial panel visibility (--info / --status-bar)
+# ---------------------------------------------------------------------------
+
+class TestInitialPanelVisibility:
+    def _window(self, viewer_config, mini_pixmaps, qtbot, **kw):
+        from juxt.viewer import MainWindow
+
+        w = MainWindow(viewer_config, mini_pixmaps, watch=False, **kw)
+        qtbot.addWidget(w)
+        w.show()
+        return w
+
+    def test_defaults_keep_status_bar_and_hide_info(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot)
+        assert w.statusBar().isVisible()
+        assert not w._info_dock.isVisible()
+
+    def test_show_info_opens_the_sidebar(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_info=True)
+        assert w._info_dock.isVisible()
+
+    def test_sidebar_is_populated_when_opened_at_startup(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_info=True)
+        assert "sensor" in w._info_panel.toPlainText()
+
+    def test_hidden_status_bar_at_startup(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_status_bar=False)
+        assert not w.statusBar().isVisible()
+
+    def test_hidden_status_bar_still_toggles_back_on(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_status_bar=False)
+        w._toggle_status_bar()
+        assert w.statusBar().isVisible()
+
+    def test_open_sidebar_still_toggles_back_off(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_info=True)
+        w._toggle_info_panel()
+        assert not w._info_dock.isVisible()
+
+
+# ---------------------------------------------------------------------------
+# Right-click copy menu
+# ---------------------------------------------------------------------------
+
+class TestImageContextMenu:
+    def _menu(self, view):
+        """The menu itself — built without entering QMenu.exec's event loop."""
+        return view.build_image_menu()
+
+    def test_menu_offers_both_copy_actions(self, image_view):
+        labels = [a.text() for a in self._menu(image_view).actions()]
+        assert labels == ["Copy image &path", "Copy &image"]
+
+    def test_menu_shows_the_bound_shortcut(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.viewer import ImageView
+
+        v = ImageView(viewer_config, mini_pixmaps,
+                      keybindings={"Ctrl+Shift+C": "copy-path"})
+        qtbot.addWidget(v)
+        act = self._menu(v).actions()[0]
+        assert act.shortcut().toString() == "Ctrl+Shift+C"
+
+    def test_unbound_action_shows_no_shortcut(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.viewer import ImageView
+
+        v = ImageView(viewer_config, mini_pixmaps, keybindings={})
+        qtbot.addWidget(v)
+        assert self._menu(v).actions()[0].shortcut().isEmpty()
+
+    def test_rebinding_moves_the_shortcut_shown(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.viewer import ImageView
+
+        v = ImageView(viewer_config, mini_pixmaps,
+                      keybindings={"Ctrl+Alt+P": "copy-path"})
+        qtbot.addWidget(v)
+        assert self._menu(v).actions()[0].shortcut().toString() == "Ctrl+Alt+P"
+
+    def test_copy_path_action_puts_the_current_path_on_the_clipboard(self, image_view, qtbot):
+        from PySide6.QtWidgets import QApplication
+
+        qtbot.keyClick(image_view, Qt.Key.Key_Right)   # sensor -> B
+        self._menu(image_view).actions()[0].trigger()
+        assert QApplication.clipboard().text() == "fake/B_d1.png"
+
+    def test_copy_path_follows_the_focused_grid_pane(self, image_view, qtbot):
+        image_view._enter_grid(0, None, (1, 2))
+        image_view._grid_set_focus(1)
+        self._menu(image_view).actions()[0].trigger()
+        from PySide6.QtWidgets import QApplication
+        assert QApplication.clipboard().text() == "fake/B_d1.png"
+
+
+class TestCopyPathShortcut:
+    def test_default_binding_is_wired(self):
+        from juxt.settings import _DEFAULT_KEYBINDINGS
+
+        assert _DEFAULT_KEYBINDINGS["Ctrl+Shift+C"] == "copy-path"
+
+    def test_chord_copies_the_path(self, viewer_config, mini_pixmaps, qtbot):
+        from PySide6.QtWidgets import QApplication
+
+        from juxt.viewer import ImageView
+
+        v = ImageView(viewer_config, mini_pixmaps,
+                      keybindings={"Ctrl+Shift+C": "copy-path"})
+        qtbot.addWidget(v)
+        QApplication.clipboard().setText("")
+        qtbot.keyClick(v, Qt.Key.Key_C,
+                       Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        assert QApplication.clipboard().text() == "fake/A_d1.png"
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy matching across the search surfaces
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fuzzy_view(mini_pixmaps, qtbot):
+    """ImageView whose axis values are long enough to match loosely."""
+    from juxt.config import Config, _auto_keys
+    from juxt.viewer import ImageView
+
+    axes = {"sensor": ["ASCAT", "SMAP", "SMOS"], "date": ["d1", "d2"]}
+    cfg = Config(template="fake/{sensor}_{date}.png", axes=axes, keys=_auto_keys(axes))
+    pms = {(i, j): list(mini_pixmaps.values())[0] for i in range(3) for j in range(2)}
+    v = ImageView(cfg, pms, seek_greedy=True)
+    qtbot.addWidget(v)
+    return v
+
+
+class TestSelectionMatching:
+    def test_value_picker_matches_a_subsequence(self, fuzzy_view):
+        fuzzy_view._sel = {"phase": "value", "query": "smp", "axis_idx": 0, "cursor": 0}
+        assert fuzzy_view._sel_candidates() == ["SMAP"]
+
+    def test_value_picker_still_matches_a_prefix(self, fuzzy_view):
+        fuzzy_view._sel = {"phase": "value", "query": "sm", "axis_idx": 0, "cursor": 0}
+        assert fuzzy_view._sel_candidates() == ["SMAP", "SMOS"]
+
+    def test_greedy_auto_confirm_survives_a_unique_fuzzy_match(self, fuzzy_view):
+        fuzzy_view._sel_open_value(0, "smp")
+        assert fuzzy_view._sel is None          # confirmed without Enter
+        assert fuzzy_view.pos[0] == 1           # SMAP
+
+    def test_axis_search_matches_a_subsequence(self, fuzzy_view):
+        fuzzy_view._sel = {"phase": "axis", "query": "snr", "cursor": 0}
+        assert fuzzy_view._sel_candidates() == ["sensor"]
+
+    def test_strict_prefix_mode_rejects_the_subsequence(self, fuzzy_view):
+        fuzzy_view._seek_fuzzy = False
+        fuzzy_view._sel = {"phase": "value", "query": "smp", "axis_idx": 0, "cursor": 0}
+        assert fuzzy_view._sel_candidates() == []
+
+
+class TestCommandMatching:
+    def _verb_candidates(self, view, query):
+        view._cmd = {"phase": "verb", "query": query, "cursor": 0}
+        return view._cmd_candidates()
+
+    def test_initials_reach_a_hyphenated_command(self, image_view):
+        assert self._verb_candidates(image_view, "fh")[0] == "fit-height"
+
+    def test_prefix_matches_still_lead(self, image_view):
+        assert self._verb_candidates(image_view, "fit")[0] == "fit"
+
+    def test_aliases_are_untouched(self, image_view):
+        assert self._verb_candidates(image_view, "q") == ["quit"]
+
+    def test_empty_query_lists_every_command(self, image_view):
+        from juxt.viewer import _COMMANDS
+
+        assert self._verb_candidates(image_view, "") == _COMMANDS
+
+    def test_strict_prefix_mode_drops_the_initials_match(self, image_view):
+        image_view._seek_fuzzy = False
+        assert self._verb_candidates(image_view, "fh") == []
+
+    def test_grid_axis_argument_matches_loosely(self, fuzzy_view):
+        assert fuzzy_view._grid_cmd_candidates("snr") == ["sensor"]
+
+    def test_grid_value_argument_matches_loosely(self, fuzzy_view):
+        assert fuzzy_view._grid_cmd_candidates("sensor smp") == ["SMAP"]
+
+    def test_grid_value_argument_skips_values_already_named(self, fuzzy_view):
+        assert "SMAP" not in fuzzy_view._grid_cmd_candidates("sensor SMAP s")
+
+
+# ---------------------------------------------------------------------------
+# Swapping the Ctrl / Shift modifier roles on axis letter keys
+# ---------------------------------------------------------------------------
+
+CTRL = Qt.KeyboardModifier.ControlModifier
+SHIFT = Qt.KeyboardModifier.ShiftModifier
+
+
+@pytest.fixture
+def swapped_view(viewer_config, mini_pixmaps, qtbot):
+    """ImageView with modifiers.swap on: Shift picks, Ctrl reverses."""
+    from juxt.viewer import ImageView
+
+    v = ImageView(viewer_config, mini_pixmaps, swap_modifiers=True)
+    qtbot.addWidget(v)
+    return v
+
+
+class TestDefaultModifierRoles:
+    def test_ctrl_letter_opens_the_picker(self, image_view, qtbot):
+        qtbot.keyClick(image_view, Qt.Key.Key_S, CTRL)
+        assert image_view._sel is not None
+        assert image_view._sel["axis_idx"] == 0
+
+    def test_shift_letter_steps_backward(self, image_view, qtbot):
+        qtbot.keyClick(image_view, Qt.Key.Key_S, SHIFT)
+        assert image_view.pos[0] == 1     # wrapped from 0 backwards
+        assert image_view._sel is None
+
+    def test_bare_letter_steps_forward(self, image_view, qtbot):
+        qtbot.keyClick(image_view, Qt.Key.Key_S)
+        assert image_view.pos[0] == 1
+
+
+class TestSwappedModifierRoles:
+    def test_shift_letter_opens_the_picker(self, swapped_view, qtbot):
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S, SHIFT)
+        assert swapped_view._sel is not None
+        assert swapped_view._sel["axis_idx"] == 0
+
+    def test_ctrl_letter_steps_backward(self, swapped_view, qtbot):
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S, CTRL)
+        assert swapped_view.pos[0] == 1
+        assert swapped_view._sel is None
+
+    def test_bare_letter_still_steps_forward(self, swapped_view, qtbot):
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S)
+        assert swapped_view.pos[0] == 1
+
+    def test_pin_mode_picker_follows_the_swap(self, swapped_view, qtbot):
+        swapped_view.nav_mode = NavMode.PIN
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S, SHIFT)
+        assert swapped_view._sel is not None
+
+    def test_pin_mode_ignores_the_reverse_modifier(self, swapped_view, qtbot):
+        swapped_view.nav_mode = NavMode.PIN
+        qtbot.keyClick(swapped_view, Qt.Key.Key_S, CTRL)
+        assert swapped_view.pos == [0, 0]     # pin never navigates on a letter
+        assert swapped_view._sel is None
+
+    def test_settings_reload_applies_the_swap(self, image_view):
+        from juxt.settings import Settings
+
+        image_view.apply_settings(Settings(swap_modifiers=True))
+        assert image_view._swap_modifiers is True
+
+
+class TestModifierRoleConflicts:
+    def _conflicts(self, chord, swap):
+        from juxt.viewer import _keybinding_conflicts, _parse_key
+
+        key, mods = _parse_key(chord)
+        return _keybinding_conflicts({(key, mods): "reload"}, {"s"}, swap)
+
+    def test_ctrl_axis_key_shadows_the_picker_by_default(self):
+        assert "tap/pin" in self._conflicts("Ctrl+S", False)[0]
+
+    def test_shift_axis_key_shadows_only_tap_by_default(self):
+        assert "tap mode" in self._conflicts("Shift+S", False)[0]
+
+    def test_swapping_moves_the_picker_warning_to_shift(self):
+        assert "tap/pin" in self._conflicts("Shift+S", True)[0]
+
+    def test_swapping_moves_the_reverse_warning_to_ctrl(self):
+        assert "tap mode" in self._conflicts("Ctrl+S", True)[0]
+
+    def test_a_non_axis_letter_is_still_clean_under_a_modifier(self):
+        assert self._conflicts("Ctrl+Z", True) == []
+
+
+# ---------------------------------------------------------------------------
+# Shortcut sidebar (Ctrl+Shift+K)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def keys_window(viewer_config, mini_pixmaps, qtbot):
+    """MainWindow with the shortcut sidebar open and the default chords bound."""
+    from juxt.settings import _DEFAULT_KEYBINDINGS
+    from juxt.viewer import MainWindow
+
+    w = MainWindow(viewer_config, mini_pixmaps, watch=False, show_keys=True,
+                   keybindings=dict(_DEFAULT_KEYBINDINGS))
+    qtbot.addWidget(w)
+    w.show()
+    return w
+
+
+class TestShortcutPanel:
+    def _text(self, window) -> str:
+        return window._shortcut_panel.toPlainText()
+
+    def test_starts_closed_by_default(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.viewer import MainWindow
+
+        w = MainWindow(viewer_config, mini_pixmaps, watch=False)
+        qtbot.addWidget(w)
+        w.show()
+        assert not w._shortcut_dock.isVisible()
+
+    def test_show_keys_opens_it_populated(self, keys_window):
+        assert keys_window._shortcut_dock.isVisible()
+        assert "navigate" in self._text(keys_window)
+
+    def test_toggle_action_closes_and_reopens_it(self, keys_window):
+        keys_window._toggle_shortcut_panel()
+        assert not keys_window._shortcut_dock.isVisible()
+        keys_window._toggle_shortcut_panel()
+        assert keys_window._shortcut_dock.isVisible()
+
+    def test_chord_toggles_the_panel(self, keys_window, qtbot):
+        qtbot.keyClick(keys_window.view, Qt.Key.Key_K,
+                       Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        assert not keys_window._shortcut_dock.isVisible()
+
+    def test_keys_command_toggles_the_panel(self, keys_window):
+        keys_window.view._cmd_execute("keys")
+        assert not keys_window._shortcut_dock.isVisible()
+
+    def test_it_names_the_live_arrow_axes(self, keys_window):
+        assert "cycle sensor" in self._text(keys_window)
+
+    def _rows(self, window) -> list[tuple[str, str]]:
+        """Every (key, description) pair the panel is showing, flattened.
+
+        Asserted against the section data rather than the rendered text: the
+        two now sit in separate table cells, so toPlainText() puts them on
+        separate lines and says nothing about which key goes with which
+        description.
+        """
+        sections = window._shortcut_panel._sections(window.view)
+        return [row for _title, rows in sections for row in rows]
+
+    def test_it_lists_the_current_axis_keys(self, keys_window):
+        assert ("s", "sensor") in self._rows(keys_window)
+
+    def test_it_lists_the_bound_chords(self, keys_window):
+        assert ("Ctrl+Shift+K", "toggle-keys") in self._rows(keys_window)
+
+    def test_tap_mode_documents_both_modifiers(self, keys_window):
+        rows = self._rows(keys_window)
+        assert ("Shift+letter", "step −1 on that axis") in rows
+        assert ("Ctrl+letter", "open the value picker for that axis") in rows
+
+    def test_key_and_description_are_separate_cells(self, keys_window):
+        html = keys_window._shortcut_panel.toHtml()
+        assert "<table" in html.lower()
+
+    def test_headers_and_keys_are_coloured_apart(self, keys_window):
+        from juxt.viewer import _HEADER_COLOR, _KEY_COLOR
+
+        html = keys_window._shortcut_panel.toHtml().lower()
+        assert _HEADER_COLOR.lower() in html
+        assert _KEY_COLOR.lower() in html
+        assert _HEADER_COLOR.lower() != _KEY_COLOR.lower()
+
+    def test_seek_mode_replaces_the_letter_section(self, keys_window):
+        keys_window.view._cmd_execute("mode seek")
+        text = self._text(keys_window)
+        assert "search axes, then values" in text
+        assert "step +1 on that axis" not in text
+
+    def test_seek_mode_drops_the_axis_key_list(self, keys_window):
+        keys_window.view._cmd_execute("mode seek")
+        assert "axis keys" not in self._text(keys_window)
+
+    def test_pin_mode_has_no_reverse_entry(self, keys_window):
+        keys_window.view._cmd_execute("mode pin")
+        text = self._text(keys_window)
+        assert "focus that axis" in text
+        assert "step −1 on that axis" not in text
+
+    def test_swapped_modifiers_are_reflected(self, keys_window):
+        keys_window.view._swap_modifiers = True
+        keys_window._shortcut_panel.refresh(keys_window.view)
+        rows = self._rows(keys_window)
+        assert ("Shift+letter", "open the value picker for that axis") in rows
+        assert ("Ctrl+letter", "step −1 on that axis") in rows
+
+    def test_it_follows_navigation(self, keys_window, qtbot):
+        keys_window.view._cmd_execute("mode pin")
+        qtbot.keyClick(keys_window.view, Qt.Key.Key_D)   # focus date on ←/→
+        assert "cycle date" in self._text(keys_window)
+
+    def test_a_closed_panel_is_not_refreshed(self, keys_window):
+        keys_window._toggle_shortcut_panel()             # close it
+        before = self._text(keys_window)
+        keys_window.view._cmd_execute("mode seek")
+        assert self._text(keys_window) == before
+
+
+class TestShortcutPanelDefaults:
+    def test_ctrl_shift_k_is_bound_out_of_the_box(self):
+        from juxt.settings import _DEFAULT_KEYBINDINGS
+
+        assert _DEFAULT_KEYBINDINGS["Ctrl+Shift+K"] == "toggle-keys"
+
+    def test_keys_is_a_command(self):
+        from juxt.viewer import _COMMANDS
+
+        assert "keys" in _COMMANDS
+
+
+class TestShortcutPanelLayout:
+    """The key column is measured, not fixed, so no chord wraps."""
+
+    def _panel(self, viewer_config, mini_pixmaps, qtbot, width):
+        from juxt.settings import _DEFAULT_KEYBINDINGS
+        from juxt.viewer import ImageView, ShortcutPanel
+
+        v = ImageView(viewer_config, mini_pixmaps, keybindings=dict(_DEFAULT_KEYBINDINGS))
+        qtbot.addWidget(v)
+        p = ShortcutPanel()
+        qtbot.addWidget(p)
+        p.resize(width, 600)
+        p.refresh(v)
+        return p, v
+
+    def test_column_fits_the_widest_chord(self, viewer_config, mini_pixmaps, qtbot):
+        p, v = self._panel(viewer_config, mini_pixmaps, qtbot, 400)
+        sections = p._sections(v)
+        widest = max(p.fontMetrics().horizontalAdvance(k)
+                     for _t, rows in sections for k, _d in rows)
+        assert p._key_column_px(sections) >= widest
+
+    def test_column_never_takes_more_than_half_the_panel(self, viewer_config, mini_pixmaps, qtbot):
+        p, v = self._panel(viewer_config, mini_pixmaps, qtbot, 200)
+        assert p._key_column_px(p._sections(v)) <= max(90, p.viewport().width() // 2)
+
+    def test_resizing_remeasures_instead_of_going_stale(self, viewer_config, mini_pixmaps, qtbot):
+        p, _v = self._panel(viewer_config, mini_pixmaps, qtbot, 200)
+        narrow = p.toHtml()
+        p.resize(600, 600)
+        qtbot.wait(10)
+        assert p.toHtml() != narrow      # re-rendered against the new width
+
+    def test_refresh_is_not_reentered_by_its_own_resize(self, viewer_config, mini_pixmaps, qtbot):
+        p, _v = self._panel(viewer_config, mini_pixmaps, qtbot, 240)
+        p.resize(150, 300)
+        qtbot.wait(10)
+        assert p.toPlainText().count("navigate") == 1   # content not duplicated
+
+    def test_a_long_description_does_not_widen_the_key_column(self, viewer_config, mini_pixmaps, qtbot):
+        p, v = self._panel(viewer_config, mini_pixmaps, qtbot, 400)
+        before = p._key_column_px(p._sections(v))
+        v.axis_names[0] = "an extremely long axis name that wraps for certain"
+        after = p._key_column_px(p._sections(v))
+        assert after == before

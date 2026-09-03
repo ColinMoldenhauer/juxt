@@ -80,3 +80,53 @@ class TestParseArgsPinIntegration:
         )
         args, pins = _parse_args()
         assert args.path != "plots/{sensor}.png"
+
+
+class TestPanelFlags:
+    """--info / --status-bar / --keys set the panels' initial visibility.
+
+    They are declared on the parser rather than left to _parse_axis_pins, so
+    a bare --info stays a panel flag instead of being read as an axis pin.
+    """
+
+    def _args(self, monkeypatch, *argv):
+        monkeypatch.setattr("sys.argv", ["juxt", *argv])
+        args, _pins = _parse_args()
+        return args
+
+    def test_info_defaults_to_closed(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/").info is False
+
+    def test_status_bar_defaults_to_shown(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/").status_bar is True
+
+    def test_keys_defaults_to_closed(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/").keys is False
+
+    def test_info_flag_opens_the_sidebar(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/", "--info").info is True
+
+    def test_no_info_flag_keeps_it_closed(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/", "--info", "--no-info").info is False
+
+    def test_no_status_bar_flag_hides_it(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/", "--no-status-bar").status_bar is False
+
+    def test_status_bar_flag_shows_it(self, monkeypatch):
+        args = self._args(monkeypatch, "plots/", "--no-status-bar", "--status-bar")
+        assert args.status_bar is True
+
+    def test_keys_flag_opens_the_sidebar(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/", "--keys").keys is True
+
+    def test_no_keys_keeps_it_closed(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/", "--keys", "--no-keys").keys is False
+
+    def test_panel_flags_are_not_swallowed_as_axis_pins(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["juxt", "plots/{sensor}.png", "--info", "--sensor", "A"],
+        )
+        args, pins = _parse_args()
+        assert args.info is True
+        assert pins == {"sensor": ["A"]}

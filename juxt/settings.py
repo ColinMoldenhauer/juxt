@@ -122,6 +122,8 @@ _TEMPLATE = """\
 seek:
   greedy: true      # auto-confirm when exactly one candidate remains
                     # set to false to always require Enter
+  fuzzy: true       # match typed characters anywhere in order, so "smp" finds
+                    # "SMAP"; set to false for strict prefix matching
 
 # Display options used in the axis-detection dialogue
 display:
@@ -146,6 +148,14 @@ highlight:
   selected: "#6af:{}"       # current value in the info sidebar / active axis
   candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
 
+# Modifier roles on axis letter keys (tap and pin modes).
+# Default:  Ctrl+letter  opens the value picker
+#           Shift+letter steps backward on that axis (tap only)
+# swap: true exchanges the two, so Shift+letter opens the picker and
+# Ctrl+letter steps backward.
+modifiers:
+  swap: false
+
 # How an axis' values are laid out in the info sidebar.
 # Normally every value sits on one line, joined by "separator". Once any
 # value on the axis contains a space or is longer than "list_larger_than"
@@ -157,7 +167,7 @@ sidebar:
 
 # Key bindings — map a key chord to an action name.
 # Action names match any :command (fit, zoom, fullscreen, reload, …) plus the
-# two UI toggles: toggle-statusbar  toggle-info
+# UI toggles: toggle-statusbar  toggle-info  toggle-keys
 # Modifiers: Ctrl  Shift  Alt  Meta
 # Keys: any letter, Return, Escape, Space, Tab, Backspace, Delete,
 #       Home, End, Left, Right, Up, Down, F1–F12, 0–9
@@ -170,6 +180,8 @@ keybindings:
   Ctrl+Shift+H: toggle-statusbar   # toggle the status bar
   Ctrl+Shift+I: toggle-info        # toggle the info sidebar
   Ctrl+Shift+G: grid-dialog        # open the grid builder dialogue
+  Ctrl+Shift+C: copy-path          # copy the current image path to the clipboard
+  Ctrl+Shift+K: toggle-keys        # toggle the keyboard shortcut sidebar
   # F11: fullscreen                # example: bind F11 to fullscreen
 """ + _PLACEHOLDERS_SECTION
 
@@ -178,6 +190,7 @@ _SECTION_TEMPLATES: dict[str, str] = {
 # Seek / value-picker behaviour
 seek:
   greedy: true      # auto-confirm when exactly one candidate remains (false = require Enter)
+  fuzzy: true       # subsequence matching ("smp" finds "SMAP"); false = strict prefix
 """,
     "display": """
 # Display options used in the axis-detection dialogue
@@ -196,6 +209,15 @@ highlight:
   selected: "#6af:{}"       # current value in the info sidebar / active axis
   candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
 """,
+    "modifiers": """
+# Modifier roles on axis letter keys (tap and pin modes).
+# Default:  Ctrl+letter  opens the value picker
+#           Shift+letter steps backward on that axis (tap only)
+# swap: true exchanges the two, so Shift+letter opens the picker and
+# Ctrl+letter steps backward.
+modifiers:
+  swap: false
+""",
     "sidebar": """
 # How an axis' values are laid out in the info sidebar.
 # Normally every value sits on one line, joined by "separator". Once any
@@ -209,7 +231,7 @@ sidebar:
     "placeholders": _PLACEHOLDERS_SECTION,
     "keybindings": """
 # Key bindings — map a key chord to an action name.
-# Action names match any :command plus: toggle-statusbar  toggle-info
+# Action names match any :command plus: toggle-statusbar  toggle-info  toggle-keys
 # Modifiers: Ctrl  Shift  Alt  Meta
 # Keys: any letter, Return, Escape, Space, Tab, Backspace, Delete,
 #       Home, End, Left, Right, Up, Down, F1–F12, 0–9
@@ -219,6 +241,8 @@ keybindings:
   Ctrl+Shift+H: toggle-statusbar
   Ctrl+Shift+I: toggle-info
   Ctrl+Shift+G: grid-dialog
+  Ctrl+Shift+C: copy-path
+  Ctrl+Shift+K: toggle-keys
   # F11: fullscreen
 """,
 }
@@ -229,12 +253,16 @@ _DEFAULT_KEYBINDINGS: dict[str, str] = {
     "Ctrl+Shift+H": "toggle-statusbar",
     "Ctrl+Shift+I": "toggle-info",
     "Ctrl+Shift+G": "grid-dialog",
+    "Ctrl+Shift+C": "copy-path",
+    "Ctrl+Shift+K": "toggle-keys",
 }
 
 
 @dataclass
 class Settings:
     seek_greedy: bool = True
+    seek_fuzzy: bool = True
+    swap_modifiers: bool = False
     max_vals: int = 3
     max_vals_display: int = 10
     highlight: Highlight = field(
@@ -276,14 +304,20 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
             data = yaml.safe_load(f) or {}
         s = Settings()
         seek = data.get("seek") or {}
-        if isinstance(seek, dict) and "greedy" in seek:
-            s.seek_greedy = bool(seek["greedy"])
+        if isinstance(seek, dict):
+            if "greedy" in seek:
+                s.seek_greedy = bool(seek["greedy"])
+            if "fuzzy" in seek:
+                s.seek_fuzzy = bool(seek["fuzzy"])
         display = data.get("display") or {}
         if isinstance(display, dict):
             if "max_vals" in display:
                 s.max_vals = int(display["max_vals"])
             if "max_vals_display" in display:
                 s.max_vals_display = int(display["max_vals_display"])
+        modifiers = data.get("modifiers") or {}
+        if isinstance(modifiers, dict) and "swap" in modifiers:
+            s.swap_modifiers = bool(modifiers["swap"])
         hl = data.get("highlight")
         if isinstance(hl, str):          # one string sets both contexts
             s.highlight = parse_highlight(hl)

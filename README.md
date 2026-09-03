@@ -126,6 +126,7 @@ Default mode is **tap**. Each axis is assigned one letter key — tap it to step
 | lowercase letter | navigate +1 on that axis |
 | uppercase letter | navigate −1 on that axis |
 | `Ctrl`+letter | open value picker for that axis |
+| | (`modifiers.swap: true` exchanges the `Ctrl` and `Shift` roles) |
 | `Space` | toggle between current and previous position |
 | `Home` / `End` | jump to first / last value |
 | `1`–`9` | jump to the Nth value |
@@ -135,6 +136,8 @@ Use `:mode tap|seek|pin` in the command bar to switch navigation modes.
 ## Command mode
 
 Press `:` to open the command bar (vim-style). Tab-completion narrows candidates as you type.
+
+Matching is fuzzy: the characters you type only have to appear in order, so `:fh` reaches `fit-height` and `smp` finds `SMAP` in the value picker. Candidates are ranked best-first, prefix matches ahead of looser ones. Set `seek.fuzzy: false` in `~/.juxt/settings.yaml` for strict prefix matching.
 
 Path arguments complete with `{placeholders}` in place: `:pattern plots/{sensor}/2⇥` lists what every sensor directory holds, so a template is built top-down instead of completing a concrete path and deleting the parts that should vary. `{` + `Tab` completes an existing axis name, and anonymous `{}` placeholders are numbered automatically.
 
@@ -173,6 +176,7 @@ Placeholders standing for a known kind of value complete only as far as that val
 | `:mode tap\|seek\|pin` | switch navigation mode |
 | `:grid [AXIS]` | tile an axis into a grid of viewports |
 | `:grid AXIS VAL …` | grid with a value subset |
+| `:keys` | toggle the shortcut sidebar (`Ctrl+Shift+K`) |
 | `:grid-dialog` | open the grid builder dialogue (`Ctrl+Shift+G`) |
 | `:grid-layout NxM` | change grid layout without exiting |
 | `:ungrid` | return to single-image view |
@@ -194,6 +198,9 @@ Placeholders standing for a known kind of value complete only as far as that val
 | Key | Action |
 |---|---|
 | `Enter` | toggle fullscreen |
-| `Ctrl+Shift+H` | toggle status bar |
-| `Ctrl+Shift+I` | toggle info sidebar |
+| `Ctrl+Shift+C` | copy the current image path to the clipboard |
+| right-click | menu: copy image path / copy image |
+| `Ctrl+Shift+H` | toggle status bar  (start hidden with `--no-status-bar`) |
+| `Ctrl+Shift+I` | toggle info sidebar  (start open with `--info`) |
+| `Ctrl+Shift+K` | toggle shortcut sidebar  (start open with `--keys`) |
 | `Ctrl+Shift+G` | open the grid builder dialogue |
