@@ -60,7 +60,7 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 
 ![Info sidebar open](assets/screenshots/info-sidebar.png)
 
-Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted.
+Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted. The current path at the top always reserves as many lines as the longest path this config could ever show, so the axis list below it never shifts as you navigate — even though the actual path's own wrapped height varies from combination to combination.
 
 It starts closed; pass `--info` to open it right away. The status bar is the mirror case — shown by default, hidden at startup with `--no-status-bar`.
 
@@ -81,6 +81,15 @@ Everything it lists is read out of the running session rather than written down 
 Saving `~/.juxt/settings.yaml` redraws the panel, so a rebound chord shows up without a restart.
 
 Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
+
+By default an axis' values sit on one line, separated by two spaces. Once any value on that axis contains a space or is longer than 20 characters, the axis switches to one value per line instead — long or spaced-out values (a full path pinned via `--NAME VALUE ...`, say) stay readable rather than running together. Both the separator and the length threshold are configurable in `~/.juxt/settings.yaml`:
+
+```yaml
+sidebar:
+  value_list:
+    separator: "  "         # inserted between values on the same line
+    list_larger_than: 20    # length (in characters) that triggers one-per-line
+```
 
 ---
 

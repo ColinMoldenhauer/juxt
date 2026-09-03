@@ -6,6 +6,7 @@ import logging
 import math
 import re
 import sys
+from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
 
@@ -345,6 +346,17 @@ def _is_remote_pattern(arg: str) -> bool:
     return False
 
 
+def has_bare_wildcard(path: str) -> bool:
+    """True if *path* has a '*' outside of any {placeholder} (including a
+    `{**name}` one), i.e. one dispatching to `resolve_wildcard_template`
+    rather than the `**name` support in `_axes_from_local_template`.
+
+    '{**name}' itself contains '*' characters, so a plain `'*' in path`
+    check would misroute it.
+    """
+    return '*' in PLACEHOLDER_NAME_RE.sub('', path)
+
+
 def _parse_remote_pattern(arg: str) -> tuple[RemoteConfig, str]:
     """Split 'user@host:/remote/template' into (RemoteConfig, remote_template_path)."""
     colon = arg.index(':')
@@ -361,55 +373,324 @@ def _template_regex(template: str) -> str:
 
     Groups are numbered rather than named: a placeholder may be called
     `{yyyy-mm-dd}`, which is not a valid Python group name.
+
+    A placeholder named `**name` (see `_axes_from_local_template`) captures
+    across '/' rather than stopping at the next path separator.
     """
     segs = PLACEHOLDER_NAME_RE.split(template)
     return ''.join(
-        re.escape(s) if i % 2 == 0 else '([^/]+)'
+        re.escape(s) if i % 2 == 0 else ('(.+)' if s.startswith('**') else '([^/]+)')
         for i, s in enumerate(segs)
     )
 
 
-def _axes_from_local_template(template: str) -> dict[str, list[str]]:
-    """Detect axis values by globbing the local filesystem against *template*.
+def _strip_recursive_marker(name: str) -> tuple[str, bool]:
+    """Split a placeholder name into (axis_name, is_recursive).
+
+    `{**plot}` is written with a `**` marker prefix, mirroring `**` in a
+    glob: the axis it names is allowed to capture across '/'.
+    """
+    return (name[2:], True) if name.startswith('**') else (name, False)
+
+
+def _parse_template_names(template: str) -> tuple[list[str], dict[str, str], str | None]:
+    """Parse a template's placeholders into (names, raw_token_of, recursive_name).
+
+    *names* are axis names with any `**` marker stripped, in template order.
+    *raw_token_of* maps each axis name back to the literal text inside its
+    `{...}` in *template* (e.g. `'plot': '**plot'`), needed to substitute
+    pinned values or build glob patterns against the template as written.
+    *recursive_name* is the one axis name allowed to capture across '/', or
+    None. At most one `**name` placeholder is allowed per template, since
+    more than one greedy '/'-crossing capture group makes the match ambiguous.
+    """
+    names: list[str] = []
+    raw_token_of: dict[str, str] = {}
+    recursive_name: str | None = None
+    for raw in PLACEHOLDER_NAME_RE.findall(template):
+        name, is_recursive = _strip_recursive_marker(raw)
+        if name in raw_token_of and raw_token_of[name] != raw:
+            raise ValueError(
+                f"Template {template!r} uses both {{{raw_token_of[name]}}} and "
+                f"{{{raw}}} for the same axis; use '**{name}' consistently or not at all"
+            )
+        if is_recursive:
+            if recursive_name is not None and recursive_name != name:
+                raise ValueError(
+                    f"Template {template!r} has more than one '**name' placeholder; "
+                    "only one axis may capture across '/'"
+                )
+            recursive_name = name
+        names.append(name)
+        raw_token_of[name] = raw
+    return names, raw_token_of, recursive_name
+
+
+def _prune_common_prefix(values: list[str]) -> tuple[str, list[str]]:
+    """Strip the longest run of leading '/'-delimited segments shared by
+    every value, moving it out as a literal prefix.
+
+    At least one segment is always kept in the shortest value, so no value
+    is ever pruned down to ''. Returns ('', values) unchanged when nothing
+    is shared or there is only one value to compare.
+    """
+    if len(values) < 2:
+        return '', values
+    split = [v.split('/') for v in values]
+    shortest = min(len(s) for s in split)
+    common = 0
+    for i in range(shortest - 1):
+        if all(s[i] == split[0][i] for s in split):
+            common += 1
+        else:
+            break
+    if common == 0:
+        return '', values
+    prefix = '/'.join(split[0][:common])
+    return prefix, ['/'.join(s[common:]) for s in split]
+
+
+def _split_pinned(names: list[str], pinned: dict[str, list[str]]) -> tuple[list[str], list[str]]:
+    """Validate *pinned* against the template's placeholder *names* and split
+    them into (pinned_names, free_names), both in template order."""
+    unknown = sorted(set(pinned) - set(names))
+    if unknown:
+        raise ValueError(
+            f"--{unknown[0]} does not match any {{placeholder}} in the template. "
+            f"Known placeholders: {names}"
+        )
+    return [n for n in names if n in pinned], [n for n in names if n not in pinned]
+
+
+def _pinned_combos(pinned_names: list[str], pinned: dict[str, list[str]]) -> list[dict[str, str]]:
+    """Every combination of the given axes' pinned values, as `{name: value}` dicts."""
+    if not pinned_names:
+        return [{}]
+    return [dict(zip(pinned_names, vals)) for vals in product(*(pinned[n] for n in pinned_names))]
+
+
+def _axes_from_local_template(
+    template: str,
+    pinned: dict[str, list[str]] | None = None,
+    full_path: bool = False,
+) -> tuple[str, dict[str, list[str]]]:
+    """Detect axis values by matching the local filesystem against *template*.
 
     Example: 'plots/{sensor}_{date}.png' scans for matching files and returns
     {'sensor': ['ASCAT', 'SMAP', ...], 'date': ['2024-03-15', ...]}.
+
+    *pinned*, if given, fixes one or more placeholders to an explicit list of
+    values (in the given order) instead of discovering them by globbing, e.g.
+    `{'root': ['/data/run1', '/data/run2']}`. Globbing then only resolves the
+    remaining placeholders, once per combination of pinned values, and the
+    results are merged into a shared axis space. This also lets a pinned
+    value contain '/', which plain globbing can't discover since '*' never
+    crosses a path separator.
+
+    One placeholder may be written `{**name}` to capture across '/' instead
+    of stopping at the next path separator, so it can stand for an entire
+    (and possibly differently-shaped) subtree below it, e.g.
+    '{root}/{**plot}.png' with 'root' pinned to several directories. Since
+    globbing can't express a '/'-crossing match, that combination walks the
+    filesystem recursively instead. Unless *full_path* is set, any leading
+    path segments shared by every matched value are pruned out of the
+    '**name' axis (and folded into the template as fixed text instead), so
+    e.g. 'dir/AM/plot' and 'dir/PM/plot' become 'AM/plot' and 'PM/plot'.
+
+    Returns `(resolved_template, axes)`. *resolved_template* is *template*
+    unchanged unless it used `{**name}`, in which case the marker is
+    stripped (and any pruned prefix spliced in) so it can be formatted like
+    any other template.
     """
-    names = PLACEHOLDER_NAME_RE.findall(template)
+    names, raw_token_of, recursive_name = _parse_template_names(template)
     if not names:
         raise ValueError(f"Template {template!r} has no {{placeholder}} variables")
 
+    # Normalise pinned values the same way the template itself is normalised
+    # below — otherwise a Windows path pinned with '\' survives into the glob
+    # pattern and its regex, while the matched files it's compared against
+    # (via f.replace('\\', '/')) never do, and nothing matches.
+    pinned = {k: [v.replace('\\', '/') for v in vs] for k, vs in (pinned or {}).items()}
+    pinned_names, free_names = _split_pinned(names, pinned)
     norm = template.replace('\\', '/')
-    glob_pat = PLACEHOLDER_NAME_RE.sub('*', norm)
-    raw_files = _glob_mod.glob(glob_pat)
-    if not raw_files:
-        raise ValueError(f"No files match template {template!r}")
-
-    regex = _template_regex(norm)
+    recursive_free = recursive_name is not None and recursive_name in free_names
 
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
-    for f in sorted(raw_files):
-        m = re.fullmatch(regex, f.replace('\\', '/'))
-        if m:
-            for i, n in enumerate(names):
-                v = m.group(i + 1)
-                if v not in seen[n]:
-                    seen[n].add(v)
-                    axes[n].append(v)
 
-    axes = {k: _numeric_sort(v) for k, v in axes.items() if v}
-    if not axes:
-        raise ValueError(f"Could not extract axis values from files matching {template!r}")
-    return axes
+    for combo in _pinned_combos(pinned_names, pinned):
+        for n, v in combo.items():
+            if v not in seen[n]:
+                seen[n].add(v)
+                axes[n].append(v)
+
+        if not free_names:
+            continue
+
+        sub = norm
+        for n, v in combo.items():
+            sub = sub.replace(f"{{{raw_token_of[n]}}}", v)
+        regex = _template_regex(sub)
+
+        if recursive_free:
+            first_brace = sub.index('{')
+            prefix = sub[:first_brace]
+            last_slash = prefix.rfind('/')
+            base_dir = prefix[:last_slash] if last_slash >= 0 else '.'
+            if not Path(base_dir).is_dir():
+                raise ValueError(f"{base_dir!r} is not a directory")
+            matches = sorted(str(f) for f in _iter_images(Path(base_dir)))
+        else:
+            glob_pat = PLACEHOLDER_NAME_RE.sub('*', sub)
+            matches = sorted(_glob_mod.glob(glob_pat))
+
+        for f in matches:
+            m = re.fullmatch(regex, f.replace('\\', '/'))
+            if m:
+                for i, n in enumerate(free_names):
+                    v = m.group(i + 1)
+                    if v not in seen[n]:
+                        seen[n].add(v)
+                        axes[n].append(v)
+
+    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
+    if any(not axes[n] for n in free_names):
+        raise ValueError(f"No files match template {template!r}")
+
+    resolved_template = template
+    if recursive_name is not None:
+        # Pruning only makes sense for a discovered ('free') axis: a pinned
+        # {**name} is a literal value the caller chose, not ours to rewrite.
+        prefix = ''
+        if recursive_free and not full_path:
+            prefix, axes[recursive_name] = _prune_common_prefix(axes[recursive_name])
+        replacement = (prefix + '/' if prefix else '') + '{' + recursive_name + '}'
+        resolved_template = norm.replace('{' + raw_token_of[recursive_name] + '}', replacement)
+
+    return resolved_template, axes
 
 
-def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
+def _wildcard_regex(pattern: str) -> str:
+    """Turn a '*'-only glob *pattern* into a regex matching it.
+
+    Unlike a shell glob, '*' here is expected to reach into nested
+    subdirectories (see `resolve_wildcard_template`), so it maps to '.*'
+    rather than a segment-bound '[^/]*'.
+    """
+    return ".*".join(re.escape(p) for p in pattern.split("*"))
+
+
+def resolve_wildcard_template(
+    template: str,
+    pinned: dict[str, list[str]] | None = None,
+) -> tuple[str, dict[str, list[str]]]:
+    """Resolve a template containing a '*' wildcard, e.g. '{root}/*.png'.
+
+    Every {placeholder} in *template* must sit before the first '*' and be
+    given a pinned value: a wildcard replaces the need to *name* the
+    remaining path components, so there is nothing left for a free
+    {placeholder} to bind to. Once the pinned prefix is resolved to a real
+    directory, per combination of pinned values, that directory is walked
+    recursively for image files ('*' crosses subdirectories, unlike a shell
+    glob) and matched against the pattern after it. The matched relative
+    paths are then split into axes exactly as directory auto-discovery does
+    (`detect_config`): any position that varies becomes an 'axis_N'.
+
+    Files found across every combination of pinned values are pooled before
+    detecting axes, so `{root}/*.png` with `root` pinned to several
+    directories aggregates them the same way a single auto-discovered
+    directory would, including a column that only varies *between* pinned
+    values (e.g. one date per root) rather than within any single one of
+    them. Returns `(resolved_template, axes)`, where *resolved_template* has
+    the '*' portion replaced by the discovered {axis_N} placeholders and can
+    be formatted like any other template.
+    """
+    norm = template.replace("\\", "/")
+    star_idx = norm.index("*")
+
+    names = PLACEHOLDER_NAME_RE.findall(norm)
+    if any(norm.index(f"{{{n}}}") > star_idx for n in names):
+        raise ValueError(
+            f"Template {template!r}: a {{placeholder}} cannot appear after a '*' wildcard"
+        )
+
+    pinned = {k: [v.replace("\\", "/") for v in vs] for k, vs in (pinned or {}).items()}
+    unknown = sorted(set(pinned) - set(names))
+    if unknown:
+        raise ValueError(
+            f"--{unknown[0]} does not match any {{placeholder}} in the template. "
+            f"Known placeholders: {names}"
+        )
+    unpinned = sorted(set(names) - set(pinned))
+    if unpinned:
+        raise ValueError(
+            f"Template {template!r} uses a '*' wildcard, so every {{placeholder}} "
+            f"before it must be pinned with --NAME VALUE; missing: {unpinned}"
+        )
+
+    slash_idx = norm.rfind("/", 0, star_idx)
+    dir_prefix = norm[:slash_idx] if slash_idx >= 0 else "."
+    rest_pattern = norm[slash_idx + 1:]
+    pattern_re = re.compile(_wildcard_regex(rest_pattern))
+
+    axes: dict[str, list[str]] = {n: [] for n in names}
+    seen: dict[str, set] = {n: set() for n in names}
+    ext: str | None = None
+    all_rel_stems: list[str] = []
+
+    for combo in _pinned_combos(names, pinned):
+        for n, v in combo.items():
+            if v not in seen[n]:
+                seen[n].add(v)
+                axes[n].append(v)
+
+        base_dir = dir_prefix
+        for n, v in combo.items():
+            base_dir = base_dir.replace(f"{{{n}}}", v)
+        base = Path(base_dir)
+        if not base.is_dir():
+            raise ValueError(f"{base_dir!r} is not a directory")
+
+        files = [
+            f for f in _iter_images(base)
+            if pattern_re.fullmatch(str(f.relative_to(base)).replace("\\", "/"))
+        ]
+        if not files:
+            continue
+
+        if ext is None:
+            ext = files[0].suffix
+        all_rel_stems.extend(
+            str(f.relative_to(base).with_suffix("")).replace("\\", "/") for f in files
+        )
+
+    if not all_rel_stems:
+        raise ValueError(f"No files match wildcard template {template!r}")
+
+    sub_config, _ = _detect_from_rel_stems(sorted(all_rel_stems), ext, dir_prefix, _DEFAULT_SEPS)
+    for col_name, values in sub_config.axes.items():
+        axes[col_name] = values
+
+    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
+    return sub_config.template, axes
+
+
+def _axes_from_sftp_template(
+    template: str,
+    sftp,
+    pinned: dict[str, list[str]] | None = None,
+) -> dict[str, list[str]]:
     """Detect axis values from files matching *template* using an already-open SFTP client.
 
     Walks the remote directory tree starting at the fixed prefix before the
     first placeholder, then matches every file against the template pattern.
     The caller owns the SFTP session and is responsible for keeping it alive.
+
+    *pinned* fixes one or more placeholders to explicit values instead of
+    discovering them by walking the tree — see `_axes_from_local_template`
+    for the semantics. One walk is done per combination of pinned values,
+    since a pinned placeholder can shift where the fixed prefix (and so the
+    walk's starting directory) falls.
     """
     import stat
 
@@ -417,40 +698,56 @@ def _axes_from_sftp_template(template: str, sftp) -> dict[str, list[str]]:
     if not names:
         raise ValueError(f"Remote template {template!r} has no {{placeholder}} variables")
 
-    prefix = template[:template.index('{')]
-    last_slash = prefix.rfind('/')
-    base_dir = prefix[:last_slash] if last_slash > 0 else '/'
-
-    regex = _template_regex(template)
-
-    remote_files: list[str] = []
-    stack = [base_dir]
-    while stack:
-        path = stack.pop()
-        try:
-            entries = sftp.listdir_attr(path)
-        except IOError:
-            continue
-        for entry in entries:
-            full = f"{path}/{entry.filename}"
-            if stat.S_ISDIR(entry.st_mode):
-                stack.append(full)
-            else:
-                remote_files.append(full)
+    pinned = pinned or {}
+    pinned_names, free_names = _split_pinned(names, pinned)
 
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
-    for f in sorted(remote_files):
-        m = re.fullmatch(regex, f)
-        if m:
-            for i, n in enumerate(names):
-                v = m.group(i + 1)
-                if v not in seen[n]:
-                    seen[n].add(v)
-                    axes[n].append(v)
 
-    axes = {k: _numeric_sort(v) for k, v in axes.items() if v}
-    if not axes:
+    for combo in _pinned_combos(pinned_names, pinned):
+        for n, v in combo.items():
+            if v not in seen[n]:
+                seen[n].add(v)
+                axes[n].append(v)
+
+        if not free_names:
+            continue
+
+        sub = template
+        for n, v in combo.items():
+            sub = sub.replace(f"{{{n}}}", v)
+
+        prefix = sub[:sub.index('{')]
+        last_slash = prefix.rfind('/')
+        base_dir = prefix[:last_slash] if last_slash > 0 else '/'
+        regex = _template_regex(sub)
+
+        remote_files: list[str] = []
+        stack = [base_dir]
+        while stack:
+            path = stack.pop()
+            try:
+                entries = sftp.listdir_attr(path)
+            except IOError:
+                continue
+            for entry in entries:
+                full = f"{path}/{entry.filename}"
+                if stat.S_ISDIR(entry.st_mode):
+                    stack.append(full)
+                else:
+                    remote_files.append(full)
+
+        for f in sorted(remote_files):
+            m = re.fullmatch(regex, f)
+            if m:
+                for i, n in enumerate(free_names):
+                    v = m.group(i + 1)
+                    if v not in seen[n]:
+                        seen[n].add(v)
+                        axes[n].append(v)
+
+    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
+    if any(not axes[n] for n in free_names):
         raise ValueError(f"No files on remote match template {template!r}")
     return axes
 
@@ -459,12 +756,13 @@ def _axes_from_remote_template(
     template: str,
     remote: RemoteConfig,
     get_password: Callable[[str], str | None] | None = None,
+    pinned: dict[str, list[str]] | None = None,
 ) -> dict[str, list[str]]:
     """Connect via SFTP and detect axis values from files matching the remote template."""
     from .loader import _connect_sftp
     client, sftp = _connect_sftp(remote, get_password)
     try:
-        return _axes_from_sftp_template(template, sftp)
+        return _axes_from_sftp_template(template, sftp, pinned)
     finally:
         sftp.close()
         client.close()

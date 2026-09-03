@@ -33,7 +33,9 @@ from .detect import (
     _parse_remote_pattern,
     detect_config,
     detect_config_remote,
+    has_bare_wildcard,
     prompt_rename,
+    resolve_wildcard_template,
 )
 from .loader import preload, preload_remote
 from .settings import load_settings
@@ -169,6 +171,10 @@ def _print_help() -> None:
     /path/to/dir              scan directory, detect axes from filenames
     plots/{sensor}_{date}.png local template with explicit placeholders
     plots/{}/{}.png           anonymous placeholders, named axis_1, axis_2, …
+    plots/*.png               wildcard match, recursing into subdirs
+    {root}/*.png  --root A B  pin {root} then wildcard-match within each
+    {root}/{**plot}.png       {**name} captures across '/', for one axis
+                              spanning an arbitrarily deep subtree
     host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
     host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
     config.yaml               explicit YAML config file
@@ -178,6 +184,14 @@ def _print_help() -> None:
   -a, --auto                  skip axis naming prompt
       --max-depth N           max subdirectory search depth
       --save PATH             save resolved config to PATH after detection
+      --NAME VALUE [...]      pin a {placeholder}'s values instead of
+                              globbing for them (template/wildcard PATH
+                              only, must come after PATH); repeatable per
+                              placeholder; required for every {placeholder}
+                              before a '*' wildcard
+      --full-path             show a {**name} axis as the full path matched
+                              instead of pruning the part shared by every
+                              match (see {root}/{**plot}.png above)
       --no-watch              disable automatic file watching (local only)
       --watch-interval SEC    poll remote for changes every SEC seconds (default: 5, 0 to disable)
       --axis-h NAME           lock ←/→ to this axis on startup
@@ -217,6 +231,38 @@ def _print_help() -> None:
     :copy-image  :copy-path  :write [PATH]  :quit""")
 
 
+def _parse_axis_pins(unknown: list[str]) -> dict[str, list[str]]:
+    """Turn leftover argv (`['--sensor', 'A', 'B', '--date', 'X']`) into
+    `{'sensor': ['A', 'B'], 'date': ['X']}`.
+
+    Axis names are taken verbatim, unlike a generic flag-to-kwarg grabber,
+    since a {placeholder} name may itself contain hyphens (e.g. {yyyy-mm-dd}).
+    Must appear after PATH on the command line — argparse would otherwise
+    swallow a pinned value as PATH before it ever sees the real one.
+    """
+    pins: dict[str, list[str]] = {}
+    current: str | None = None
+    for arg in unknown:
+        if arg.startswith("--"):
+            current = arg[2:]
+            if not current:
+                raise SystemExit(f"Unexpected argument {arg!r}")
+            if current in pins:
+                raise SystemExit(f"Duplicate axis flag: --{current}")
+            pins[current] = []
+        else:
+            if current is None:
+                raise SystemExit(
+                    f"Unrecognized argument {arg!r}. To pin a {{placeholder}}'s "
+                    f"values, use '--NAME VALUE ...' after PATH."
+                )
+            pins[current].append(arg)
+    for name, values in pins.items():
+        if not values:
+            raise SystemExit(f"--{name} was given no values to pin.")
+    return pins
+
+
 class _HelpAction(argparse.Action):
     def __init__(self, option_strings, dest=argparse.SUPPRESS,
                  default=argparse.SUPPRESS, help=None):
@@ -228,7 +274,7 @@ class _HelpAction(argparse.Action):
         parser.exit()
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     p = argparse.ArgumentParser(prog="juxt", add_help=False)
     p.add_argument("path", nargs="?", default=None, metavar="PATH")
     p.add_argument("-s", "--separator", metavar="SEP", nargs="+")
@@ -241,7 +287,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--axis-v", metavar="NAME", default=None)
     p.add_argument("--squeeze", action="store_true", default=False)
     p.add_argument("--name", metavar="NAME", default=None)
+    p.add_argument("--full-path", action="store_true", default=False)
     # Initial panel visibility; both are still toggleable at runtime.
+    # These are declared here so parse_known_args recognises them; an
+    # unrecognised --flag after PATH is read as an axis pin instead.
     p.add_argument("--info", dest="info", action="store_true", default=False)
     p.add_argument("--no-info", dest="info", action="store_false")
     p.add_argument("--status-bar", dest="status_bar", action="store_true", default=True)
@@ -257,11 +306,16 @@ def _parse_args() -> argparse.Namespace:
     g.add_argument("--no-sharey", action="store_true", default=False)
 
     p.add_argument("-h", "--help", action=_HelpAction)
-    return p.parse_args()
+
+    # Any flag not recognized above and appearing after PATH is treated as
+    # '--{placeholder} VALUE ...', pinning that template placeholder to an
+    # explicit value list instead of discovering it by globbing.
+    args, unknown = p.parse_known_args()
+    return args, _parse_axis_pins(unknown)
 
 
 def main():
-    args = _parse_args()
+    args, pins = _parse_args()
     import os
     _setup_logging(
         os.environ.get("JUXT_LOG_LEVEL", "WARNING").upper(),
@@ -328,25 +382,41 @@ def main():
         if _is_remote_pattern(raw):
             remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
             if '{' in remote_tmpl:
-                axes = _axes_from_remote_template(remote_tmpl, remote_cfg, _ask_password)
+                axes = _axes_from_remote_template(remote_tmpl, remote_cfg, _ask_password, pinned=pins)
                 config = Config(template=remote_tmpl, axes=axes,
                                 keys=_auto_keys(axes), remote=remote_cfg)
             else:
+                if pins:
+                    raise ValueError(
+                        "--<axis> VALUE pinning requires a {placeholder} template, "
+                        "not a plain remote directory"
+                    )
                 config, sep, n_remote = detect_config_remote(
                     remote_tmpl, remote_cfg, args.separator, _ask_password)
                 if not args.auto:
                     config = prompt_rename(config, n_remote, sep)
         elif Path(raw).is_dir():
+            if pins:
+                raise ValueError(
+                    "--<axis> VALUE pinning requires a {placeholder} template, not a directory"
+                )
             p = Path(raw)
             files = _iter_images(p, args.max_depth)
             config, sep = detect_config(p, args.separator, args.max_depth)
             if not args.auto:
                 config = prompt_rename(config, len(files), sep, p, args.max_depth)
         elif raw.lower().endswith((".yaml", ".yml")):
+            if pins:
+                raise ValueError(
+                    "--<axis> VALUE pinning requires a {placeholder} template, not a YAML config"
+                )
             config = load_config(raw)
+        elif has_bare_wildcard(raw):
+            template, axes = resolve_wildcard_template(raw, pinned=pins)
+            config = Config(template=template, axes=axes, keys=_auto_keys(axes))
         elif '{' in raw:
-            axes = _axes_from_local_template(raw)
-            config = Config(template=raw, axes=axes, keys=_auto_keys(axes))
+            template, axes = _axes_from_local_template(raw, pinned=pins, full_path=args.full_path)
+            config = Config(template=template, axes=axes, keys=_auto_keys(axes))
         else:
             print(
                 f"Error: {raw!r} is not a directory, YAML config, "
@@ -493,6 +563,8 @@ def main():
         keybindings=settings.keybindings,
         highlight=settings.highlight,
         highlight_candidates=settings.highlight_candidates,
+        sidebar_separator=settings.sidebar_separator,
+        sidebar_list_larger_than=settings.sidebar_list_larger_than,
         grid=args.grid,
         grid_values=args.grid_values,
         grid_layout=grid_layout,

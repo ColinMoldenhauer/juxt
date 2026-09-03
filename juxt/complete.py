@@ -476,6 +476,7 @@ CLI_OPTIONS = [
     "-h", "--help",
     "-s", "--separator",
     "--axis-h", "--axis-v",
+    "--full-path",
     "--grid", "--grid-layout", "--grid-values",
     "--info", "--no-info",
     "--keys", "--no-keys",

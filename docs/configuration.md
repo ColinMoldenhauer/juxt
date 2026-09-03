@@ -7,6 +7,7 @@ juxt accepts four kinds of input on the command line:
 | A directory path | Auto-detect axes from filenames in that directory |
 | A YAML config file | Load the config (template or discover mode) |
 | A template string with `{placeholders}` | Detect axis values by globbing the local filesystem |
+| A path containing a `*` wildcard | Recursively match files, then auto-detect axes the same way a directory scan does |
 | A remote path (`user@host:/path`) | Auto-detect axes from a remote directory via SFTP |
 
 ## CLI reference
@@ -20,6 +21,10 @@ PATH                        directory to scan or YAML config file
 -s, --separator SEP [...]   separator(s) for auto-detection
 -a, --auto                  skip the axis naming prompt
     --max-depth N           maximum subdirectory search depth
+    --NAME VALUE [...]      pin a {placeholder}'s values (template/wildcard
+                            PATH only, must come after PATH); see below
+    --full-path             show a {**name} axis's full matched path
+                            instead of pruning the shared leading part
 -h, --help                  show usage and exit
 ```
 
@@ -114,6 +119,50 @@ You can skip the YAML file and pass the template string directly. juxt detects a
 ```bash
 juxt "plots/{sensor}_{date}_{overpass}_{source}.png"
 ```
+
+### Pinning placeholder values
+
+By default every `{placeholder}` in the template is resolved by globbing the filesystem for whatever values actually occur. Pass `--NAME VALUE [VALUE ...]` (after PATH) to pin one or more placeholders to an explicit value list instead — the remaining placeholders are still discovered by globbing, once per combination of pinned values, and merged into a shared axis space:
+
+```bash
+juxt "{root}/{dir}/images/{plot}.png" \
+  --root /data/run1 /data/run2 /data/run3
+```
+
+This is useful for two things a plain glob can't do:
+
+- **Filtering** — narrow an axis to a subset of what's on disk (e.g. only two of five sensors) without hand-editing a saved config.
+- **Values that don't line up with a `*` glob** — a pinned value may itself contain `/`, so unrelated directory trees (like the three `run*` roots above, which don't share a common naming pattern) can become one axis.
+
+Each `--NAME` must match a placeholder already in the template; repeat the flag once per placeholder to pin more than one. Values keep the order given on the command line rather than being sorted.
+
+### Wildcard matching
+
+A `*` in the path is matched recursively: unlike a shell glob, it reaches into nested subdirectories, so `plots/*.png` finds every PNG under `plots/`, however deeply nested. The matched files are then split into axes exactly the way auto-discover mode splits a directory scan, so any part of the path (or filename) that varies becomes an `axis_N`.
+
+```bash
+juxt "plots/*.png"
+```
+
+Combine a wildcard with `--NAME VALUE ...` to pin a `{placeholder}` before it and aggregate congruent files found under each pinned value, instead of listing every directory by hand:
+
+```bash
+juxt "{root}/*.png" --root /data/run1 /data/run2
+```
+
+Every `{placeholder}` in the path must sit before the first `*` and be pinned; a wildcard replaces the need to name the remaining path components, so there is nothing left for a free `{placeholder}` to bind to.
+
+### One named axis for a whole subtree: `{**name}`
+
+Auto-splitting a wildcard match into several `axis_N`s (above) assumes every level of the matched subtree is meaningful on its own and shaped the same way everywhere. When that's not true, or you just want one named axis for "whatever's under here" regardless of how deep it goes, write `{**name}` instead of a plain `{name}`. Unlike a normal placeholder it captures across `/`:
+
+```bash
+juxt "{root}/{**plot}.png" --root /data/run1 /data/run2
+```
+
+Every value `{**plot}` captures is guaranteed collision-free, since it's the file's entire relative path below the fixed prefix, not a value chosen from partway through it: two different files can never produce the same value. By default, any leading path segments shared by *every* matched file are pruned out of the axis value and folded into the template as fixed text instead, so a `plot` axis over `dir/AM/plot.png` and `dir/PM/plot.png` shows as `AM/plot` and `PM/plot`, not the full `dir/AM/plot`. Pass `--full-path` to see the unpruned values instead.
+
+Only one `{**name}` is allowed per template: two independent captures that can each swallow an arbitrary amount of `/`-separated text would make the match ambiguous. A `{**name}` may itself be pinned like any other placeholder (`--plot VALUE ...`), in which case its values are taken literally and never pruned.
 
 ---
 
