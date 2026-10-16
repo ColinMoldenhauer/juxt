@@ -189,12 +189,14 @@ bash_required = pytest.mark.skipif(BASH is None,
 def _run_completion(cwd: Path, words: list[str], setup: str = "") -> list[str]:
     """Source completion.bash, complete *words*, and return COMPREPLY.
 
-    PATH starts out empty so each test states exactly which helper it offers.
+    PATH starts out empty and JUXT_COMPLETE is cleared, so each test states
+    exactly which helper it offers.
     """
     quoted = " ".join(f'"{w}"' for w in words)
     script = f'''
         set -u
         export PATH=/nonexistent
+        unset JUXT_COMPLETE
         {setup}
         source "{COMPLETION_BASH}"
         COMP_WORDS=({quoted})
