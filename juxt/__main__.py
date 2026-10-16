@@ -560,6 +560,8 @@ def main():
         seek_greedy=settings.seek_greedy,
         seek_fuzzy=settings.seek_fuzzy,
         swap_modifiers=settings.swap_modifiers,
+        skip_missing=settings.skip_missing,
+        dim_missing=settings.dim_missing,
         keybindings=settings.keybindings,
         highlight=settings.highlight,
         highlight_candidates=settings.highlight_candidates,

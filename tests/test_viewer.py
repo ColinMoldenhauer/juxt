@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPixmap
 
 from juxt.viewer import ImageView, NavMode
 
@@ -1494,3 +1494,95 @@ class TestShortcutPanelLayout:
         v.axis_names[0] = "an extremely long axis name that wraps for certain"
         after = p._key_column_px(p._sections(v))
         assert after == before
+
+
+# ---------------------------------------------------------------------------
+# skip_missing — cycling over an incomplete datacube
+# ---------------------------------------------------------------------------
+
+class TestSkipMissing:
+    @pytest.fixture
+    def sparse_view(self, viewer_config, qtbot):
+        """3 values on axis 0 (config's axis 0 padded); the middle one is missing."""
+        from juxt.loader import _error_pixmap
+        from juxt.viewer import ImageView
+
+        cfg = viewer_config
+        names = list(cfg.axes)
+        cfg.axes[names[0]] = ["a", "b", "c"]
+        ok = QPixmap(4, 4)
+        pixmaps = {}
+        n1 = len(cfg.axes[names[1]])
+        for i in range(3):
+            for j in range(n1):
+                pixmaps[(i, j)] = _error_pixmap("x") if i == 1 else ok
+        v = ImageView(cfg, pixmaps, skip_missing=True)
+        qtbot.addWidget(v)
+        v.show()
+        return v
+
+    def test_forward_skips_missing(self, sparse_view, qtbot):
+        qtbot.keyClick(sparse_view, Qt.Key.Key_Right)
+        assert sparse_view.pos[0] == 2
+
+    def test_backward_skips_missing_and_wraps(self, sparse_view, qtbot):
+        qtbot.keyClick(sparse_view, Qt.Key.Key_Right)  # 0 → 2
+        qtbot.keyClick(sparse_view, Qt.Key.Key_Left)   # 2 → 0
+        assert sparse_view.pos[0] == 0
+
+    def test_disabled_shows_placeholder(self, sparse_view, qtbot):
+        sparse_view._skip_missing = False
+        qtbot.keyClick(sparse_view, Qt.Key.Key_Right)
+        assert sparse_view.pos[0] == 1
+
+    def test_all_missing_stays_put(self, sparse_view, qtbot):
+        from juxt.loader import _error_pixmap
+        for k in list(sparse_view.pixmaps):
+            if k[0] != 0:
+                sparse_view.pixmaps[k] = _error_pixmap("x")
+        qtbot.keyClick(sparse_view, Qt.Key.Key_Right)
+        assert sparse_view.pos[0] == 0
+
+
+class TestMissingCommandsAndDimming:
+    @pytest.fixture
+    def view(self, viewer_config, qtbot):
+        from juxt.loader import _error_pixmap
+        from juxt.viewer import ImageView
+
+        cfg = viewer_config
+        names = list(cfg.axes)
+        cfg.axes[names[0]] = ["a", "b", "c"]
+        n1 = len(cfg.axes[names[1]])
+        pm = QPixmap(4, 4)
+        pixmaps = {(i, j): _error_pixmap("x") if i == 1 else pm
+                   for i in range(3) for j in range(n1)}
+        v = ImageView(cfg, pixmaps)
+        qtbot.addWidget(v)
+        return v
+
+    def test_skip_missing_command_toggles_and_sets(self, view):
+        view._cmd_execute("skip-missing on")
+        assert view._skip_missing is True
+        view._cmd_execute("skip-missing off")
+        assert view._skip_missing is False
+        view._cmd_execute("skip-missing")
+        assert view._skip_missing is True
+
+    def test_dim_missing_command(self, view):
+        view._cmd_execute("dim-missing on")
+        assert view._dim_missing is True
+
+    def test_missing_along(self, view):
+        assert view._missing_along(0) == [False, True, False]
+
+    def test_sidebar_dims_only_missing_on_focused_axis(self, view, qtbot):
+        from juxt.viewer import InfoPanel, _DIM_COLOR
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        view._dim_missing = True
+        panel.refresh(view)
+        assert _DIM_COLOR in panel.toHtml().lower() or "#555555" in panel.toHtml().lower()
+        view._dim_missing = False
+        panel.refresh(view)
+        assert "#555555" not in panel.toHtml().lower()

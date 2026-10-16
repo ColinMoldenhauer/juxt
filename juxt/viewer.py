@@ -36,6 +36,7 @@ from .complete import (
     reset_placeholder_shapes,
     sftp_listdir,
 )
+from .loader import MissingPixmap
 from .config import Config
 from .settings import (
     DEFAULT_HIGHLIGHT,
@@ -50,6 +51,7 @@ log = logging.getLogger(__name__)
 
 # Fallback highlight formats, used until settings are applied.
 _HL_DEFAULT = parse_highlight(DEFAULT_HIGHLIGHT)
+_DIM_COLOR = "#555"
 _HL_DEFAULT_CANDIDATES = parse_highlight(DEFAULT_HIGHLIGHT_CANDIDATES)
 
 # Colour of a non-highlighted value link in the info sidebar.
@@ -250,6 +252,7 @@ _COMMANDS = [
     "change-key",
     "copy-image",
     "copy-path",
+    "dim-missing",
     "fit",
     "fit-height",
     "fit-width",
@@ -267,6 +270,7 @@ _COMMANDS = [
     "reload",
     "remove-axis",
     "settings",
+    "skip-missing",
     "remove-value",
     "ungrid",
     "watch",
@@ -288,6 +292,7 @@ _CMD_ARGS: dict[str, list[str]] = {
     "axis-h": [],
     "axis-v": [],
     "change-key": [],
+    "dim-missing": ["on", "off"],
     "grid": [],
     "grid-layout": [],
     "grid-sharex": ["on", "off"],
@@ -296,6 +301,7 @@ _CMD_ARGS: dict[str, list[str]] = {
     "pattern": [],  # free-text path / template
     "remove-axis": [],
     "remove-value": [],
+    "skip-missing": ["on", "off"],
     "watch": ["true", "false"],
     "write": [],    # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
@@ -311,6 +317,7 @@ _COMMAND_HELP: dict[str, str] = {
     "change-key":   "assign a key letter to an axis  (e.g. change-key sensor x)",
     "copy-image":   "copy current image to clipboard",
     "copy-path":    "copy current image file path to clipboard",
+    "dim-missing":  "dim sidebar values with no file on the last-moved axis  (on / off)",
     "axis-h":       "lock ←/→ to a named axis",
     "axis-v":       "lock ↑/↓ to a named axis",
     "fit":          "fit image to window",
@@ -334,6 +341,7 @@ _COMMAND_HELP: dict[str, str] = {
     "ungrid":       "return to single-image view",
     "write":        "write current config to a YAML file",
     "swap-axes":    "swap the ←/→ and ↑/↓ axis bindings",
+    "skip-missing": "skip combinations with no file when cycling  (on / off)",
     "switch-last":  "toggle between current and previous position",
     "watch":        "enable / disable / configure file watching",
     "zoom":         "set zoom level  (e.g. zoom 150)",
@@ -712,6 +720,8 @@ class ImageView(QGraphicsView):
         seek_greedy: bool = True,
         seek_fuzzy: bool = True,
         swap_modifiers: bool = False,
+        skip_missing: bool = False,
+        dim_missing: bool = False,
         keybindings: dict[str, str] | None = None,
         grid: str | None = None,
         grid_values: list[str] | None = None,
@@ -765,6 +775,8 @@ class ImageView(QGraphicsView):
         self._seek_greedy: bool = seek_greedy
         self._seek_fuzzy: bool = seek_fuzzy
         self._swap_modifiers: bool = swap_modifiers
+        self._skip_missing: bool = skip_missing
+        self._dim_missing: bool = dim_missing
         self._keybindings: dict[tuple[int, int], str] = {}
         for _ks, _action in (keybindings or {}).items():
             try:
@@ -1035,6 +1047,35 @@ class ImageView(QGraphicsView):
             return self._locked_v
         return self.focus_stack[1] if len(self.focus_stack) >= 2 else None
 
+    def _is_missing(self, pos) -> bool:
+        return isinstance(self.pixmaps.get(tuple(pos)), MissingPixmap)
+
+    def _missing_along(self, axis: int) -> list[bool]:
+        """Per value of *axis*: is the combination (others held fixed) missing?"""
+        probe = list(self.pos)
+        flags = []
+        for j in range(len(self.axis_values[axis])):
+            probe[axis] = j
+            flags.append(self._is_missing(probe))
+        return flags
+
+    def _step(self, axis: int, delta: int) -> int:
+        """Index reached by stepping *delta* on *axis*, wrapping around.
+
+        With skip_missing on, combinations without a file are passed over;
+        if every other value on the axis is missing the position stays put.
+        """
+        n = len(self.axis_values[axis])
+        cur = self.pos[axis]
+        if not self._skip_missing:
+            return (cur + delta) % n
+        probe = list(self.pos)
+        for i in range(1, n + 1):
+            probe[axis] = (cur + delta * i) % n
+            if not self._is_missing(probe):
+                return probe[axis]
+        return cur
+
     def _navigate(self, axis: int, delta: int, ensure_visible: bool = False):
         n = len(self.axis_values[axis])
         self.prev = list(self.pos)
@@ -1046,7 +1087,7 @@ class ImageView(QGraphicsView):
             k = cands.index(cur) if cur in cands else 0
             self.pos[axis] = cands[(k + delta) % len(cands)] if cands else cur
         else:
-            self.pos[axis] = (self.pos[axis] + delta) % n
+            self.pos[axis] = self._step(axis, delta)
         self._active_axis = axis
         self._active_axis_timer.start(1000)
         self._refresh(sidebar_target=(axis, self.pos[axis]) if ensure_visible else None)
@@ -1565,6 +1606,14 @@ class ImageView(QGraphicsView):
                 self._flash("not in grid mode")
                 return
             self._enter_grid(self._grid_axis, self._grid_filter, (nr, nc))
+        elif verb in ("skip-missing", "dim-missing"):
+            attr = "_" + verb.replace("-", "_")
+            if not args:
+                setattr(self, attr, not getattr(self, attr))
+            elif args[0] in ("on", "off"):
+                setattr(self, attr, args[0] == "on")
+            self._flash(f"{verb} {'on' if getattr(self, attr) else 'off'}")
+            self.state_changed.emit()
         elif verb == "grid-sharex":
             if not args:
                 self._grid_sharex = not self._grid_sharex
@@ -1685,6 +1734,8 @@ class ImageView(QGraphicsView):
         self._seek_greedy = settings.seek_greedy
         self._seek_fuzzy = settings.seek_fuzzy
         self._swap_modifiers = settings.swap_modifiers
+        self._skip_missing = settings.skip_missing
+        self._dim_missing = settings.dim_missing
         new_kb: dict[tuple[int, int], str] = {}
         for ks, action in settings.keybindings.items():
             try:
@@ -2846,11 +2897,16 @@ class InfoPanel(QTextEdit):
                 f"<span style='color:{_HEADER_COLOR}'>path</span><br>"
                 f"{e(path)}" + "<br>" * pad + "<br><br>"
             ]
+            dim_axis = view.focus_stack[0] if view._dim_missing else None
             for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
                 cur = view.pos[i]
+                gaps = view._missing_along(i) if i == dim_axis else None
                 links = [
                     f'<a href="{_value_href(i, j)}">'
-                    f'{_hl(_sp(v), self._highlight) if j == cur else _sp(v)}</a>'
+                    + (_hl(_sp(v), self._highlight) if j == cur
+                       else f"<span style='color:{_DIM_COLOR}'>{_sp(v)}</span>"
+                       if gaps and gaps[j] else _sp(v))
+                    + '</a>'
                     for j, v in enumerate(vals)
                 ]
                 as_list = any(" " in v or len(v) > self._list_larger_than for v in vals)
@@ -3076,6 +3132,8 @@ class MainWindow(QMainWindow):
         seek_greedy: bool = True,
         seek_fuzzy: bool = True,
         swap_modifiers: bool = False,
+        skip_missing: bool = False,
+        dim_missing: bool = False,
         keybindings: dict[str, str] | None = None,
         highlight: Highlight | None = None,
         highlight_candidates: Highlight | None = None,
@@ -3107,6 +3165,8 @@ class MainWindow(QMainWindow):
             seek_greedy=seek_greedy,
             seek_fuzzy=seek_fuzzy,
             swap_modifiers=swap_modifiers,
+            skip_missing=skip_missing,
+            dim_missing=dim_missing,
             keybindings=keybindings,
             grid=grid,
             grid_values=grid_values,

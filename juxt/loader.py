@@ -17,8 +17,12 @@ if TYPE_CHECKING:
     from .config import RemoteConfig
 
 
+class MissingPixmap(QPixmap):
+    """Placeholder for a combination whose file is absent or unreadable."""
+
+
 def _error_pixmap(path: str) -> QPixmap:
-    pm = QPixmap(480, 320)
+    pm = MissingPixmap(480, 320)
     pm.fill(QColor(40, 40, 40))
     p = QPainter(pm)
     p.setPen(QColor(200, 80, 80))

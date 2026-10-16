@@ -156,6 +156,12 @@ highlight:
 modifiers:
   swap: false
 
+# Navigation over incomplete datacubes.
+# skip_missing: true makes the arrow and letter keys jump over combinations
+# whose file does not exist instead of showing the MISSING placeholder.
+navigation:
+  skip_missing: false
+
 # How an axis' values are laid out in the info sidebar.
 # Normally every value sits on one line, joined by "separator". Once any
 # value on the axis contains a space or is longer than "list_larger_than"
@@ -164,6 +170,7 @@ sidebar:
   value_list:
     separator: "  "         # inserted between values on the same line
     list_larger_than: 20    # length (in characters) that triggers one-per-line
+  dim_missing: false        # grey out values with no file on the last-moved axis
 
 # Key bindings — map a key chord to an action name.
 # Action names match any :command (fit, zoom, fullscreen, reload, …) plus the
@@ -218,6 +225,13 @@ highlight:
 modifiers:
   swap: false
 """,
+    "navigation": """
+# Navigation over incomplete datacubes.
+# skip_missing: true makes the arrow and letter keys jump over combinations
+# whose file does not exist instead of showing the MISSING placeholder.
+navigation:
+  skip_missing: false
+""",
     "sidebar": """
 # How an axis' values are laid out in the info sidebar.
 # Normally every value sits on one line, joined by "separator". Once any
@@ -227,6 +241,7 @@ sidebar:
   value_list:
     separator: "  "         # inserted between values on the same line
     list_larger_than: 20    # length (in characters) that triggers one-per-line
+  dim_missing: false        # grey out values with no file on the last-moved axis
 """,
     "placeholders": _PLACEHOLDERS_SECTION,
     "keybindings": """
@@ -263,6 +278,8 @@ class Settings:
     seek_greedy: bool = True
     seek_fuzzy: bool = True
     swap_modifiers: bool = False
+    skip_missing: bool = False
+    dim_missing: bool = False
     max_vals: int = 3
     max_vals_display: int = 10
     highlight: Highlight = field(
@@ -318,6 +335,9 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
         modifiers = data.get("modifiers") or {}
         if isinstance(modifiers, dict) and "swap" in modifiers:
             s.swap_modifiers = bool(modifiers["swap"])
+        navigation = data.get("navigation") or {}
+        if isinstance(navigation, dict) and "skip_missing" in navigation:
+            s.skip_missing = bool(navigation["skip_missing"])
         hl = data.get("highlight")
         if isinstance(hl, str):          # one string sets both contexts
             s.highlight = parse_highlight(hl)
@@ -337,6 +357,8 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
                     s.sidebar_separator = str(value_list["separator"])
                 if "list_larger_than" in value_list:
                     s.sidebar_list_larger_than = int(value_list["list_larger_than"])
+            if "dim_missing" in sidebar:
+                s.dim_missing = bool(sidebar["dim_missing"])
         kb = data.get("keybindings") or {}
         if isinstance(kb, dict):
             s.keybindings = {**_DEFAULT_KEYBINDINGS, **{str(k): str(v) for k, v in kb.items()}}
