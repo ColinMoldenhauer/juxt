@@ -84,7 +84,11 @@ Saving `~/.juxt/settings.yaml` redraws the panel, so a rebound chord shows up wi
 
 Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
 
-By default an axis' values sit on one line, separated by two spaces. Once any value on that axis contains a space or is longer than 20 characters, the axis switches to one value per line instead — long or spaced-out values (a full path pinned via `--NAME VALUE ...`, say) stay readable rather than running together. Both the separator and the length threshold are configurable in `~/.juxt/settings.yaml`:
+Values are packed into as many rows as the sidebar is wide, separated by two spaces. A value is never broken across two lines: it moves to the next row whole. A value too long for even a row of its own is cut short with `…` until you widen the sidebar, and hovering it shows the full text.
+
+Each axis name is a header you can click (marked `▸` or `▾`) to switch that axis between the two layouts: packed rows, or expanded to one value per row, each with a bullet. Clicking a header only changes the layout — it does not navigate — and the choice is kept while you move around. Dragging across a header selects its text instead of toggling it.
+
+Some axes start out expanded: once any value on the axis contains a space or is longer than 20 characters, the axis lists one value per row, so long or spaced-out values (a full path pinned via `--NAME VALUE ...`, say) stay readable rather than running together. A click on the header collapses such an axis back into packed rows. Both the separator and the length threshold are configurable in `~/.juxt/settings.yaml`:
 
 ```yaml
 sidebar:

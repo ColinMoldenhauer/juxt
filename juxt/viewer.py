@@ -8,7 +8,15 @@ from enum import IntEnum
 from typing import Literal
 
 from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPen, QPixmap, QTextCursor
+from PySide6.QtGui import (
+    QColor,
+    QFontMetrics,
+    QKeyEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -23,6 +31,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QTextEdit,
+    QToolTip,
     QWidget,
 )
 
@@ -74,6 +83,16 @@ _KEY_COL_MIN_PX = 90
 
 _VALUE_HREF = "juxt:value/{axis}/{value}"
 _VALUE_HREF_RE = _re.compile(r"^juxt:value/(\d+)/(\d+)$")
+_AXIS_HREF = "juxt:axis/{axis}"
+_AXIS_HREF_RE = _re.compile(r"^juxt:axis/(\d+)$")
+
+# Width of the info sidebar's viewport that its text cannot use: the 8px body
+# margin and 4px document margin on each side, plus generous slack (measured,
+# the usable width came out about 7px short of the margins alone, and font
+# rounding differs between platforms).  Rows are packed against what is left,
+# so too small only costs a column of fill, while too large lets Qt break a
+# value across lines.
+_SIDEBAR_TEXT_INSET_PX = 40
 
 
 def _sp(text: str) -> str:
@@ -126,6 +145,37 @@ def _parse_value_href(href: str) -> tuple[int, int] | None:
     """Inverse of :func:`_value_href`; returns None for foreign hrefs."""
     m = _VALUE_HREF_RE.match(href)
     return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _axis_href(axis_idx: int) -> str:
+    """Anchor target of one axis header in the info sidebar."""
+    return _AXIS_HREF.format(axis=axis_idx)
+
+
+def _parse_axis_href(href: str) -> int | None:
+    """Inverse of :func:`_axis_href`; returns None for foreign hrefs."""
+    m = _AXIS_HREF_RE.match(href)
+    return int(m.group(1)) if m else None
+
+
+def _pack_rows(widths: list[int], sep_w: int, limit: int) -> list[list[int]]:
+    """Group item indices into rows, each at most *limit* pixels wide.
+
+    *widths* are the item widths and *sep_w* the gap between neighbours in a
+    row.  Items go in order, filling a row before starting the next, so the
+    caller never leaves it to the text engine to decide where a value breaks.
+    An item wider than *limit* still gets a row of its own.
+    """
+    rows: list[list[int]] = []
+    used = 0
+    for idx, w in enumerate(widths):
+        if rows and used + sep_w + w <= limit:
+            rows[-1].append(idx)
+            used += sep_w + w
+        else:
+            rows.append([idx])
+            used = w
+    return rows
 
 
 # ── key-binding parser ────────────────────────────────────────────────────────
@@ -2828,6 +2878,13 @@ class InfoPanel(QTextEdit):
         self._path_lines_cache_key: tuple[str, int] | None = None
         self._path_lines_cache: int = 1
         self._refreshing = False
+        # Axis name → expanded, for axes the user flipped away from the
+        # automatic choice (see _is_expanded); keyed by name so it survives
+        # a reload that reorders the axes.
+        self._expanded: dict[str, bool] = {}
+        self._press_axis: int | None = None
+        # href → full text, for every value the last layout had to elide.
+        self._elided: dict[str, str] = {}
 
     def set_highlight(self, hl: Highlight) -> None:
         """Set the format used for the current value on each axis."""
@@ -2844,19 +2901,72 @@ class InfoPanel(QTextEdit):
         w = self.window()
         if hasattr(w, "view"):
             w.view.setFocus()
+        self._press_axis = None
         if event.button() != Qt.MouseButton.LeftButton:
             return
         target = _parse_value_href(href)
         if target is not None:
             self.value_clicked.emit(*target)
+        else:
+            self._press_axis = _parse_axis_href(href)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        # A header toggles on release, and only for a plain click, so that
+        # dragging across one to select its text does not rebuild the
+        # document under the selection.
+        axis, self._press_axis = self._press_axis, None
+        if (axis is not None
+                and event.button() == Qt.MouseButton.LeftButton
+                and _parse_axis_href(self.anchorAt(event.position().toPoint())) == axis
+                and not self.textCursor().hasSelection()):
+            self.toggle_axis(axis)
 
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
-        over_link = _parse_value_href(self.anchorAt(event.position().toPoint()))
+        href = self.anchorAt(event.position().toPoint())
+        over_link = (_parse_value_href(href) is not None
+                     or _parse_axis_href(href) is not None)
         self.viewport().setCursor(
-            Qt.CursorShape.PointingHandCursor if over_link is not None
+            Qt.CursorShape.PointingHandCursor if over_link
             else Qt.CursorShape.IBeamCursor
         )
+
+    def viewportEvent(self, event):
+        # Qt's own tooltip lookup did not reliably reach the viewport, so the
+        # panel answers it: a value cut short shows its full text, anything
+        # else shows nothing.
+        if event.type() == QEvent.Type.ToolTip:
+            full = self._elided.get(self.anchorAt(event.pos()))
+            if full:
+                QToolTip.showText(event.globalPos(), full, self.viewport())
+            else:
+                QToolTip.hideText()
+            return True
+        return super().viewportEvent(event)
+
+    def _auto_expanded(self, vals: list[str]) -> bool:
+        """Whether an axis starts out one value per row: any value with a
+        space, or longer than the threshold, would read badly run together."""
+        return any(" " in v or len(v) > self._list_larger_than for v in vals)
+
+    def _is_expanded(self, name: str, vals: list[str]) -> bool:
+        if name in self._expanded:
+            return self._expanded[name]
+        return self._auto_expanded(vals)
+
+    def toggle_axis(self, axis: int) -> None:
+        """Flip one axis between several values per row and one per row."""
+        view = self._last_view
+        if view is None or not 0 <= axis < len(view.axis_names):
+            return
+        name, vals = view.axis_names[axis], view.axis_values[axis]
+        expanded = not self._is_expanded(name, vals)
+        if expanded == self._auto_expanded(vals):
+            self._expanded.pop(name, None)   # back to automatic, follows settings
+        else:
+            self._expanded[name] = expanded
+        self.refresh(view, follow_target=False)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2917,21 +3027,96 @@ class InfoPanel(QTextEdit):
             block = block.next()
         return None
 
-    def refresh(self, view: "ImageView"):
+    def _value_link(
+        self, axis: int, val: int, text: str, *, current: bool, dim: bool,
+        room: int, fm: QFontMetrics, bold_fm: QFontMetrics,
+    ) -> tuple[str, int]:
+        """(html, pixel width) of one value's link, elided to fit *room*.
+
+        A value wider than a whole row is cut short with an ellipsis instead
+        of being broken across lines; its full text is kept for the tooltip.
+        """
+        hl = self._highlight
+        # The highlight's own delimiters take room too; a raw html: template
+        # cannot be measured, so it is assumed not to add any.
+        decor = hl.prefix + hl.suffix if current and hl.raw is None else ""
+        metrics = bold_fm if current and hl.bold else fm
+        decor_w = metrics.horizontalAdvance(decor)
+        limit = max(room - decor_w, fm.horizontalAdvance("…"))
+        shown, href = text, _value_href(axis, val)
+        if metrics.horizontalAdvance(text) > limit:
+            shown = metrics.elidedText(text, Qt.TextElideMode.ElideRight, limit)
+            self._elided[href] = text
+        if current:
+            inner = _hl(_sp(shown), hl)
+        elif dim:
+            inner = f"<span style='color:{_DIM_COLOR}'>{_sp(shown)}</span>"
+        else:
+            inner = _sp(shown)
+        width = metrics.horizontalAdvance(shown) + decor_w
+        return f'<a href="{href}">{inner}</a>', width
+
+    def _axes_html(self, view: "ImageView", text_px: int) -> str:
+        """The axis sections, laid out for *text_px* of usable line width.
+
+        Rows are packed here, by measured width, and joined with explicit
+        breaks.  The values and their separators are non-breaking, so left
+        to Qt a whole axis is one unbreakable word that gets cut at an
+        arbitrary character.
+        """
+        self._elided.clear()
+        fm = self.fontMetrics()
+        bold_font = self.font()
+        bold_font.setBold(True)
+        bold_fm = QFontMetrics(bold_font)
+        text_px = max(text_px, 4 * fm.horizontalAdvance("M"))
+        bullet_w = fm.horizontalAdvance("• ")
+        sep_w = fm.horizontalAdvance(self._separator)
+        sep_html = _sp(self._separator)
+
+        dim_axis = view.focus_stack[0] if view._dim_missing else None
+        parts = []
+        for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
+            gaps = view._missing_along(i) if i == dim_axis else None
+            expanded = self._is_expanded(name, vals)
+            room = text_px - (bullet_w if expanded else 0)
+            links = [
+                self._value_link(
+                    i, j, v, current=(j == view.pos[i]), dim=bool(gaps and gaps[j]),
+                    room=room, fm=fm, bold_fm=bold_fm,
+                )
+                for j, v in enumerate(vals)
+            ]
+            if expanded:
+                val_html = "<br>".join(f"&bull;&nbsp;{h}" for h, _w in links)
+            else:
+                rows = _pack_rows([w for _h, w in links], sep_w, text_px)
+                val_html = "<br>".join(
+                    sep_html.join(links[k][0] for k in row) for row in rows
+                )
+            marker = "▾" if expanded else "▸"
+            parts.append(
+                f'<a href="{_axis_href(i)}">'
+                f"<span style='color:{_HEADER_COLOR}'>{marker}&nbsp;{_html.escape(name)}</span>"
+                f"</a><br>{val_html}<br><br>"
+            )
+        return "".join(parts)
+
+    def refresh(self, view: "ImageView", follow_target: bool = True):
         # setHtml() below can grow or shrink the document enough to toggle
         # the scrollbar's visibility, which changes the viewport's width and
         # so fires a synchronous resizeEvent() *while still inside* this same
         # setHtml() call. resizeEvent() calls refresh() again to reflow for
         # the new width, reentering here before the outer setHtml() has
         # returned, which corrupts the document (observed as its content
-        # appearing twice). The outer call already reflects whatever width
-        # is current by the time it reaches its own setHtml(), so the nested
-        # call has nothing correct left to do; skip it.
+        # appearing twice). The nested call is skipped; the outer one packs
+        # its rows again below if the width did change under it.
         if self._refreshing:
             return
         self._refreshing = True
         try:
             self._last_view = view
+            self.ensurePolished()
             saved_scroll = self.verticalScrollBar().value()
             e = _html.escape
             path = view._key_to_path(view._key())
@@ -2942,37 +3127,27 @@ class InfoPanel(QTextEdit):
             # a sidebar value that triggers the change).
             worst_lines = self._worst_case_line_count(self._worst_case_path(view))
             pad = max(0, worst_lines - self._line_count(path))
-            parts = [
+            path_html = (
                 f"<span style='color:{_HEADER_COLOR}'>path</span><br>"
                 f"{e(path)}" + "<br>" * pad + "<br><br>"
-            ]
-            dim_axis = view.focus_stack[0] if view._dim_missing else None
-            for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
-                cur = view.pos[i]
-                gaps = view._missing_along(i) if i == dim_axis else None
-                links = [
-                    f'<a href="{_value_href(i, j)}">'
-                    + (_hl(_sp(v), self._highlight) if j == cur
-                       else f"<span style='color:{_DIM_COLOR}'>{_sp(v)}</span>"
-                       if gaps and gaps[j] else _sp(v))
-                    + '</a>'
-                    for j, v in enumerate(vals)
-                ]
-                as_list = any(" " in v or len(v) > self._list_larger_than for v in vals)
-                val_html = (
-                    "<br>".join(f"&bull;&nbsp;{link}" for link in links) if as_list
-                    else _sp(self._separator).join(links)
-                )
-                parts.append(
-                    f"<span style='color:{_HEADER_COLOR}'>{e(name)}</span>"
-                    f"<br>{val_html}<br><br>"
-                )
-            self.setHtml(
-                "<html><body style='font-family:\"Courier New\",monospace; "
-                "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
-                + "".join(parts)
-                + "</body></html>"
             )
+            # The rows depend on the viewport width, which the scrollbar
+            # takes a slice of once the document outgrows it.  Lay out for
+            # the width in force, and if showing the result changed that
+            # width, lay out again for the new one (it settles in a pass or
+            # two: a narrower layout is only ever taller).
+            width = self.viewport().width()
+            for _attempt in range(3):
+                self.setHtml(
+                    "<html><body style='font-family:\"Courier New\",monospace; "
+                    "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+                    + path_html
+                    + self._axes_html(view, width - _SIDEBAR_TEXT_INSET_PX)
+                    + "</body></html>"
+                )
+                if self.viewport().width() == width:
+                    break
+                width = self.viewport().width()
             # setHtml() always resets the scrollbar to the top; put it back
             # where the user left it first, so a forced-visible target
             # (below) is judged against the scroll position the user
@@ -2987,7 +3162,7 @@ class InfoPanel(QTextEdit):
             # than one document position, so ensure the end is visible
             # first and the start second, since the second call wins if the
             # whole span is taller than the viewport.
-            target = view._sidebar_target
+            target = view._sidebar_target if follow_target else None
             if (
                 target is not None
                 and 0 <= target[0] < len(view.axis_names)
