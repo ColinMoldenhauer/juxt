@@ -4,7 +4,9 @@ import html as _html
 import logging
 import re as _re
 import threading
+from collections.abc import Collection
 from enum import IntEnum
+from pathlib import Path
 from typing import Literal
 
 from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signal
@@ -459,15 +461,75 @@ class NavMode(IntEnum):
         return ("tap", "seek", "pin")[self]
 
 
-def _window_title(config: "Config", session_name: str | None = None) -> str:
-    from pathlib import PurePosixPath
+# Longest title text after "juxt | ".  Past this the path gives way, from the
+# left, because the end of a template is what tells two sessions apart.
+_TITLE_MAX = 100
+# Longest "[axis: values]" suffix; pinning many values must not push the path out.
+_TITLE_PINS_MAX = 40
+# Fewest path characters kept, however much else the title carries.
+_TITLE_PATH_MIN = 20
+
+
+def _collapse_home(path: str, home: str) -> str:
+    """*path* with a leading *home* directory written as ``~``."""
+    home = home.rstrip("/\\")
+    if home and path.startswith(home) and path[len(home):len(home) + 1] in ("/", "\\"):
+        return "~" + path[len(home):]
+    return path
+
+
+def _elide_path(path: str, room: int) -> str:
+    """*path* cut from the left to at most *room* characters.
+
+    Starts at a path separator where it can, so the first component shown is
+    a whole one, and is marked with a leading ``…/``.
+    """
+    if len(path) <= room:
+        return path
+    tail = path[-max(room - 2, 1):]
+    if path[len(path) - len(tail) - 1] in "/\\":
+        return "…/" + tail                  # the cut fell between components
+    cut = _re.search(r"[\\/]", tail)
+    if cut is not None and cut.end() < len(tail):
+        return "…/" + tail[cut.end():]      # drop the partial first component
+    return "…" + path[-max(room - 1, 1):]   # one component too long on its own
+
+
+def _title_pins(config: "Config", pinned: Collection[str]) -> str:
+    """``[axis: a, b]`` for the axes pinned on the command line, with the
+    values they hold now (a reload may have changed them); "" for none."""
+    parts = [f"{name}: {', '.join(config.axes[name])}"
+             for name in pinned if config.axes.get(name)]
+    text = "; ".join(parts)
+    if len(text) > _TITLE_PINS_MAX:
+        text = text[:_TITLE_PINS_MAX - 1].rstrip(" ,;") + "…"
+    return f"[{text}]" if text else ""
+
+
+def _window_title(
+    config: "Config",
+    session_name: str | None = None,
+    pinned: Collection[str] = (),
+    home: str | None = None,
+) -> str:
+    """The window title: ``--name`` if given, else the template path.
+
+    The template is shown whole with the home directory as ``~`` (a remote
+    session leads with its host instead), followed by any pinned values, and
+    is cut from the left once the text after "juxt | " would pass _TITLE_MAX.
+    """
     if session_name:
         return f"juxt | {session_name}"
-    parts = PurePosixPath(config.template).parts
-    name = "/".join(parts[-2:]) if len(parts) >= 2 else (parts[0] if parts else config.template)
+    path = config.template
     if config.remote:
-        return f"juxt | {config.remote.host}: {name}"
-    return f"juxt | {name}"
+        lead = f"{config.remote.host}: "
+    else:
+        lead = ""
+        path = _collapse_home(path, str(Path.home()) if home is None else home)
+    pins = _title_pins(config, pinned)
+    reserved = len(lead) + (len(pins) + 1 if pins else 0)
+    path = _elide_path(path, max(_TITLE_MAX - reserved, _TITLE_PATH_MIN))
+    return f"juxt | {lead}{path}" + (f" {pins}" if pins else "")
 
 
 # Focus accent, matching the :default button border in dialogs.py.
@@ -3379,6 +3441,7 @@ class MainWindow(QMainWindow):
         axis_h: str | None = None,
         axis_v: str | None = None,
         session_name: str | None = None,
+        pinned_axes: Collection[str] = (),
         seek_greedy: bool = True,
         seek_fuzzy: bool = True,
         swap_modifiers: bool = False,
@@ -3401,9 +3464,10 @@ class MainWindow(QMainWindow):
     ):
         super().__init__()
         self._session_name = session_name
+        self._pinned_axes = tuple(pinned_axes)
         self._hl = highlight or _HL_DEFAULT
         self._hl_candidates = highlight_candidates or _HL_DEFAULT_CANDIDATES
-        self.setWindowTitle(_window_title(config, session_name))
+        self.setWindowTitle(_window_title(config, session_name, self._pinned_axes))
         self.view = ImageView(
             config, pixmaps, self,
             watch=watch,
@@ -3498,7 +3562,8 @@ class MainWindow(QMainWindow):
         self.view.toggle_info.connect(self._toggle_info_panel)
         self.view.toggle_keys.connect(self._toggle_shortcut_panel)
         self.view.config_changed.connect(
-            lambda: self.setWindowTitle(_window_title(self.view.config, self._session_name))
+            lambda: self.setWindowTitle(
+                _window_title(self.view.config, self._session_name, self._pinned_axes))
         )
         self.view.grid_mode_changed.connect(self._on_grid_mode_changed)
 
