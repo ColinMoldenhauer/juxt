@@ -12,7 +12,7 @@ A quick tour of the juxt interface and its interactive elements.
 |---|---|---|
 | 1 | **Image viewport** | Displays the current image. Drag to pan, scroll to zoom, double-click to fit, right-click for the copy menu. |
 | 2 | **Status bar** | One-line summary of navigation state. Toggleable with `Ctrl+Shift+H`; auto-appears while command or value-picker is active. Shown at startup unless `--no-status-bar` is passed. |
-| 3 | **Title bar** | Shows `juxt \| <session name>`. The session name defaults to the config filename and can be overridden with `--name`. |
+| 3 | **Title bar** | Shows `juxt \| <session name>`. Without `--name` the session name is the template path, with your home directory written as `~` (a remote session leads with its host), followed by the values of any axes pinned with `--NAME VALUE ...`, e.g. `juxt \| ~/work/{filter}/{season}/{plot}.png [plot: stats, soc_violin]`. Anything past 100 characters is cut from the left, so the end of the path always shows. `--name` replaces all of it. |
 
 ---
 

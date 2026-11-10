@@ -274,6 +274,9 @@ class TestCommandMode:
     def test_execute_fit_width_does_not_raise(self, image_view):
         image_view._cmd_execute("fit width")
 
+    def test_execute_fit_off_does_not_raise(self, image_view):
+        image_view._cmd_execute("fit-off")
+
     def test_execute_q_alias(self, image_view):
         from unittest.mock import patch
         from PySide6.QtWidgets import QApplication
@@ -525,6 +528,327 @@ class TestInfoPanelValueList:
         panel = InfoPanel()
         worst = panel._worst_case_path(value_list_view)
         assert worst == "fake/A_has space_" + "x" * 25 + ".png"
+
+
+# ---------------------------------------------------------------------------
+# Fit mode follows the image; :fit-off ends it
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sized_view(qtbot):
+    """Two sensors with differently sized images, and two dates sharing one
+    size, in an 800x600 window."""
+    from itertools import product as _product
+
+    from juxt.config import Config, _auto_keys
+    from juxt.viewer import ImageView
+    from PySide6.QtGui import QColor, QPixmap
+
+    axes = {"sensor": ["small", "big"], "date": ["d1", "d2"]}
+    cfg = Config(template="f/{sensor}_{date}.png", axes=axes, keys=_auto_keys(axes))
+    sizes = {0: (400, 200), 1: (1600, 1200)}
+    pms = {}
+    for i, j in _product(range(2), range(2)):
+        pm = QPixmap(*sizes[i])
+        pm.fill(QColor(10 + 60 * i, 10 + 60 * j, 10))
+        pms[(i, j)] = pm
+    v = ImageView(cfg, pms)
+    qtbot.addWidget(v)
+    v.resize(800, 600)
+    v.show()
+    return v
+
+
+def _fitted_scale(v):
+    """Scale at which the current image fills the viewport."""
+    pm = v._item.pixmap()
+    return min(v.viewport().width() / pm.width(), v.viewport().height() / pm.height())
+
+
+class TestFitFollowsImage:
+    def test_fit_mode_refits_when_the_image_size_changes(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v._navigate(0, 1)                          # small -> big
+        assert v.transform().m11() == pytest.approx(_fitted_scale(v), rel=0.02)
+        assert v._fit == "image"
+
+    def test_height_fit_is_kept_across_a_size_change(self, sized_view):
+        v = sized_view
+        v.fit_height()
+        v._navigate(0, 1)
+        assert v._fit == "height"
+        assert v.transform().m11() == pytest.approx(v.viewport().height() / 1200, rel=0.02)
+
+    def test_same_size_image_keeps_the_view(self, sized_view):
+        """Flipping through congruent plots must not undo a pan."""
+        v = sized_view
+        v.fit_width()
+        v._navigate(0, 1)                          # big image: taller than the viewport
+        bar = v.verticalScrollBar()
+        assert bar.maximum() > 0
+        bar.setValue(bar.maximum())                # the bottom, not where a refit centres it
+        panned = bar.value()
+        assert panned != (bar.minimum() + bar.maximum()) // 2
+        v._navigate(1, 1)                          # d1 -> d2, same size
+        assert bar.value() == panned
+
+    def test_no_refit_when_fit_is_off(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v.fit_off()
+        scale = v.transform().m11()
+        v._navigate(0, 1)
+        assert v.transform().m11() == scale
+
+    def test_zoomed_view_is_not_refitted(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v.set_zoom(100)
+        v._navigate(0, 1)
+        assert v.transform().m11() == pytest.approx(1.0)
+
+
+class TestFitOff:
+    def test_fit_off_keeps_the_current_zoom(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        scale = v.transform().m11()
+        v.fit_off()
+        assert v._fit is None
+        assert v.transform().m11() == scale
+
+    def test_fit_off_survives_a_resize(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v.fit_off()
+        scale = v.transform().m11()
+        v.resize(500, 400)
+        assert v.transform().m11() == scale
+
+    def test_fit_keeps_following_resizes_until_turned_off(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v.resize(500, 400)
+        assert v.transform().m11() == pytest.approx(_fitted_scale(v), rel=0.02)
+
+    def test_command_turns_it_off(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v._cmd_execute("fit-off")
+        assert v._fit is None
+        assert v._flash_msg == "fit off"
+
+    def test_typed_through_the_prompt(self, sized_view, qtbot):
+        """Keys, not _cmd_execute(): the prompt is where a command can be lost."""
+        v = sized_view
+        v.fit_image()
+        qtbot.keyClicks(v, ":fit-off")
+        qtbot.keyClick(v, Qt.Key.Key_Return)
+        assert v._fit is None
+        assert v._cmd is None
+
+    def test_fit_turns_it_back_on(self, sized_view):
+        v = sized_view
+        v.fit_off()
+        v._cmd_execute("fit")
+        assert v._fit == "image"
+
+    def test_fit_off_is_a_listed_command(self, sized_view):
+        from juxt.viewer import _COMMANDS
+
+        assert "fit-off" in _COMMANDS
+        v = sized_view
+        v._cmd = {"phase": "verb", "query": "fit-o", "cursor": 0}
+        assert v._cmd_candidates()[0] == "fit-off"
+
+    def test_fit_off_reaches_every_grid_cell(self, sized_view):
+        v = sized_view
+        v._enter_grid(0, None, (1, 2))
+        v._grid_widget.fit_image()
+        assert all(c._fit == "image" for c in v._grid_widget._cells)
+        v._cmd_execute("fit-off")
+        assert all(c._fit is None for c in v._grid_widget._cells)
+
+
+# ---------------------------------------------------------------------------
+# Window title
+# ---------------------------------------------------------------------------
+
+_HOME = "/home/cmoldenh"
+_LONG_TEMPLATE = (_HOME + "/shares/exchange/staff/cmoldenh/work/organic_soils/sm_vs_e5l/"
+                  "{filter}/{length}/{season}/{plot}.png")
+# One directory more than fits the title cap once the home directory is a "~".
+_OVERLONG_TEMPLATE = _LONG_TEMPLATE.replace("/work/", "/work/projects/2026/")
+
+
+def _title_config(template, remote=None, **axes):
+    from juxt.config import Config
+
+    axes = axes or {"plot": ["stats", "soc_violin"]}
+    return Config(template=template, axes=axes, keys={}, remote=remote)
+
+
+class TestWindowTitle:
+    PREFIX = "juxt | "
+
+    def _title(self, template="/data/a/{plot}.png", **kw):
+        from juxt.viewer import _window_title
+
+        kw.setdefault("home", _HOME)
+        return _window_title(_title_config(template), **kw)
+
+    def test_short_template_is_shown_whole(self):
+        assert self._title("/data/a/{plot}.png") == "juxt | /data/a/{plot}.png"
+
+    def test_home_directory_becomes_a_tilde(self):
+        assert self._title(_HOME + "/work/{plot}.png") == "juxt | ~/work/{plot}.png"
+
+    def test_a_sibling_of_the_home_directory_is_not_collapsed(self):
+        assert self._title(_HOME + "x/work/{plot}.png") == "juxt | " + _HOME + "x/work/{plot}.png"
+
+    def test_windows_home_is_collapsed_too(self):
+        from juxt.viewer import _collapse_home
+
+        assert _collapse_home("C:\\Users\\me\\work\\{plot}.png", "C:\\Users\\me") == "~\\work\\{plot}.png"
+
+    def test_session_name_replaces_everything(self):
+        assert self._title(_LONG_TEMPLATE, session_name="soc run", pinned=["plot"]) == "juxt | soc run"
+
+    def test_a_template_that_just_fits_is_not_cut(self):
+        assert self._title(_LONG_TEMPLATE).startswith("juxt | ~/shares/")
+
+    def test_long_template_keeps_its_end_and_marks_the_cut(self):
+        title = self._title(_OVERLONG_TEMPLATE)
+        assert title.startswith("juxt | …/")
+        assert title.endswith("/{season}/{plot}.png")
+
+    def test_the_first_component_shown_after_a_cut_is_whole(self):
+        title = self._title(_OVERLONG_TEMPLATE)
+        assert title.startswith("juxt | …/"), "nothing was cut"
+        shown = title[len(self.PREFIX) + 2:]               # after "…/"
+        assert "/" + shown in _OVERLONG_TEMPLATE
+
+    @pytest.mark.parametrize("depth", range(1, 40))
+    def test_text_after_the_prefix_never_passes_the_cap(self, depth):
+        from juxt.viewer import _TITLE_MAX
+
+        template = "/" + "/".join(f"dir{i:02d}" for i in range(depth)) + "/{plot}.png"
+        title = self._title(template, pinned=["plot"])
+        assert len(title) - len(self.PREFIX) <= _TITLE_MAX
+        assert "{plot}.png" in title
+
+    def test_your_command(self):
+        title = self._title(_LONG_TEMPLATE, pinned=["plot"])
+        assert title == ("juxt | …/work/organic_soils/sm_vs_e5l/"
+                         "{filter}/{length}/{season}/{plot}.png [plot: stats, soc_violin]")
+
+    def test_pins_are_not_shown_unless_asked_for(self):
+        assert "[" not in self._title()
+
+    def test_pins_show_the_values_the_axis_holds_now(self):
+        from juxt.viewer import _window_title
+
+        cfg = _title_config("/data/{plot}.png", plot=["a", "b", "c"])
+        assert _window_title(cfg, pinned=["plot"], home="/h") == "juxt | /data/{plot}.png [plot: a, b, c]"
+        cfg.axes["plot"] = ["a"]                            # e.g. after a reload
+        assert _window_title(cfg, pinned=["plot"], home="/h") == "juxt | /data/{plot}.png [plot: a]"
+
+    def test_a_pinned_axis_that_is_gone_is_left_out(self):
+        assert "[" not in self._title(pinned=["season"])
+
+    def test_several_pinned_axes_are_joined(self):
+        from juxt.viewer import _window_title
+
+        cfg = _title_config("/d/{a}/{b}.png", a=["x"], b=["y", "z"])
+        assert _window_title(cfg, pinned=["a", "b"], home="/h").endswith("[a: x; b: y, z]")
+
+    def test_a_long_pin_list_is_cut_and_the_path_survives(self):
+        from juxt.viewer import _TITLE_MAX, _TITLE_PINS_MAX, _window_title
+
+        cfg = _title_config(_LONG_TEMPLATE, plot=[f"value_{i}" for i in range(30)])
+        title = _window_title(cfg, pinned=["plot"], home=_HOME)
+        suffix = title[title.index("[plot"):]
+        assert len(suffix) <= _TITLE_PINS_MAX + 2
+        assert suffix.endswith("…]")
+        assert title.endswith("…]") and "{plot}.png" in title
+        assert len(title) - len(self.PREFIX) <= _TITLE_MAX
+
+    def test_remote_host_leads_and_counts_towards_the_cap(self):
+        from juxt.config import RemoteConfig
+        from juxt.viewer import _TITLE_MAX, _window_title
+
+        cfg = _title_config(_LONG_TEMPLATE, remote=RemoteConfig(host="hpc.example.org"))
+        title = _window_title(cfg, home=_HOME)
+        assert title.startswith("juxt | hpc.example.org: ")
+        assert len(title) - len(self.PREFIX) <= _TITLE_MAX
+
+    def test_remote_path_keeps_its_home_prefix(self):
+        """The remote home is unknown, so only a local template collapses to ~."""
+        from juxt.config import RemoteConfig
+        from juxt.viewer import _window_title
+
+        cfg = _title_config(_HOME + "/{plot}.png", remote=RemoteConfig(host="hpc"))
+        assert _window_title(cfg, home=_HOME) == "juxt | hpc: " + _HOME + "/{plot}.png"
+
+
+class TestElidePath:
+    def test_fits_is_returned_unchanged(self):
+        from juxt.viewer import _elide_path
+
+        assert _elide_path("/a/b/c.png", 10) == "/a/b/c.png"
+
+    def test_cut_starts_at_a_separator(self):
+        from juxt.viewer import _elide_path
+
+        out = _elide_path("/aaa/bbb/ccc/ddd.png", 14)
+        assert out == "…/ccc/ddd.png"
+        assert len(out) <= 14
+
+    def test_a_cut_that_falls_between_components_keeps_the_whole_one(self):
+        from juxt.viewer import _elide_path
+
+        assert _elide_path("xx/yyyy/zzzz", 11) == "…/yyyy/zzzz"
+
+    def test_one_component_longer_than_the_room_is_cut_inside(self):
+        from juxt.viewer import _elide_path
+
+        out = _elide_path("a" * 50, 10)
+        assert out == "…" + "a" * 9
+
+    def test_backslash_separators_work_too(self):
+        from juxt.viewer import _elide_path
+
+        path = "C:\\aaa\\bbb\\ccc.png"
+        assert _elide_path(path, 12) == "…/ccc.png"          # "bbb" no longer fits
+        assert _elide_path(path, 13) == "…/bbb\\ccc.png"      # a cut between components
+
+
+class TestWindowTitleOnTheWindow:
+    def _window(self, config, pixmaps, qtbot, **kw):
+        from juxt.viewer import MainWindow
+
+        w = MainWindow(config, pixmaps, watch=False, **kw)
+        qtbot.addWidget(w)
+        return w
+
+    def test_pinned_axes_appear_in_the_title(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, pinned_axes=["sensor"])
+        assert w.windowTitle().endswith("[sensor: A, B]")
+
+    def test_title_follows_the_config_after_a_reload(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, pinned_axes=["sensor"])
+        w.view.config.axes["sensor"] = ["A"]
+        w.view.config_changed.emit()
+        assert w.windowTitle().endswith("[sensor: A]")
+
+    def test_no_pins_no_suffix(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot)
+        assert "[" not in w.windowTitle()
+
+    def test_name_flag_still_wins(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, session_name="mine", pinned_axes=["sensor"])
+        assert w.windowTitle() == "juxt | mine"
 
 
 # ---------------------------------------------------------------------------

@@ -197,7 +197,8 @@ def _print_help() -> None:
       --axis-h NAME           lock ←/→ to this axis on startup
       --axis-v NAME           lock ↑/↓ to this axis on startup
       --squeeze               drop axes with only one value
-      --name NAME             session name shown in window title (default: template basename)
+      --name NAME             session name shown in window title (default: the template path
+                              and any pinned values)
 
   panels (toggled at runtime with Ctrl+Shift+I / Ctrl+Shift+H / Ctrl+Shift+K)
       --info                  start with the info sidebar open   (default: closed)
@@ -220,7 +221,7 @@ def _print_help() -> None:
     eval "$(juxt --bash-completion)"  complete options and {placeholder} paths
 
   commands (press : in the viewer, Tab completes)
-    :fit  :fit-width  :fit-height  :zoom N  :fullscreen
+    :fit  :fit-width  :fit-height  :fit-off  :zoom N  :fullscreen
     :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :ungrid
     :grid-sharex on|off  :grid-sharey on|off
     :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes
@@ -557,6 +558,7 @@ def main():
         axis_h=args.axis_h,
         axis_v=args.axis_v,
         session_name=args.name,
+        pinned_axes=list(pins),
         seek_greedy=settings.seek_greedy,
         seek_fuzzy=settings.seek_fuzzy,
         swap_modifiers=settings.swap_modifiers,

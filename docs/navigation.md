@@ -39,6 +39,8 @@ These bindings work identically regardless of which mode is active.
 | `Ctrl+Shift+K` | Toggle the shortcut sidebar |
 | `Ctrl+C` | Copy the text selected in a sidebar; with nothing selected it cancels a command or value picker ([`sidebar.copy`](ui.md#copying-sidebar-text) `: off` never takes the chord for copying) |
 
+**Fit mode.** juxt starts with the image fitted to the window, and stays in fit mode: the image is fitted again when the window is resized and when you step to an image of a different size. Images of the same size keep the view as it is, so a pan along a fitted height or width survives flipping through congruent plots. Fit mode ends when you zoom (`0`, `:zoom N`, `Ctrl` + scroll wheel) or run `:fit-off`, which leaves the current zoom as it is. `:fit`, `:fit-height`, `:fit-width` or a double-click start it again.
+
 ### Other
 
 | Key | Action |
@@ -170,6 +172,7 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:fit` | Fit image to window (both dimensions) |
 | `:fit-height` | Fit image height to the viewport |
 | `:fit-width` | Fit image width to the viewport |
+| `:fit-off` | Stop fitting and keep the current zoom |
 | `:zoom N` | Set zoom to N% (e.g. `:zoom 50`, `:zoom 200`) |
 | `:fullscreen` | Toggle fullscreen |
 | `:mode tap` | Switch to tap mode |
