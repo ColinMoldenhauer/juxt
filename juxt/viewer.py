@@ -305,6 +305,7 @@ _COMMANDS = [
     "dim-missing",
     "fit",
     "fit-height",
+    "fit-off",
     "fit-width",
     "fullscreen",
     "grid",
@@ -372,6 +373,7 @@ _COMMAND_HELP: dict[str, str] = {
     "axis-v":       "lock ↑/↓ to a named axis",
     "fit":          "fit image to window",
     "fit-height":   "fit image height to viewport",
+    "fit-off":      "stop auto-fitting; keep the current zoom",
     "fit-width":    "fit image width to viewport",
     "fullscreen":   "toggle fullscreen",
     "grid":         "expand an axis into a tiled grid  (e.g. grid sensor  /  grid sensor SMAP SMOS  /  grid sensor 2x2)",
@@ -549,6 +551,9 @@ class _CellView(QGraphicsView):
         self._fit = None
         self.resetTransform()
 
+    def fit_off(self):
+        self._fit = None
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
             factor = 1.15 ** (event.angleDelta().y() / 120)
@@ -721,6 +726,10 @@ class GridWidget(QWidget):
     def fit_width(self):
         for cell in self._cells:
             cell.fit_width()
+
+    def fit_off(self):
+        for cell in self._cells:
+            cell.fit_off()
 
     def set_zoom(self, pct: float):
         for cell in self._cells:
@@ -923,8 +932,14 @@ class ImageView(QGraphicsView):
             return
         pm = self.pixmaps.get(self._key())
         if pm:
+            resized = pm.size() != self._item.pixmap().size()
             self._item.setPixmap(pm)
             self._scene.setSceneRect(QRectF(pm.rect()))
+            # In fit mode an image of a different size is fitted afresh.  Same
+            # size keeps the view as it is, so a pan along the fitted axis
+            # survives flipping through congruent plots.
+            if resized and self._fit is not None:
+                getattr(self, f"fit_{self._fit}")()
         self.viewport().update()
         self.state_changed.emit()
 
@@ -1513,6 +1528,9 @@ class ImageView(QGraphicsView):
             self.fit_height()
         elif verb == "fit-width":
             self.fit_width()
+        elif verb == "fit-off":
+            self.fit_off()
+            self._flash("fit off")
         elif verb == "zoom":
             if args:
                 try:
@@ -2590,6 +2608,14 @@ class ImageView(QGraphicsView):
         self.scale(factor, factor)
         self.centerOn(self._scene.sceneRect().center())
         self._fit = "width"
+
+    def fit_off(self):
+        """Stop fitting: keep the view as it is, and leave it alone when the
+        window is resized or the image changes.  Zooming also ends it."""
+        if self._grid_widget is not None:
+            self._grid_widget.fit_off()
+            return
+        self._fit = None
 
     def reset_zoom(self):
         if self._grid_widget is not None:

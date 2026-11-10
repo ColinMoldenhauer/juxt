@@ -171,6 +171,7 @@ Placeholders standing for a known kind of value complete only as far as that val
 | `:q` | quit |
 | `:fit` | fit image to window |
 | `:fit height` / `:fit width` | fit to height or width |
+| `:fit-off` | stop fitting, keep the current zoom |
 | `:zoom N` | set zoom to N% |
 | `:fullscreen` | toggle fullscreen |
 | `:mode tap\|seek\|pin` | switch navigation mode |

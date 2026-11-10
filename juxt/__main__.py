@@ -220,7 +220,7 @@ def _print_help() -> None:
     eval "$(juxt --bash-completion)"  complete options and {placeholder} paths
 
   commands (press : in the viewer, Tab completes)
-    :fit  :fit-width  :fit-height  :zoom N  :fullscreen
+    :fit  :fit-width  :fit-height  :fit-off  :zoom N  :fullscreen
     :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :ungrid
     :grid-sharex on|off  :grid-sharey on|off
     :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes

@@ -274,6 +274,9 @@ class TestCommandMode:
     def test_execute_fit_width_does_not_raise(self, image_view):
         image_view._cmd_execute("fit width")
 
+    def test_execute_fit_off_does_not_raise(self, image_view):
+        image_view._cmd_execute("fit-off")
+
     def test_execute_q_alias(self, image_view):
         from unittest.mock import patch
         from PySide6.QtWidgets import QApplication
@@ -525,6 +528,147 @@ class TestInfoPanelValueList:
         panel = InfoPanel()
         worst = panel._worst_case_path(value_list_view)
         assert worst == "fake/A_has space_" + "x" * 25 + ".png"
+
+
+# ---------------------------------------------------------------------------
+# Fit mode follows the image; :fit-off ends it
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sized_view(qtbot):
+    """Two sensors with differently sized images, and two dates sharing one
+    size, in an 800x600 window."""
+    from itertools import product as _product
+
+    from juxt.config import Config, _auto_keys
+    from juxt.viewer import ImageView
+    from PySide6.QtGui import QColor, QPixmap
+
+    axes = {"sensor": ["small", "big"], "date": ["d1", "d2"]}
+    cfg = Config(template="f/{sensor}_{date}.png", axes=axes, keys=_auto_keys(axes))
+    sizes = {0: (400, 200), 1: (1600, 1200)}
+    pms = {}
+    for i, j in _product(range(2), range(2)):
+        pm = QPixmap(*sizes[i])
+        pm.fill(QColor(10 + 60 * i, 10 + 60 * j, 10))
+        pms[(i, j)] = pm
+    v = ImageView(cfg, pms)
+    qtbot.addWidget(v)
+    v.resize(800, 600)
+    v.show()
+    return v
+
+
+def _fitted_scale(v):
+    """Scale at which the current image fills the viewport."""
+    pm = v._item.pixmap()
+    return min(v.viewport().width() / pm.width(), v.viewport().height() / pm.height())
+
+
+class TestFitFollowsImage:
+    def test_fit_mode_refits_when_the_image_size_changes(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v._navigate(0, 1)                          # small -> big
+        assert v.transform().m11() == pytest.approx(_fitted_scale(v), rel=0.02)
+        assert v._fit == "image"
+
+    def test_height_fit_is_kept_across_a_size_change(self, sized_view):
+        v = sized_view
+        v.fit_height()
+        v._navigate(0, 1)
+        assert v._fit == "height"
+        assert v.transform().m11() == pytest.approx(v.viewport().height() / 1200, rel=0.02)
+
+    def test_same_size_image_keeps_the_view(self, sized_view):
+        """Flipping through congruent plots must not undo a pan."""
+        v = sized_view
+        v.fit_width()
+        v._navigate(0, 1)                          # big image: taller than the viewport
+        bar = v.verticalScrollBar()
+        assert bar.maximum() > 0
+        bar.setValue(bar.maximum())                # the bottom, not where a refit centres it
+        panned = bar.value()
+        assert panned != (bar.minimum() + bar.maximum()) // 2
+        v._navigate(1, 1)                          # d1 -> d2, same size
+        assert bar.value() == panned
+
+    def test_no_refit_when_fit_is_off(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v.fit_off()
+        scale = v.transform().m11()
+        v._navigate(0, 1)
+        assert v.transform().m11() == scale
+
+    def test_zoomed_view_is_not_refitted(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v.set_zoom(100)
+        v._navigate(0, 1)
+        assert v.transform().m11() == pytest.approx(1.0)
+
+
+class TestFitOff:
+    def test_fit_off_keeps_the_current_zoom(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        scale = v.transform().m11()
+        v.fit_off()
+        assert v._fit is None
+        assert v.transform().m11() == scale
+
+    def test_fit_off_survives_a_resize(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v.fit_off()
+        scale = v.transform().m11()
+        v.resize(500, 400)
+        assert v.transform().m11() == scale
+
+    def test_fit_keeps_following_resizes_until_turned_off(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v.resize(500, 400)
+        assert v.transform().m11() == pytest.approx(_fitted_scale(v), rel=0.02)
+
+    def test_command_turns_it_off(self, sized_view):
+        v = sized_view
+        v.fit_image()
+        v._cmd_execute("fit-off")
+        assert v._fit is None
+        assert v._flash_msg == "fit off"
+
+    def test_typed_through_the_prompt(self, sized_view, qtbot):
+        """Keys, not _cmd_execute(): the prompt is where a command can be lost."""
+        v = sized_view
+        v.fit_image()
+        qtbot.keyClicks(v, ":fit-off")
+        qtbot.keyClick(v, Qt.Key.Key_Return)
+        assert v._fit is None
+        assert v._cmd is None
+
+    def test_fit_turns_it_back_on(self, sized_view):
+        v = sized_view
+        v.fit_off()
+        v._cmd_execute("fit")
+        assert v._fit == "image"
+
+    def test_fit_off_is_a_listed_command(self, sized_view):
+        from juxt.viewer import _COMMANDS
+
+        assert "fit-off" in _COMMANDS
+        v = sized_view
+        v._cmd = {"phase": "verb", "query": "fit-o", "cursor": 0}
+        assert v._cmd_candidates()[0] == "fit-off"
+
+    def test_fit_off_reaches_every_grid_cell(self, sized_view):
+        v = sized_view
+        v._enter_grid(0, None, (1, 2))
+        v._grid_widget.fit_image()
+        assert all(c._fit == "image" for c in v._grid_widget._cells)
+        v._cmd_execute("fit-off")
+        assert all(c._fit is None for c in v._grid_widget._cells)
 
 
 # ---------------------------------------------------------------------------
