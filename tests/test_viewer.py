@@ -1153,6 +1153,133 @@ class TestCopyPathShortcut:
 
 
 # ---------------------------------------------------------------------------
+# Ctrl+C copies a sidebar text selection
+# ---------------------------------------------------------------------------
+
+class TestSidebarCopy:
+    CTRL = Qt.KeyboardModifier.ControlModifier
+
+    def _window(self, config, pixmaps, qtbot, **kw):
+        from juxt.viewer import MainWindow
+
+        w = MainWindow(config, pixmaps, watch=False, show_info=True, **kw)
+        qtbot.addWidget(w)
+        w.show()
+        return w
+
+    @staticmethod
+    def _select(panel, text):
+        """Select the first occurrence of *text* in *panel*, as a drag would."""
+        cursor = panel.document().find(text)
+        assert not cursor.isNull()
+        panel.setTextCursor(cursor)
+
+    @staticmethod
+    def _clipboard():
+        from PySide6.QtWidgets import QApplication
+
+        return QApplication.clipboard()
+
+    def test_ctrl_c_copies_the_selected_text(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot)
+        self._clipboard().setText("")
+        self._select(w._info_panel, "sensor")
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "sensor"
+
+    def test_copy_keeps_line_breaks_and_plain_spaces(self, mini_pixmaps, qtbot):
+        from juxt.config import Config, _auto_keys
+
+        axes = {"sensor": ["A B", "C D"], "date": ["d1", "d2"]}
+        cfg = Config(template="fake/{sensor}_{date}.png", axes=axes, keys=_auto_keys(axes))
+        w = self._window(cfg, mini_pixmaps, qtbot)
+        w._info_panel.selectAll()
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        text = self._clipboard().text()
+        assert "\n" in text
+        assert " " not in text and " " not in text
+        assert "A B" in text
+
+    def test_selection_beats_an_axis_key_on_the_same_chord(self, mini_pixmaps, qtbot):
+        from juxt.config import Config, _auto_keys
+
+        axes = {"color": ["red", "blue"], "date": ["d1", "d2"]}
+        cfg = Config(template="fake/{color}_{date}.png", axes=axes, keys=_auto_keys(axes))
+        w = self._window(cfg, mini_pixmaps, qtbot)
+        assert w.view.key_to_axis["c"] == 0
+        self._clipboard().setText("")
+        self._select(w._info_panel, "color")
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "color"
+        assert w.view._sel is None
+
+    def test_without_a_selection_the_clipboard_is_left_alone(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot)
+        self._clipboard().setText("keep me")
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "keep me"
+
+    def test_without_a_selection_ctrl_c_still_cancels_command_mode(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot)
+        qtbot.keyClick(w.view, Qt.Key.Key_Colon)
+        assert w.view._cmd is not None
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert w.view._cmd is None
+
+    def test_off_never_captures_ctrl_c(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, sidebar_copy="off")
+        self._clipboard().setText("keep me")
+        self._select(w._info_panel, "sensor")
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "keep me"
+
+    def test_off_leaves_ctrl_c_to_cancel_command_mode(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, sidebar_copy="off")
+        self._select(w._info_panel, "sensor")
+        qtbot.keyClick(w.view, Qt.Key.Key_Colon)
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert w.view._cmd is None
+
+    def test_reloaded_settings_switch_the_behaviour(self, viewer_config, mini_pixmaps, qtbot):
+        from juxt.settings import Settings
+
+        w = self._window(viewer_config, mini_pixmaps, qtbot)
+        w.view.apply_settings(Settings(sidebar_copy="off"))
+        self._clipboard().setText("keep me")
+        self._select(w._info_panel, "sensor")
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "keep me"
+
+        w.view.apply_settings(Settings(sidebar_copy="selected"))
+        self._select(w._info_panel, "sensor")
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "sensor"
+
+    def test_selection_in_a_hidden_sidebar_is_ignored(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot)
+        self._select(w._info_panel, "sensor")
+        w._info_dock.hide()
+        self._clipboard().setText("keep me")
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "keep me"
+
+    def test_shortcut_sidebar_selection_is_copied_too(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_keys=True)
+        self._select(w._shortcut_panel, "navigate")
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "navigate"
+
+    def test_selecting_in_one_sidebar_clears_the_other(self, viewer_config, mini_pixmaps, qtbot):
+        w = self._window(viewer_config, mini_pixmaps, qtbot, show_keys=True)
+        self._select(w._info_panel, "sensor")
+        self._select(w._shortcut_panel, "navigate")
+        assert not w._info_panel.textCursor().hasSelection()
+        assert w._shortcut_panel.textCursor().hasSelection()
+        qtbot.keyClick(w.view, Qt.Key.Key_C, self.CTRL)
+        assert self._clipboard().text() == "navigate"
+
+
+# ---------------------------------------------------------------------------
 # Fuzzy matching across the search surfaces
 # ---------------------------------------------------------------------------
 

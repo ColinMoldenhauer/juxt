@@ -93,6 +93,18 @@ sidebar:
     list_larger_than: 20    # length (in characters) that triggers one-per-line
 ```
 
+### Copying sidebar text
+
+Select text in the info or shortcut sidebar with the mouse and press `Ctrl+C` to copy it. The sidebars never hold keyboard focus, so juxt relays the chord itself, and only when a selection exists: with nothing selected, `Ctrl+C` keeps its usual job of cancelling a command or value picker, and an axis key on `c` is unaffected. A selection lasts until the next state change, because the sidebar redraws.
+
+```yaml
+sidebar:
+  copy: selected    # selected: Ctrl+C copies sidebar text when something is selected
+                    # off: Ctrl+C is never taken for copying
+```
+
+Writing `off` unquoted is fine. Changes apply on save, without a restart.
+
 ---
 
 ## Grid builder

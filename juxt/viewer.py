@@ -722,6 +722,7 @@ class ImageView(QGraphicsView):
         swap_modifiers: bool = False,
         skip_missing: bool = False,
         dim_missing: bool = False,
+        sidebar_copy: str = "selected",
         keybindings: dict[str, str] | None = None,
         grid: str | None = None,
         grid_values: list[str] | None = None,
@@ -766,6 +767,9 @@ class ImageView(QGraphicsView):
         # keeps the sidebar's current scroll position instead.
         self._sidebar_target: tuple[int, int] | None = None
 
+        # Read-only text widgets (the sidebars) whose selection Ctrl+C copies.
+        self._copy_sources: list[QTextEdit] = []
+
         self._watching = False
         self._watcher: QFileSystemWatcher | None = None
         self._path_to_key: dict[str, tuple] = {}
@@ -777,6 +781,7 @@ class ImageView(QGraphicsView):
         self._swap_modifiers: bool = swap_modifiers
         self._skip_missing: bool = skip_missing
         self._dim_missing: bool = dim_missing
+        self._sidebar_copy: str = sidebar_copy
         self._keybindings: dict[tuple[int, int], str] = {}
         for _ks, _action in (keybindings or {}).items():
             try:
@@ -1736,6 +1741,7 @@ class ImageView(QGraphicsView):
         self._swap_modifiers = settings.swap_modifiers
         self._skip_missing = settings.skip_missing
         self._dim_missing = settings.dim_missing
+        self._sidebar_copy = settings.sidebar_copy
         new_kb: dict[tuple[int, int], str] = {}
         for ks, action in settings.keybindings.items():
             try:
@@ -2569,6 +2575,14 @@ class ImageView(QGraphicsView):
         k = event.key()
         mods = event.modifiers()
 
+        # Ctrl+C copies a sidebar text selection when there is one.  Checked
+        # before everything else so it wins over an axis key or a binding on
+        # the same chord; without a selection (or with sidebar.copy: off) the
+        # chord falls through as usual.
+        if (k == Qt.Key_C and mods == Qt.ControlModifier
+                and self._sidebar_copy == "selected" and self._copy_selection()):
+            return
+
         # Configurable keybindings — checked first, work in every state
         bound = self._keybindings.get((k, mods.value))
         if bound is not None:
@@ -2692,6 +2706,41 @@ class ImageView(QGraphicsView):
                                ensure_visible=True)
             else:
                 super().keyPressEvent(event)
+
+    # ── sidebar text selection ───────────────────────────────────────────────
+
+    def add_copy_source(self, widget: QTextEdit) -> None:
+        """Let Ctrl+C copy whatever is selected in *widget*.
+
+        The sidebars never take keyboard focus, so Qt's own copy shortcut
+        cannot reach them; the view relays it instead.  A selection in one
+        source clears the others, so the chord never has two candidates.
+        """
+        self._copy_sources.append(widget)
+        widget.selectionChanged.connect(lambda w=widget: self._on_source_selection(w))
+
+    def _on_source_selection(self, widget: QTextEdit) -> None:
+        if not widget.textCursor().hasSelection():
+            return
+        for other in self._copy_sources:
+            if other is not widget and other.textCursor().hasSelection():
+                cursor = other.textCursor()
+                cursor.clearSelection()
+                other.setTextCursor(cursor)
+
+    def _copy_selection(self) -> bool:
+        """Copy the selected sidebar text; False when nothing is selected."""
+        for src in self._copy_sources:
+            cursor = src.textCursor()
+            # A hidden dock can still hold a selection; it was never in sight.
+            if src.isVisible() and cursor.hasSelection():
+                # The fragment, not selectedText(): that one uses U+2029 for
+                # line breaks and keeps the non-breaking spaces in the values.
+                text = cursor.selection().toPlainText()
+                QApplication.clipboard().setText(text)
+                self._flash(f"copied selection ({len(text)} characters)")
+                return True
+        return False
 
     # ── context menu ─────────────────────────────────────────────────────────
 
@@ -3134,6 +3183,7 @@ class MainWindow(QMainWindow):
         swap_modifiers: bool = False,
         skip_missing: bool = False,
         dim_missing: bool = False,
+        sidebar_copy: str = "selected",
         keybindings: dict[str, str] | None = None,
         highlight: Highlight | None = None,
         highlight_candidates: Highlight | None = None,
@@ -3167,6 +3217,7 @@ class MainWindow(QMainWindow):
             swap_modifiers=swap_modifiers,
             skip_missing=skip_missing,
             dim_missing=dim_missing,
+            sidebar_copy=sidebar_copy,
             keybindings=keybindings,
             grid=grid,
             grid_values=grid_values,
@@ -3235,6 +3286,9 @@ class MainWindow(QMainWindow):
         self._shortcut_dock.setVisible(show_keys)
         if show_keys:
             self._shortcut_panel.refresh(self.view)
+
+        self.view.add_copy_source(self._info_panel)
+        self.view.add_copy_source(self._shortcut_panel)
 
         self.view.state_changed.connect(self._update_status)
         self.view.state_changed.connect(self._refresh_info_panel)

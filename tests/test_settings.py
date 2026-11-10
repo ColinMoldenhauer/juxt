@@ -165,6 +165,40 @@ class TestSeekFuzzy:
         assert "fuzzy: true" in p.read_text(encoding="utf-8")
 
 
+class TestSidebarCopy:
+    def _load(self, tmp_path, body):
+        from juxt.settings import load_settings
+
+        p = tmp_path / "settings.yaml"
+        p.write_text(body, encoding="utf-8")
+        return load_settings(p, write=False)
+
+    def test_defaults_to_selected(self, tmp_path):
+        assert self._load(tmp_path, "seek:\n  greedy: true\n").sidebar_copy == "selected"
+
+    def test_selected_is_read(self, tmp_path):
+        assert self._load(tmp_path, "sidebar:\n  copy: selected\n").sidebar_copy == "selected"
+
+    def test_unquoted_off_survives_yaml_reading_it_as_false(self, tmp_path):
+        assert self._load(tmp_path, "sidebar:\n  copy: off\n").sidebar_copy == "off"
+
+    def test_quoted_off_is_read(self, tmp_path):
+        assert self._load(tmp_path, 'sidebar:\n  copy: "off"\n').sidebar_copy == "off"
+
+    def test_unknown_value_falls_back_to_selected(self, tmp_path):
+        assert self._load(tmp_path, "sidebar:\n  copy: always\n").sidebar_copy == "selected"
+
+    def test_other_sidebar_options_are_unaffected(self, tmp_path):
+        s = self._load(tmp_path, "sidebar:\n  copy: off\n  dim_missing: true\n")
+        assert (s.sidebar_copy, s.dim_missing) == ("off", True)
+
+    def test_generated_template_documents_it(self, tmp_path):
+        from juxt.settings import ensure_settings_file
+
+        text = ensure_settings_file(tmp_path / "settings.yaml").read_text(encoding="utf-8")
+        assert "copy: selected" in text
+
+
 class TestModifierSwap:
     def test_defaults_to_off(self, tmp_path):
         from juxt.settings import load_settings

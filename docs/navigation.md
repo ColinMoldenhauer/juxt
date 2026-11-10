@@ -37,6 +37,7 @@ These bindings work identically regardless of which mode is active.
 | `Ctrl+Shift+G` | Open the grid builder dialogue |
 | `Ctrl+Shift+C` | Copy the current image path to the clipboard |
 | `Ctrl+Shift+K` | Toggle the shortcut sidebar |
+| `Ctrl+C` | Copy the text selected in a sidebar; with nothing selected it cancels a command or value picker ([`sidebar.copy`](ui.md#copying-sidebar-text) `: off` never takes the chord for copying) |
 
 ### Other
 
