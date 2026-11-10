@@ -163,9 +163,11 @@ navigation:
   skip_missing: false
 
 # How an axis' values are laid out in the info sidebar.
-# Normally every value sits on one line, joined by "separator". Once any
+# Values are packed into rows, joined by "separator"; a value never breaks
+# across lines (one too long for a row is cut with an ellipsis). Once any
 # value on the axis contains a space or is longer than "list_larger_than"
-# characters, the axis switches to one value per line instead.
+# characters, the axis starts out as one value per row instead. Clicking an
+# axis name in the sidebar flips that axis between the two layouts.
 sidebar:
   value_list:
     separator: "  "         # inserted between values on the same line
@@ -235,9 +237,11 @@ navigation:
 """,
     "sidebar": """
 # How an axis' values are laid out in the info sidebar.
-# Normally every value sits on one line, joined by "separator". Once any
+# Values are packed into rows, joined by "separator"; a value never breaks
+# across lines (one too long for a row is cut with an ellipsis). Once any
 # value on the axis contains a space or is longer than "list_larger_than"
-# characters, the axis switches to one value per line instead.
+# characters, the axis starts out as one value per row instead. Clicking an
+# axis name in the sidebar flips that axis between the two layouts.
 sidebar:
   value_list:
     separator: "  "         # inserted between values on the same line

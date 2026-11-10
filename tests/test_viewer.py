@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtGui import QColor, QPixmap, QTextCursor
 
 from juxt.viewer import ImageView, NavMode
 
@@ -368,7 +368,9 @@ class TestInfoPanelLinks:
         }
         hl = QColor(_HL_DEFAULT.color).name()
         assert cur_hrefs, "no axes to check"
-        for href, colour in colours.items():
+        value_colours = {h: c for h, c in colours.items() if h.startswith("juxt:value/")}
+        assert value_colours, "no value links found"
+        for href, colour in value_colours.items():
             expected = hl if href in cur_hrefs else QColor(_LINK_COLOR).name()
             assert colour == expected, f"{href}: {colour} != {expected}"
 
@@ -523,6 +525,332 @@ class TestInfoPanelValueList:
         panel = InfoPanel()
         worst = panel._worst_case_path(value_list_view)
         assert worst == "fake/A_has space_" + "x" * 25 + ".png"
+
+
+# ---------------------------------------------------------------------------
+# Info sidebar: row packing, truncation and expandable axes
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def packed_view(qtbot):
+    """Axes whose inline values need several rows at sidebar widths: eleven
+    short values, plus a few mid-sized ones (under the one-per-row
+    threshold, so they stay inline)."""
+    from itertools import product as _product
+
+    from juxt.config import Config, _auto_keys
+    from juxt.viewer import ImageView
+    from PySide6.QtGui import QColor, QPixmap
+
+    axes = {
+        "sensor": ["ASCAT", "SMAP", "SMOS", "AMSR2", "SMMR", "SSMI", "TMI", "WindSat",
+                   "ERS", "MetOp", "CCI"],
+        "date": ["2024-03-15", "2024-03-16", "2024-03-17", "2024-03-18"],
+    }
+    config = Config(template="fake/{sensor}_{date}.png", axes=axes, keys=_auto_keys(axes))
+    pixmaps = {}
+    for i, j in _product(range(len(axes["sensor"])), range(len(axes["date"]))):
+        pm = QPixmap(10, 10)
+        pm.fill(QColor(10, 10, 10))
+        pixmaps[(i, j)] = pm
+    v = ImageView(config, pixmaps)
+    qtbot.addWidget(v)
+    return v
+
+
+def _value_lines(panel, view):
+    """Yield (href, start line top, last char line top) for every value link,
+    so a test can tell whether a value sits on one visual line."""
+    for i, vals in enumerate(view.axis_values):
+        for j in range(len(vals)):
+            span = panel._fragment_span_for_href(f"juxt:value/{i}/{j}")
+            assert span is not None
+            start, end = span
+            first = QTextCursor(panel.document())
+            first.setPosition(start)
+            last = QTextCursor(panel.document())
+            last.setPosition(max(start, end - 1))
+            yield (f"juxt:value/{i}/{j}",
+                   panel.cursorRect(first).top(), panel.cursorRect(last).top())
+
+
+class TestInfoPanelRows:
+    def _panel(self, view, qtbot, width):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(width, 400)
+        panel.show()
+        qtbot.waitExposed(panel)
+        panel.refresh(view)
+        return panel
+
+    @pytest.mark.parametrize("width", [150, 180, 220, 260, 301, 333, 400, 517])
+    def test_no_value_is_broken_across_lines(self, packed_view, qtbot, width):
+        panel = self._panel(packed_view, qtbot, width)
+        for href, first_top, last_top in _value_lines(panel, packed_view):
+            assert first_top == last_top, f"{href} is split across lines at width {width}"
+
+    def test_values_wrap_between_rows_not_inside_values(self, packed_view, qtbot):
+        narrow = self._panel(packed_view, qtbot, 200)
+        wide = self._panel(packed_view, qtbot, 600)
+        # The narrow panel needs more rows for the same values.
+        assert narrow.toHtml().count("<br") > wide.toHtml().count("<br")
+
+    def test_packing_is_stable_when_the_scrollbar_appears(self, packed_view, qtbot):
+        """Rows are laid out for the width in force; a scrollbar showing up
+        under that layout narrows it, and the values must still not break."""
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(170, 120)      # short enough that the document needs a scrollbar
+        panel.show()
+        qtbot.waitExposed(panel)
+        panel.refresh(packed_view)
+        assert panel.verticalScrollBar().maximum() > 0
+        for href, first_top, last_top in _value_lines(panel, packed_view):
+            assert first_top == last_top, href
+
+    def test_value_wider_than_a_row_is_truncated_not_broken(self, value_list_view, qtbot):
+        # "x" * 25 is over the threshold, so it is listed one per row, at a
+        # width where 25 characters cannot fit.
+        panel = self._panel(value_list_view, qtbot, 150)
+        start, end = panel._fragment_span_for_href("juxt:value/2/0")
+        cursor = QTextCursor(panel.document())
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        shown = cursor.selectedText()
+        assert shown.endswith("…")
+        assert len(shown) < 25
+        for href, first_top, last_top in _value_lines(panel, value_list_view):
+            assert first_top == last_top, href
+
+    @staticmethod
+    def _hover(panel, href):
+        """Send the viewport a tooltip event over the link *href*; return the
+        tooltip text now showing ("" when none)."""
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QHelpEvent
+        from PySide6.QtWidgets import QApplication, QToolTip
+
+        QToolTip.hideText()
+        start, _end = panel._fragment_span_for_href(href)
+        cursor = QTextCursor(panel.document())
+        cursor.setPosition(start + 1)
+        pos = panel.cursorRect(cursor).center()
+        QApplication.sendEvent(
+            panel.viewport(),
+            QHelpEvent(QEvent.Type.ToolTip, pos, panel.viewport().mapToGlobal(pos)),
+        )
+        return QToolTip.text() if QToolTip.isVisible() else ""
+
+    def test_truncated_value_shows_its_full_text_on_hover(self, value_list_view, qtbot):
+        panel = self._panel(value_list_view, qtbot, 150)
+        assert self._hover(panel, "juxt:value/2/0") == "x" * 25
+
+    def test_value_that_fits_has_no_tooltip(self, value_list_view, qtbot):
+        panel = self._panel(value_list_view, qtbot, 150)
+        assert self._hover(panel, "juxt:value/2/1") == ""      # "y"
+
+    def test_tooltip_goes_away_when_the_panel_is_widened(self, value_list_view, qtbot):
+        panel = self._panel(value_list_view, qtbot, 150)
+        panel.resize(600, 400)
+        panel.refresh(value_list_view)
+        assert self._hover(panel, "juxt:value/2/0") == ""
+
+    def test_value_that_fits_is_not_truncated(self, value_list_view, qtbot):
+        panel = self._panel(value_list_view, qtbot, 600)
+        start, end = panel._fragment_span_for_href("juxt:value/2/0")
+        cursor = QTextCursor(panel.document())
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        assert cursor.selectedText() == "x" * 25
+
+    def test_truncated_value_is_still_clickable(self, value_list_view, qtbot):
+        panel = self._panel(value_list_view, qtbot, 150)
+        assert 'href="juxt:value/2/0"' in panel.toHtml()
+
+    def test_highlight_delimiters_count_towards_the_row_width(self, value_list_view, qtbot):
+        from juxt.settings import parse_highlight
+
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.set_highlight(parse_highlight("bold #f80:<<<{}>>>"))
+        panel.resize(150, 400)
+        panel.show()
+        qtbot.waitExposed(panel)
+        panel.refresh(value_list_view)
+        for href, first_top, last_top in _value_lines(panel, value_list_view):
+            assert first_top == last_top, href
+
+
+class TestPackRows:
+    def test_fills_a_row_before_starting_the_next(self):
+        from juxt.viewer import _pack_rows
+
+        assert _pack_rows([10, 10, 10, 10], sep_w=2, limit=26) == [[0, 1], [2, 3]]
+
+    def test_separator_width_counts(self):
+        from juxt.viewer import _pack_rows
+
+        # 10 + 10 fits in 20 only without a separator between them.
+        assert _pack_rows([10, 10], sep_w=0, limit=20) == [[0, 1]]
+        assert _pack_rows([10, 10], sep_w=2, limit=20) == [[0], [1]]
+
+    def test_oversize_item_gets_its_own_row(self):
+        from juxt.viewer import _pack_rows
+
+        assert _pack_rows([5, 50, 5], sep_w=1, limit=20) == [[0], [1], [2]]
+
+    def test_empty(self):
+        from juxt.viewer import _pack_rows
+
+        assert _pack_rows([], sep_w=1, limit=20) == []
+
+
+class TestInfoPanelExpand:
+    def _panel(self, view, qtbot, width=600):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(width, 400)
+        panel.show()
+        qtbot.waitExposed(panel)
+        panel.refresh(view)
+        return panel
+
+    @staticmethod
+    def _one_per_row(panel, axis, n):
+        html = panel.toHtml()
+        a = html.index(f'href="juxt:value/{axis}/0"')
+        b = html.index(f'href="juxt:value/{axis}/{n - 1}"')
+        return html[a:b].count("<br") >= n - 1
+
+    def test_axis_href_roundtrip(self):
+        from juxt.viewer import _axis_href, _parse_axis_href, _parse_value_href
+
+        assert _parse_axis_href(_axis_href(3)) == 3
+        assert _parse_axis_href("juxt:value/1/2") is None
+        assert _parse_value_href(_axis_href(3)) is None
+
+    def test_every_axis_header_is_a_link(self, packed_view, qtbot):
+        html = self._panel(packed_view, qtbot).toHtml()
+        for i in range(len(packed_view.axis_names)):
+            assert f'href="juxt:axis/{i}"' in html
+
+    def test_inline_axis_starts_collapsed(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        assert not self._one_per_row(panel, 0, 11)
+        assert "▸ sensor" in panel.toPlainText()
+
+    def test_toggle_expands_to_one_value_per_row(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        panel.toggle_axis(0)
+        assert self._one_per_row(panel, 0, 11)
+        assert "▾ sensor" in panel.toPlainText()
+
+    def test_toggle_twice_restores_the_inline_layout(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        before = panel.toPlainText()
+        panel.toggle_axis(0)
+        panel.toggle_axis(0)
+        assert panel.toPlainText() == before
+
+    def test_toggle_leaves_other_axes_alone(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        panel.toggle_axis(0)
+        assert not self._one_per_row(panel, 1, 4)
+
+    def test_automatically_listed_axis_can_be_collapsed(self, value_list_view, qtbot):
+        panel = self._panel(value_list_view, qtbot)
+        assert self._one_per_row(panel, 1, 2)       # "has space" lists itself
+        panel.toggle_axis(1)
+        assert not self._one_per_row(panel, 1, 2)
+        panel.toggle_axis(1)
+        assert self._one_per_row(panel, 1, 2)
+
+    def test_expansion_survives_navigation(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        panel.toggle_axis(0)
+        packed_view._navigate(1, 1)
+        panel.refresh(packed_view)
+        assert self._one_per_row(panel, 0, 11)
+
+    def test_returning_to_the_automatic_state_follows_the_threshold(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        panel.toggle_axis(0)
+        panel.toggle_axis(0)
+        assert "sensor" not in panel._expanded
+        panel.set_value_list_style("  ", 3)    # now every "sensor" value is over the threshold
+        panel.refresh(packed_view)
+        assert self._one_per_row(panel, 0, 11)
+
+    def test_expanded_values_are_still_links_that_navigate(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        panel.value_clicked.connect(packed_view.goto_value)
+        panel.toggle_axis(0)
+        panel.value_clicked.emit(0, 4)
+        assert packed_view.pos[0] == 4
+
+    def test_toggle_before_first_refresh_is_ignored(self, qtbot):
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.toggle_axis(0)        # nothing to toggle yet; must not raise
+
+    def test_toggle_out_of_range_is_ignored(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        before = panel.toPlainText()
+        panel.toggle_axis(99)
+        assert panel.toPlainText() == before
+
+    def test_clicking_a_header_toggles_it(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        span = panel._fragment_span_for_href("juxt:axis/0")
+        cursor = QTextCursor(panel.document())
+        cursor.setPosition(span[0] + 2)
+        pos = panel.cursorRect(cursor).center()
+        qtbot.mouseClick(panel.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+        assert self._one_per_row(panel, 0, 11)
+
+    def test_dragging_across_a_header_selects_instead_of_toggling(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        span = panel._fragment_span_for_href("juxt:axis/0")
+        cursor = QTextCursor(panel.document())
+        cursor.setPosition(span[0] + 2)
+        start = panel.cursorRect(cursor).center()
+        cursor.setPosition(span[1])
+        end = panel.cursorRect(cursor).center()
+        qtbot.mousePress(panel.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        qtbot.mouseMove(panel.viewport(), end)
+        qtbot.mouseRelease(panel.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        assert not self._one_per_row(panel, 0, 11)
+        assert panel.textCursor().hasSelection()
+
+    def test_toggle_does_not_chase_the_navigation_target(self, scrollable_view, qtbot):
+        """A toggle is not a navigation: a leftover scroll-to target from the
+        last key press must not yank the sidebar away from the header."""
+        from juxt.viewer import InfoPanel
+
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(250, 300)
+        panel.show()
+        qtbot.waitExposed(panel)
+        panel.refresh(scrollable_view)
+        sb = panel.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        bottom = sb.value()
+        scrollable_view.pos = [0, 0]
+        scrollable_view._sidebar_target = (1, 0)     # stale: first date value, far above
+        panel.toggle_axis(0)
+        assert sb.value() == bottom
 
 
 def _anchor_colours(panel) -> dict[str, str]:
