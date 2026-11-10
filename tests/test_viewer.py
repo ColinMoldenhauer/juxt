@@ -628,14 +628,29 @@ class TestInfoPanelRows:
             assert first_top == last_top, href
 
     @staticmethod
-    def _hover(panel, href):
+    def _hover(panel, href, monkeypatch):
         """Send the viewport a tooltip event over the link *href*; return the
-        tooltip text now showing ("" when none)."""
+        tooltip text the panel asked to show ("" when it asked for none).
+
+        Qt's own tooltip state is not read back: on Windows hideText() fades
+        out, so isVisible() and text() still report the previous tooltip.
+        """
         from PySide6.QtCore import QEvent
         from PySide6.QtGui import QHelpEvent
-        from PySide6.QtWidgets import QApplication, QToolTip
+        from PySide6.QtWidgets import QApplication
 
-        QToolTip.hideText()
+        shown: list[str] = []
+
+        class _RecordingToolTip:
+            @staticmethod
+            def showText(_pos, text, _widget=None):
+                shown.append(text)
+
+            @staticmethod
+            def hideText():
+                shown.append("")
+
+        monkeypatch.setattr("juxt.viewer.QToolTip", _RecordingToolTip)
         start, _end = panel._fragment_span_for_href(href)
         cursor = QTextCursor(panel.document())
         cursor.setPosition(start + 1)
@@ -644,21 +659,22 @@ class TestInfoPanelRows:
             panel.viewport(),
             QHelpEvent(QEvent.Type.ToolTip, pos, panel.viewport().mapToGlobal(pos)),
         )
-        return QToolTip.text() if QToolTip.isVisible() else ""
+        assert shown, "the panel did not answer the tooltip event"
+        return shown[-1]
 
-    def test_truncated_value_shows_its_full_text_on_hover(self, value_list_view, qtbot):
+    def test_truncated_value_shows_its_full_text_on_hover(self, value_list_view, qtbot, monkeypatch):
         panel = self._panel(value_list_view, qtbot, 150)
-        assert self._hover(panel, "juxt:value/2/0") == "x" * 25
+        assert self._hover(panel, "juxt:value/2/0", monkeypatch) == "x" * 25
 
-    def test_value_that_fits_has_no_tooltip(self, value_list_view, qtbot):
+    def test_value_that_fits_has_no_tooltip(self, value_list_view, qtbot, monkeypatch):
         panel = self._panel(value_list_view, qtbot, 150)
-        assert self._hover(panel, "juxt:value/2/1") == ""      # "y"
+        assert self._hover(panel, "juxt:value/2/1", monkeypatch) == ""      # "y"
 
-    def test_tooltip_goes_away_when_the_panel_is_widened(self, value_list_view, qtbot):
+    def test_tooltip_goes_away_when_the_panel_is_widened(self, value_list_view, qtbot, monkeypatch):
         panel = self._panel(value_list_view, qtbot, 150)
         panel.resize(600, 400)
         panel.refresh(value_list_view)
-        assert self._hover(panel, "juxt:value/2/0") == ""
+        assert self._hover(panel, "juxt:value/2/0", monkeypatch) == ""
 
     def test_value_that_fits_is_not_truncated(self, value_list_view, qtbot):
         panel = self._panel(value_list_view, qtbot, 600)
