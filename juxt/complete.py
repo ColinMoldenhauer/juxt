@@ -149,6 +149,16 @@ def shape_for(name: str, shapes: dict[str, str] | None = None) -> str | None:
     return shapes.get(name.lower()) or shorthand_shape(name)
 
 
+def expand_home(path: str) -> str:
+    """*path* with a leading `~` or `~user` replaced by that home directory.
+
+    Placeholders and wildcards pass through untouched, and so does anything
+    that does not start with `~` -- a remote `host:/path` never does.  A `~`
+    naming no known user is left as typed.
+    """
+    return os.path.expanduser(path) if path.startswith("~") else path
+
+
 def normalize_template(template: str) -> str:
     """Give every anonymous `{}` placeholder a generated axis name.
 

@@ -427,3 +427,37 @@ class TestConfiguredShapes:
         monkeypatch.setattr("juxt.settings.SETTINGS_PATH", tmp_path / ".juxt" / "no.yaml")
         assert _complete(f"{dated_dir.as_posix()}/{{date}}").append == ".png"
         assert placeholder_shapes() == {}
+
+
+class TestExpandHome:
+    def test_leading_tilde_becomes_the_home_directory(self, monkeypatch, tmp_path):
+        import os
+
+        from juxt.complete import expand_home
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        assert expand_home("~") == str(tmp_path)
+        assert expand_home("~/plots") == os.path.join(str(tmp_path), "plots")
+
+    def test_everything_after_the_tilde_is_kept(self, monkeypatch, tmp_path):
+        from juxt.complete import expand_home
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        out = expand_home("~/a/{x}/*.png")
+        assert out.startswith(str(tmp_path))
+        assert out.endswith("{x}/*.png")
+
+    @pytest.mark.parametrize("path", [
+        "plots/~/{x}.png", "/abs/~/x", "host:/data/~x", "user@host:~/x", "C:/x", "", "{sensor}~",
+    ])
+    def test_only_a_leading_tilde_is_expanded(self, path):
+        from juxt.complete import expand_home
+
+        assert expand_home(path) == path
+
+    def test_unknown_user_is_left_as_typed(self):
+        from juxt.complete import expand_home
+
+        assert expand_home("~no_such_user_juxt/x") == "~no_such_user_juxt/x"

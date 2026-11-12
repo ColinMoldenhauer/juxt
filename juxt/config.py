@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from .complete import expand_home
+
 log = logging.getLogger(__name__)
 
 
@@ -77,13 +79,13 @@ def load_config(path: str) -> Config:
     if "discover" in data:
         disc = data["discover"]
         template, axes = _auto_discover(
-            disc["directory"],
+            expand_home(str(disc["directory"])),
             disc.get("separator", "_"),
         )
     else:
         if "template" not in data or "axes" not in data:
             raise ValueError("Config must contain 'template' + 'axes', or a 'discover' block")
-        template = data["template"]
+        template = expand_home(str(data["template"]))
         axes = {k: [str(v) for v in vs] for k, vs in data["axes"].items()}
 
     if not axes:
@@ -130,6 +132,7 @@ _MODE_NAMES = {0: "tap", 1: "seek", 2: "pin"}
 
 def dump_config(config: Config, path: str) -> None:
     """Serialize *config* to a YAML file at *path* (template mode format)."""
+    path = expand_home(str(path))
     log.debug("Saving config to %s", path)
     class _Dumper(yaml.Dumper):
         pass

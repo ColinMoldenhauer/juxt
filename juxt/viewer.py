@@ -42,6 +42,7 @@ from .complete import (
     complete_path,
     complete_placeholder_name,
     local_listdir,
+    expand_home,
     normalize_template,
     placeholder_html,
     reset_placeholder_shapes,
@@ -2367,7 +2368,7 @@ class ImageView(QGraphicsView):
         if self._reload_in_progress:
             self._flash("reload already in progress")
             return
-        raw = normalize_template(raw)  # anonymous {} → {axis_1}, {axis_2}, …
+        raw = expand_home(normalize_template(raw))  # anonymous {} → {axis_1}, …; ~ → home
         self._reload_in_progress = True
         if self._watching and self.config.remote is not None:
             self._poll_timer.stop()

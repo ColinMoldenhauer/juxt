@@ -7,7 +7,7 @@ import socket
 import sys
 from pathlib import Path
 
-from .complete import SCRIPT_FLAGS, WORDS_FLAG, normalize_template
+from .complete import SCRIPT_FLAGS, WORDS_FLAG, expand_home, normalize_template
 from .complete import main as _complete_main
 
 # Shell completion runs on every Tab press, so answer it here — before Qt is
@@ -379,7 +379,7 @@ def main():
         args.path = chosen
 
     try:
-        raw = normalize_template(args.path)  # anonymous {} → {axis_1}, {axis_2}, …
+        raw = expand_home(normalize_template(args.path))  # anonymous {} → {axis_1}, …; ~ → home
         if _is_remote_pattern(raw):
             remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
             if '{' in remote_tmpl:
