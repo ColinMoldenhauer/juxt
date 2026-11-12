@@ -176,12 +176,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          $out = (& dist\juxt\juxt.exe --version 2>&1) -join "`n"
-          Write-Output $out
-          if ($LASTEXITCODE -ne 0 -or $out -notmatch '^juxt \d' -or $out -match 'unknown') {
-            Write-Output "::error::'juxt --version' failed or reported no usable version (status $LASTEXITCODE)"
-            exit 1
-          }
+          # No --version check here: juxt.exe is a windowed build (console=False
+          # in juxt.spec), so it has no stdout to read and PowerShell does not
+          # wait for it.  The launch below is the check on this platform.
           $p = Start-Process -FilePath dist\juxt\juxt.exe `
                              -ArgumentList "examples\sample_config.yaml" -PassThru
           Start-Sleep -Seconds 25
