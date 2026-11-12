@@ -148,6 +148,16 @@ jobs:
           else
             bin=dist/juxt/juxt
           fi
+          # --version exits before any window exists, so a loader / Qt import
+          # failure shows up here with its own message, and the version string
+          # proves hatch-vcs wrote juxt/_version.py into the bundle.
+          out=$("$bin" --version 2>&1)
+          status=$?
+          echo "$out"
+          if [ $status -ne 0 ] || ! echo "$out" | grep -Eq '^juxt [0-9]' || echo "$out" | grep -q unknown; then
+            echo "::error::'juxt --version' failed or reported no usable version (status $status)"
+            exit 1
+          fi
           "$bin" examples/sample_config.yaml &
           pid=$!
           sleep 25
@@ -166,6 +176,12 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          $out = (& dist\juxt\juxt.exe --version 2>&1) -join "`n"
+          Write-Output $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch '^juxt \d' -or $out -match 'unknown') {
+            Write-Output "::error::'juxt --version' failed or reported no usable version (status $LASTEXITCODE)"
+            exit 1
+          }
           $p = Start-Process -FilePath dist\juxt\juxt.exe `
                              -ArgumentList "examples\sample_config.yaml" -PassThru
           Start-Sleep -Seconds 25
