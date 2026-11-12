@@ -180,7 +180,7 @@ Placeholders standing for a known kind of value complete only as far as that val
 | `:keys` | toggle the shortcut sidebar (`Ctrl+Shift+K`) |
 | `:grid-dialog` | open the grid builder dialogue (`Ctrl+Shift+G`) |
 | `:grid-layout NxM` | change grid layout without exiting |
-| `:ungrid` | return to single-image view |
+| `:grid-off` / `:ungrid` | return to single-image view |
 | `:grid-sharex` / `:grid-sharey` | toggle synchronized pan/zoom |
 
 ## Controls

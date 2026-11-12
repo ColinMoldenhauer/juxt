@@ -222,7 +222,7 @@ def _print_help() -> None:
 
   commands (press : in the viewer, Tab completes)
     :fit  :fit-width  :fit-height  :fit-off  :zoom N  :fullscreen
-    :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :ungrid
+    :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :grid-off
     :grid-sharex on|off  :grid-sharey on|off
     :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes
     :mode tap|seek|pin  :switch-last  :info  :keys

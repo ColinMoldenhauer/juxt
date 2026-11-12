@@ -314,6 +314,7 @@ _COMMANDS = [
     "grid",
     "grid-dialog",
     "grid-layout",
+    "grid-off",
     "grid-sharex",
     "grid-sharey",
     "info",
@@ -361,6 +362,12 @@ _CMD_ARGS: dict[str, list[str]] = {
     "zoom": ["50", "75", "100", "150", "200"],
 }
 
+# What a command expects as its argument, shown while the argument is empty or
+# does not match any listed option.
+_ARG_FORMATS: dict[str, str] = {
+    "grid-layout": "NxM  (rows x columns, e.g. 2x3)",
+}
+
 # Commands whose argument is free-text — preserve case when the user types it.
 _FREE_TEXT_ARGS = {"change-key", "pattern", "remove-axis", "remove-value", "write"}
 
@@ -382,6 +389,7 @@ _COMMAND_HELP: dict[str, str] = {
     "grid":         "expand an axis into a tiled grid  (e.g. grid sensor  /  grid sensor SMAP SMOS  /  grid sensor 2x2)",
     "grid-dialog":  "open the point-and-click grid builder  (Ctrl+Shift+G)",
     "grid-layout":  "change the grid layout without exiting  (e.g. grid-layout 2x3)",
+    "grid-off":     "leave grid view and return to the single image  (same as ungrid)",
     "grid-sharex":  "toggle or set synchronized horizontal pan/zoom  (on / off)",
     "grid-sharey":  "toggle or set synchronized vertical pan/zoom  (on / off)",
     "info":         "toggle the info sidebar",
@@ -1514,10 +1522,7 @@ class ImageView(QGraphicsView):
                     return True
                 verb = candidates[min(self._cmd["cursor"], len(candidates) - 1)]
                 if verb in _CMD_ARGS:
-                    initial = self._pattern_str() if verb == "pattern" else ""
-                    self._cmd = {"phase": "arg", "verb": verb, "query": initial,
-                                 "cursor": 0, "caret": len(initial)}
-                    self.state_changed.emit()
+                    self._cmd_open_args(verb)
                 else:
                     self._cmd = None
                     self._cmd_execute(verb)
@@ -1544,6 +1549,16 @@ class ImageView(QGraphicsView):
             return True
 
         ch = event.text()
+        if ch == " " and self._cmd["phase"] == "verb":
+            # A command name never holds a space, so it ends the name: take the
+            # best match and move on to its argument, as Enter does.  Commands
+            # without arguments ignore it (`:fit ` stays a prompt for `fit`).
+            candidates = self._cmd_candidates()
+            if candidates:
+                verb = candidates[max(0, min(self._cmd["cursor"], len(candidates) - 1))]
+                if verb in _CMD_ARGS:
+                    self._cmd_open_args(verb)
+            return True
         if ch and ch.isprintable():
             if is_free:
                 q = self._cmd["query"]
@@ -1558,6 +1573,13 @@ class ImageView(QGraphicsView):
             return True
 
         return False
+
+    def _cmd_open_args(self, verb: str):
+        """Switch the command prompt from naming *verb* to typing its argument."""
+        initial = self._pattern_str() if verb == "pattern" else ""
+        self._cmd = {"phase": "arg", "verb": verb, "query": initial,
+                     "cursor": 0, "caret": len(initial)}
+        self.state_changed.emit()
 
     def _cmd_execute(self, cmd: str):
         parts = cmd.strip().split()
@@ -1723,9 +1745,12 @@ class ImageView(QGraphicsView):
             self._enter_grid(axis_idx, filter_indices, layout)
         elif verb == "grid-dialog":
             self._open_grid_dialog()
-        elif verb == "ungrid":
-            if self._grid_axis is not None:
+        elif verb in ("ungrid", "grid-off"):
+            if self._grid_axis is None:
+                self._flash("not in grid mode")
+            else:
                 self._exit_grid()
+                self._flash("grid off")
         elif verb == "grid-layout":
             if not args:
                 self._flash("usage: grid-layout NxM  (e.g. grid-layout 2x3)")
@@ -3666,6 +3691,10 @@ class MainWindow(QMainWindow):
                 self._status_label.setText(
                     _rich(f"{_sp(prompt)}&nbsp;&nbsp;(unknown&nbsp;command)")
                 )
+            elif v._cmd["phase"] == "arg" and v._cmd["verb"] in _ARG_FORMATS:
+                self._status_label.setText(_rich(
+                    f"{_sp(prompt)}&nbsp;&nbsp;→&nbsp;&nbsp;{_sp(_ARG_FORMATS[v._cmd['verb']])}"
+                ))
             else:
                 self._status_label.setText(
                     _rich(prompt_html if prompt_html is not None else _sp(prompt))

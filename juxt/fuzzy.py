@@ -77,10 +77,20 @@ def fuzzy_filter(query: str, pool: Iterable[str]) -> list[str]:
     return [c for _, c in scored]
 
 
+def _unhyphenated(text: str) -> str:
+    return text.lower().replace("-", "").replace("_", "")
+
+
 def prefix_filter(query: str, pool: Iterable[str]) -> list[str]:
-    """Case-insensitive prefix match — what juxt did before fuzzy matching."""
+    """Case-insensitive prefix match — what juxt did before fuzzy matching.
+
+    Hyphens and underscores are skipped on both sides, so ``gridl`` still finds
+    ``grid-layout`` when fuzzy matching is off.
+    """
     items = list(pool)
     if not query:
         return items
-    q = query.lower()
-    return [c for c in items if c.lower().startswith(q)]
+    q = _unhyphenated(query)
+    if not q:                       # nothing but separators typed
+        return [c for c in items if c.lower().startswith(query.lower())]
+    return [c for c in items if _unhyphenated(c).startswith(q)]
