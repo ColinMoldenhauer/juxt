@@ -130,3 +130,40 @@ class TestPanelFlags:
         args, pins = _parse_args()
         assert args.info is True
         assert pins == {"sensor": ["A"]}
+
+
+class TestVersionFlag:
+    @pytest.mark.parametrize("flag", ["--version", "-V"])
+    def test_prints_the_version_and_exits(self, monkeypatch, capsys, flag):
+        import juxt
+
+        monkeypatch.setattr("sys.argv", ["juxt", flag])
+        with pytest.raises(SystemExit) as exc:
+            _parse_args()
+        assert exc.value.code == 0
+        assert capsys.readouterr().out.strip() == f"juxt {juxt.__version__}"
+
+    def test_wins_over_a_path_and_pins(self, monkeypatch, capsys):
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/{sensor}.png", "--sensor", "A", "--version"])
+        with pytest.raises(SystemExit) as exc:
+            _parse_args()
+        assert exc.value.code == 0
+        assert capsys.readouterr().out.startswith("juxt ")
+
+    def test_runs_without_opening_a_window(self):
+        import subprocess
+        import sys
+
+        import juxt
+
+        r = subprocess.run([sys.executable, "-m", "juxt", "--version"],
+                           capture_output=True, text=True, timeout=60,
+                           env={**__import__("os").environ, "QT_QPA_PLATFORM": "offscreen"})
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == f"juxt {juxt.__version__}"
+
+    def test_is_in_the_help_text(self, capsys):
+        from juxt.__main__ import _print_help
+
+        _print_help()
+        assert "--version" in capsys.readouterr().out

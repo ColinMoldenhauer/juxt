@@ -180,6 +180,7 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:mode pin` | Switch to pin mode |
 | `:keys` | Toggle the shortcut sidebar (same as `Ctrl+Shift+K`) |
 | `:switch-last` | Toggle between current and previous position (same as `Space`) |
+| `:version` | Show the juxt version in the status bar (`juxt --version` prints it from the shell) |
 | `:axis-h NAME` | Lock `←`/`→` to a named axis |
 | `:axis-v NAME` | Lock `↑`/`↓` to a named axis |
 | `:axis-auto` | Restore dynamic axis-to-arrow assignment |

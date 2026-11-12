@@ -714,6 +714,32 @@ class TestCommandNamesSkipHyphens:
             assert v._cmd_candidates()[0] == "grid-layout"
 
 
+class TestVersionCommand:
+    def test_flashes_the_installed_version(self, sized_view):
+        import juxt
+
+        v = sized_view
+        v._cmd_execute("version")
+        assert v._flash_msg == f"juxt {juxt.__version__}"
+
+    def test_typed_through_the_prompt(self, sized_view, qtbot):
+        import juxt
+
+        v = sized_view
+        qtbot.keyClicks(v, ":version")
+        qtbot.keyClick(v, Qt.Key.Key_Return)
+        assert v._flash_msg == f"juxt {juxt.__version__}"
+        assert v._cmd is None
+
+    def test_is_a_listed_command_with_help(self, sized_view):
+        from juxt.viewer import _COMMAND_HELP, _COMMANDS
+
+        assert "version" in _COMMANDS and "version" in _COMMAND_HELP
+        v = sized_view
+        v._cmd = {"phase": "verb", "query": "vers", "cursor": 0}
+        assert v._cmd_candidates() == ["version"]
+
+
 class TestFitOff:
     def test_fit_off_keeps_the_current_zoom(self, sized_view):
         v = sized_view

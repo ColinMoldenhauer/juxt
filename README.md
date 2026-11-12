@@ -174,6 +174,7 @@ Placeholders standing for a known kind of value complete only as far as that val
 | `:fit-off` | stop fitting, keep the current zoom |
 | `:zoom N` | set zoom to N% |
 | `:fullscreen` | toggle fullscreen |
+| `:version` | show the juxt version (`juxt --version` from the shell) |
 | `:mode tap\|seek\|pin` | switch navigation mode |
 | `:grid [AXIS]` | tile an axis into a grid of viewports |
 | `:grid AXIS VAL …` | grid with a value subset |
