@@ -438,7 +438,7 @@ class TestExpandHome:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         assert expand_home("~") == str(tmp_path)
-        assert expand_home("~/plots") == os.path.join(str(tmp_path), "plots")
+        assert os.path.normpath(expand_home("~/plots")) == os.path.join(str(tmp_path), "plots")
 
     def test_everything_after_the_tilde_is_kept(self, monkeypatch, tmp_path):
         from juxt.complete import expand_home

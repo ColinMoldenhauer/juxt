@@ -154,9 +154,15 @@ def expand_home(path: str) -> str:
 
     Placeholders and wildcards pass through untouched, and so does anything
     that does not start with `~` -- a remote `host:/path` never does.  A `~`
-    naming no known user is left as typed.
+    naming no known user is left as typed.  Windows has no such lookup (it
+    would turn `~name` into a sibling of the home directory whether or not
+    that user exists), so there only `~`, `~/` and `~\\` are expanded.
     """
-    return os.path.expanduser(path) if path.startswith("~") else path
+    if not path.startswith("~"):
+        return path
+    if os.name == "nt" and path[1:2] not in ("", "/", "\\"):
+        return path
+    return os.path.expanduser(path)
 
 
 def normalize_template(template: str) -> str:
