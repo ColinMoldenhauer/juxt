@@ -7,6 +7,7 @@ import socket
 import sys
 from pathlib import Path
 
+from . import __version__
 from .complete import SCRIPT_FLAGS, WORDS_FLAG, normalize_template
 from .complete import main as _complete_main
 
@@ -182,6 +183,7 @@ def _print_help() -> None:
 
   -s, --separator SEP [...]   separator(s) for auto-detection
   -a, --auto                  skip axis naming prompt
+  -V, --version               print the juxt version and exit
       --max-depth N           max subdirectory search depth
       --save PATH             save resolved config to PATH after detection
       --NAME VALUE [...]      pin a {placeholder}'s values instead of
@@ -307,6 +309,7 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     g.add_argument("--no-sharey", action="store_true", default=False)
 
     p.add_argument("-h", "--help", action=_HelpAction)
+    p.add_argument("-V", "--version", action="version", version=f"juxt {__version__}")
 
     # Any flag not recognized above and appearing after PATH is treated as
     # '--{placeholder} VALUE ...', pinning that template placeholder to an

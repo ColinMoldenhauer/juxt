@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
 from .fuzzy import fuzzy_filter, prefix_filter
 from .complete import (
     complete_path,
@@ -326,6 +327,7 @@ _COMMANDS = [
     "skip-missing",
     "remove-value",
     "ungrid",
+    "version",
     "watch",
     "write",
     "swap-axes",
@@ -393,6 +395,7 @@ _COMMAND_HELP: dict[str, str] = {
     "remove-axis":  "remove an axis (collapses to its current value)",
     "remove-value": "remove a value from an axis  (e.g. remove-value sensor SMAP)",
     "ungrid":       "return to single-image view",
+    "version":      "show the juxt version",
     "write":        "write current config to a YAML file",
     "swap-axes":    "swap the ←/→ and ↑/↓ axis bindings",
     "skip-missing": "skip combinations with no file when cycling  (on / off)",
@@ -1621,6 +1624,8 @@ class ImageView(QGraphicsView):
             from PySide6.QtGui import QDesktopServices
             path = ensure_settings_file(SETTINGS_PATH)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif verb == "version":
+            self._flash(f"juxt {__version__}", 5000)
         elif verb == "watch":
             arg = args[0] if args else ""
             if arg == "false":
