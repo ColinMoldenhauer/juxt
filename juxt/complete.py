@@ -474,6 +474,7 @@ def sftp_listdir(sftp):
 CLI_OPTIONS = [
     "-a", "--auto",
     "-h", "--help",
+    "-V", "--version",
     "-s", "--separator",
     "--axis-h", "--axis-v",
     "--full-path",
