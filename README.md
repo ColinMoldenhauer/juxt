@@ -33,12 +33,29 @@ pip install juxt[ssh]
 ```bash
 juxt /path/to/plots/                        # auto-detect axes from a directory of images
 juxt "plots/{sensor}_{date}.png"            # explicit local template
+juxt "plots/*.png"                          # wildcard match, recursing into subdirs
 juxt myhost:/path/to/plots/                 # remote directory over SSH
 juxt "myhost:/path/{sensor}_{date}.png"     # remote template over SSH
 juxt config.yaml                            # explicit config file
 ```
 
+A `*` in the path is matched recursively (unlike a shell glob, it reaches into nested subdirectories), and the matched files are split into axes the same way directory auto-detection is. Combine it with `--NAME VALUE ...` to pin a `{placeholder}` to a fixed set of directories and aggregate congruent files found under each:
+
+```bash
+juxt "{root}/*.png" --root run1 run2       # pool plots/*.png-style files found under run1/ and run2/
+```
+
+If you'd rather have one *named* axis for an arbitrarily deep (and possibly differently-shaped) subtree, instead of it being auto-split into several anonymous axes, write `{**name}` in place of a regular placeholder. It captures across `/`, and any leading path segments shared by every match are pruned out of the axis value and folded into the template as fixed text, so `dir/AM/plot.png` and `dir/PM/plot.png` become axis values `AM/plot` and `PM/plot` rather than the full `dir/AM/plot`:
+
+```bash
+juxt "{root}/{**plot}.png" --root run1 run2   # one 'plot' axis per run, however deep it's nested
+```
+
+`{**name}` is limited to one per template (two independent `/`-crossing captures in one path would be ambiguous), and pass `--full-path` to see the whole matched path instead of the pruned suffix.
+
 For directory and remote-directory modes, filenames are split on separators (`_` and `/` by default) and any position with more than one distinct value becomes an axis. You'll be prompted to name the axes on first run; use `-a` to skip.
+
+Run `juxt` with no argument and it opens a dialog instead: a **Browse** tab for picking a directory (auto-discover), and a **Build path** tab for typing a `{placeholder}` template by hand, with `Tab` completing real directories and files along the way.
 
 ## Config
 
@@ -109,6 +126,7 @@ Default mode is **tap**. Each axis is assigned one letter key — tap it to step
 | lowercase letter | navigate +1 on that axis |
 | uppercase letter | navigate −1 on that axis |
 | `Ctrl`+letter | open value picker for that axis |
+| | (`modifiers.swap: true` exchanges the `Ctrl` and `Shift` roles) |
 | `Space` | toggle between current and previous position |
 | `Home` / `End` | jump to first / last value |
 | `1`–`9` | jump to the Nth value |
@@ -119,18 +137,51 @@ Use `:mode tap|seek|pin` in the command bar to switch navigation modes.
 
 Press `:` to open the command bar (vim-style). Tab-completion narrows candidates as you type.
 
+Matching is fuzzy: the characters you type only have to appear in order, so `:fh` reaches `fit-height` and `smp` finds `SMAP` in the value picker. Candidates are ranked best-first, prefix matches ahead of looser ones. Set `seek.fuzzy: false` in `~/.juxt/settings.yaml` for strict prefix matching.
+
+Path arguments complete with `{placeholders}` in place: `:pattern plots/{sensor}/2⇥` lists what every sensor directory holds, so a template is built top-down instead of completing a concrete path and deleting the parts that should vary. `{` + `Tab` completes an existing axis name, and anonymous `{}` placeholders are numbered automatically.
+
+## Shell completion
+
+The same completion works at the shell prompt. Add one line to `~/.bashrc`:
+
+```bash
+eval "$(juxt --bash-completion)"
+```
+
+zsh needs `bashcompinit` first:
+
+```zsh
+autoload -U bashcompinit && bashcompinit
+eval "$(juxt --bash-completion)"
+```
+
+Then `juxt plots/{sensor}/2⇥` completes at the prompt, as do the command-line options. ble.sh is handled as well, through its own hook. Reload the shell (`source ~/.bashrc`, or open a new terminal) for it to take effect.
+
+Point `JUXT_COMPLETE` at `juxt-complete` if juxt lives in a virtualenv you do not activate:
+
+```bash
+export JUXT_COMPLETE=~/env/juxt/bin/juxt-complete
+```
+
+Placeholders standing for a known kind of value complete only as far as that value: `plots/{date}⇥` stops at `plots/{date}_` rather than swallowing the rest of the filename. The names that count are the ones listed under `placeholders:` in `~/.juxt/settings.yaml`, which juxt seeds with `date datetime time year month day doy` — edit or delete them, and completion follows. Date-style shorthands such as `{yyyy-mm-dd}` are recognised on sight, with or without an entry.
+
 | Command | Action |
 |---|---|
 | `:q` | quit |
 | `:fit` | fit image to window |
 | `:fit height` / `:fit width` | fit to height or width |
+| `:fit-off` | stop fitting, keep the current zoom |
 | `:zoom N` | set zoom to N% |
 | `:fullscreen` | toggle fullscreen |
+| `:version` | show the juxt version (`juxt --version` from the shell) |
 | `:mode tap\|seek\|pin` | switch navigation mode |
 | `:grid [AXIS]` | tile an axis into a grid of viewports |
 | `:grid AXIS VAL …` | grid with a value subset |
+| `:keys` | toggle the shortcut sidebar (`Ctrl+Shift+K`) |
+| `:grid-dialog` | open the grid builder dialogue (`Ctrl+Shift+G`) |
 | `:grid-layout NxM` | change grid layout without exiting |
-| `:ungrid` | return to single-image view |
+| `:grid-off` / `:ungrid` | return to single-image view |
 | `:grid-sharex` / `:grid-sharey` | toggle synchronized pan/zoom |
 
 ## Controls
@@ -149,4 +200,10 @@ Press `:` to open the command bar (vim-style). Tab-completion narrows candidates
 | Key | Action |
 |---|---|
 | `Enter` | toggle fullscreen |
-| `Ctrl+H` | toggle status bar |
+| `Ctrl+Shift+C` | copy the current image path to the clipboard |
+| right-click | menu: copy image path / copy image |
+| `Ctrl+Shift+H` | toggle status bar  (start hidden with `--no-status-bar`) |
+| `Ctrl+Shift+I` | toggle info sidebar  (start open with `--info`) |
+| `Ctrl+Shift+K` | toggle shortcut sidebar  (start open with `--keys`) |
+| `Ctrl+C` | copy the text selected in a sidebar  (otherwise cancels a command / value picker) |
+| `Ctrl+Shift+G` | open the grid builder dialogue |

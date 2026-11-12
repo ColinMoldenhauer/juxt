@@ -149,6 +149,31 @@ def test_detect_config_remote_sets_remote_field(ssh_remote, remote_plot_dir):
 
 
 @pytest.mark.ssh
+def test_axes_from_remote_template(ssh_remote, remote_plot_dir):
+    """Plain template mode (no pinning) discovers both axes via SFTP."""
+    from juxt.detect import _axes_from_remote_template
+
+    remote_base, axes = remote_plot_dir
+    template = f"{remote_base}/{{sensor}}_{{date}}.png"
+    found = _axes_from_remote_template(template, ssh_remote)
+    assert set(found["sensor"]) == set(axes["sensor"])
+    assert set(found["date"]) == set(axes["date"])
+
+
+@pytest.mark.ssh
+def test_axes_from_remote_template_pinned(ssh_remote, remote_plot_dir):
+    """A pinned placeholder is fixed to the given values; the rest are still
+    discovered by walking the remote tree."""
+    from juxt.detect import _axes_from_remote_template
+
+    remote_base, axes = remote_plot_dir
+    template = f"{remote_base}/{{sensor}}_{{date}}.png"
+    found = _axes_from_remote_template(template, ssh_remote, pinned={"sensor": ["A"]})
+    assert found["sensor"] == ["A"]
+    assert set(found["date"]) == set(axes["date"])
+
+
+@pytest.mark.ssh
 def test_preload_remote(ssh_remote, remote_plot_dir, qtbot):
     """preload_remote downloads files and returns valid pixmaps for all combos."""
     from juxt.loader import preload_remote

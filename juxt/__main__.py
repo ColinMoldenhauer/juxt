@@ -7,10 +7,24 @@ import socket
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSocketNotifier, QTimer
-from PySide6.QtGui import QCursor, QIcon
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QLineEdit, QProgressDialog
+from . import __version__
+from .complete import SCRIPT_FLAGS, WORDS_FLAG, expand_home, normalize_template
+from .complete import main as _complete_main
 
+# Shell completion runs on every Tab press, so answer it here — before Qt is
+# imported — which also lets `juxt` itself back the completion when the
+# standalone binary is all a user has installed.
+if len(sys.argv) > 1 and sys.argv[1] in (*SCRIPT_FLAGS, WORDS_FLAG):
+    sys.exit(_complete_main(sys.argv[1:]))
+
+from PySide6.QtCore import Qt, QSocketNotifier, QTimer  # noqa: E402
+from PySide6.QtGui import QCursor, QIcon  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QInputDialog,
+    QLineEdit,
+    QProgressDialog,
+)
 from .config import Config, _auto_keys, dump_config, load_config
 from .detect import (
     _axes_from_local_template,
@@ -20,10 +34,13 @@ from .detect import (
     _parse_remote_pattern,
     detect_config,
     detect_config_remote,
+    has_bare_wildcard,
     prompt_rename,
+    resolve_wildcard_template,
 )
 from .loader import preload, preload_remote
 from .settings import load_settings
+from .startup import StartupDialog
 from .viewer import MainWindow
 
 log = logging.getLogger(__name__)
@@ -97,11 +114,42 @@ def _print_help() -> None:
         "",
         "keys (all modes)",
         None,  # horizontal rule
-        "↑ ↓ ← →    navigate axes",
-        "Space       toggle between two positions",
-        "1–9         jump to Nth value on active axis",
-        ":           command mode  (:fit  :zoom N  :q)",
-        "Ctrl+H      toggle status bar",
+        "↑ ↓ ← →         navigate axes",
+        "Space           toggle between two positions",
+        "Home / End      first / last value on active axis",
+        "1–9             jump to Nth value on active axis",
+        "Enter           toggle fullscreen",
+        "Escape          exit fullscreen / cancel",
+        ":               command mode  (:fit  :zoom N  :q)",
+        "Ctrl+C          copy sidebar selection, else cancel command / picker",
+        "Ctrl+Shift+H    toggle status bar",
+        "Ctrl+Shift+I    toggle info sidebar",
+        "Ctrl+Shift+G    open the grid builder",
+        "Ctrl+Shift+C    copy current image path",
+        "Ctrl+Shift+K    toggle shortcut sidebar",
+        "",
+        "view controls",
+        None,  # horizontal rule
+        "0               reset zoom to 100%",
+        "double-click    fit image to window",
+        "drag            pan the image",
+        "right-click     copy path / image menu",
+        "wheel           step the ←/→ axis",
+        "Shift+wheel     step the ↑/↓ axis",
+        "Ctrl+wheel      zoom under the cursor",
+        "",
+        "mode keys",
+        None,  # horizontal rule
+        "tap    letter  +1 on that axis  (Letter = −1)",
+        "       Ctrl+letter  open value picker",
+        "seek   letter  incremental axis → value search",
+        "pin    letter  focus axis, then use arrows",
+        "       Ctrl+letter  open value picker",
+        "",
+        "Key bindings are configurable in",
+        "~/.juxt/settings.yaml  (also via :settings);",
+        "modifiers.swap there exchanges the Ctrl",
+        "and Shift roles on axis letter keys.",
         "",
     ]
     pad = 2
@@ -123,34 +171,99 @@ def _print_help() -> None:
   PATH accepts several forms (auto-detected):
     /path/to/dir              scan directory, detect axes from filenames
     plots/{sensor}_{date}.png local template with explicit placeholders
+    plots/{}/{}.png           anonymous placeholders, named axis_1, axis_2, …
+    plots/*.png               wildcard match, recursing into subdirs
+    {root}/*.png  --root A B  pin {root} then wildcard-match within each
+    {root}/{**plot}.png       {**name} captures across '/', for one axis
+                              spanning an arbitrarily deep subtree
     host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
     host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
     config.yaml               explicit YAML config file
-    (default: opens a directory picker)
+    (default: opens a dialog to browse a directory or build a template)
 
   -s, --separator SEP [...]   separator(s) for auto-detection
   -a, --auto                  skip axis naming prompt
+  -V, --version               print the juxt version and exit
       --max-depth N           max subdirectory search depth
       --save PATH             save resolved config to PATH after detection
+      --NAME VALUE [...]      pin a {placeholder}'s values instead of
+                              globbing for them (template/wildcard PATH
+                              only, must come after PATH); repeatable per
+                              placeholder; required for every {placeholder}
+                              before a '*' wildcard
+      --full-path             show a {**name} axis as the full path matched
+                              instead of pruning the part shared by every
+                              match (see {root}/{**plot}.png above)
       --no-watch              disable automatic file watching (local only)
       --watch-interval SEC    poll remote for changes every SEC seconds (default: 5, 0 to disable)
       --axis-h NAME           lock ←/→ to this axis on startup
       --axis-v NAME           lock ↑/↓ to this axis on startup
       --squeeze               drop axes with only one value
-      --name NAME             session name shown in window title (default: template basename)
+      --name NAME             session name shown in window title (default: the template path
+                              and any pinned values)
+
+  panels (toggled at runtime with Ctrl+Shift+I / Ctrl+Shift+H / Ctrl+Shift+K)
+      --info                  start with the info sidebar open   (default: closed)
+      --no-info               start with the info sidebar closed
+      --status-bar            start with the status bar shown    (default: shown)
+      --no-status-bar         start with the status bar hidden
+      --keys                  start with the shortcut sidebar open (default: closed)
+      --no-keys               start with the shortcut sidebar closed
 
   grid view
       --grid AXIS             enter grid view for AXIS on startup
+                              (or build one in the UI with Ctrl+Shift+G)
       --grid-values VAL ...   show only these values in the grid (requires --grid)
       --grid-layout NxM       explicit grid layout, e.g. 2x3 (requires --grid)
       --no-sharex             disable synchronized horizontal pan/zoom in grid view
       --no-sharey             disable synchronized vertical pan/zoom in grid view
   -h, --help                  show this message and exit
 
-  navigation modes (switch with :mode)
-    tap   letter=+1/LETTER=-1 on that axis (default)
-    seek  type to search axes and values by prefix
-    pin   letter focuses axis; arrows navigate""")
+  shell completion (bash / zsh)
+    eval "$(juxt --bash-completion)"  complete options and {placeholder} paths
+
+  commands (press : in the viewer, Tab completes)
+    :fit  :fit-width  :fit-height  :fit-off  :zoom N  :fullscreen
+    :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :grid-off
+    :grid-sharex on|off  :grid-sharey on|off
+    :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes
+    :mode tap|seek|pin  :switch-last  :info  :keys
+    :pattern PATH  :reload  :watch true|false
+    :remove-axis NAME  :remove-value AXIS VALUE
+    :change-key AXIS LETTER  :settings
+    :copy-image  :copy-path  :write [PATH]  :quit""")
+
+
+def _parse_axis_pins(unknown: list[str]) -> dict[str, list[str]]:
+    """Turn leftover argv (`['--sensor', 'A', 'B', '--date', 'X']`) into
+    `{'sensor': ['A', 'B'], 'date': ['X']}`.
+
+    Axis names are taken verbatim, unlike a generic flag-to-kwarg grabber,
+    since a {placeholder} name may itself contain hyphens (e.g. {yyyy-mm-dd}).
+    Must appear after PATH on the command line — argparse would otherwise
+    swallow a pinned value as PATH before it ever sees the real one.
+    """
+    pins: dict[str, list[str]] = {}
+    current: str | None = None
+    for arg in unknown:
+        if arg.startswith("--"):
+            current = arg[2:]
+            if not current:
+                raise SystemExit(f"Unexpected argument {arg!r}")
+            if current in pins:
+                raise SystemExit(f"Duplicate axis flag: --{current}")
+            pins[current] = []
+        else:
+            if current is None:
+                raise SystemExit(
+                    f"Unrecognized argument {arg!r}. To pin a {{placeholder}}'s "
+                    f"values, use '--NAME VALUE ...' after PATH."
+                )
+            pins[current].append(arg)
+    for name, values in pins.items():
+        if not values:
+            raise SystemExit(f"--{name} was given no values to pin.")
+    return pins
 
 
 class _HelpAction(argparse.Action):
@@ -164,7 +277,7 @@ class _HelpAction(argparse.Action):
         parser.exit()
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     p = argparse.ArgumentParser(prog="juxt", add_help=False)
     p.add_argument("path", nargs="?", default=None, metavar="PATH")
     p.add_argument("-s", "--separator", metavar="SEP", nargs="+")
@@ -177,6 +290,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--axis-v", metavar="NAME", default=None)
     p.add_argument("--squeeze", action="store_true", default=False)
     p.add_argument("--name", metavar="NAME", default=None)
+    p.add_argument("--full-path", action="store_true", default=False)
+    # Initial panel visibility; both are still toggleable at runtime.
+    # These are declared here so parse_known_args recognises them; an
+    # unrecognised --flag after PATH is read as an axis pin instead.
+    p.add_argument("--info", dest="info", action="store_true", default=False)
+    p.add_argument("--no-info", dest="info", action="store_false")
+    p.add_argument("--status-bar", dest="status_bar", action="store_true", default=True)
+    p.add_argument("--no-status-bar", dest="status_bar", action="store_false")
+    p.add_argument("--keys", dest="keys", action="store_true", default=False)
+    p.add_argument("--no-keys", dest="keys", action="store_false")
 
     g = p.add_argument_group("grid view")
     g.add_argument("--grid", metavar="AXIS", default=None)
@@ -186,11 +309,17 @@ def _parse_args() -> argparse.Namespace:
     g.add_argument("--no-sharey", action="store_true", default=False)
 
     p.add_argument("-h", "--help", action=_HelpAction)
-    return p.parse_args()
+    p.add_argument("-V", "--version", action="version", version=f"juxt {__version__}")
+
+    # Any flag not recognized above and appearing after PATH is treated as
+    # '--{placeholder} VALUE ...', pinning that template placeholder to an
+    # explicit value list instead of discovering it by globbing.
+    args, unknown = p.parse_known_args()
+    return args, _parse_axis_pins(unknown)
 
 
 def main():
-    args = _parse_args()
+    args, pins = _parse_args()
     import os
     _setup_logging(
         os.environ.get("JUXT_LOG_LEVEL", "WARNING").upper(),
@@ -243,42 +372,55 @@ def main():
         return _pw_cache[0]
 
     if args.path is None:
-        dlg = QFileDialog(None, "Select image directory", str(Path.home()))
-        dlg.setFileMode(QFileDialog.FileMode.Directory)
-        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        if not app_icon.isNull():
-            dlg.setWindowIcon(app_icon)
+        dlg = StartupDialog(str(Path.home()), app_icon=app_icon)
+        QTimer.singleShot(0, lambda: dlg.move(
+            _startup_screen.geometry().center() - dlg.rect().center()))
         QTimer.singleShot(0, lambda: _force_focus(dlg))
-        chosen = dlg.selectedFiles()[0] if dlg.exec() else ""
+        chosen = dlg.chosen_path() if dlg.exec() else ""
         if not chosen:
             sys.exit(0)
         args.path = chosen
 
     try:
-        raw = args.path
+        raw = expand_home(normalize_template(args.path))  # anonymous {} → {axis_1}, …; ~ → home
         if _is_remote_pattern(raw):
             remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
             if '{' in remote_tmpl:
-                axes = _axes_from_remote_template(remote_tmpl, remote_cfg, _ask_password)
+                axes = _axes_from_remote_template(remote_tmpl, remote_cfg, _ask_password, pinned=pins)
                 config = Config(template=remote_tmpl, axes=axes,
                                 keys=_auto_keys(axes), remote=remote_cfg)
             else:
+                if pins:
+                    raise ValueError(
+                        "--<axis> VALUE pinning requires a {placeholder} template, "
+                        "not a plain remote directory"
+                    )
                 config, sep, n_remote = detect_config_remote(
                     remote_tmpl, remote_cfg, args.separator, _ask_password)
                 if not args.auto:
                     config = prompt_rename(config, n_remote, sep)
         elif Path(raw).is_dir():
+            if pins:
+                raise ValueError(
+                    "--<axis> VALUE pinning requires a {placeholder} template, not a directory"
+                )
             p = Path(raw)
             files = _iter_images(p, args.max_depth)
             config, sep = detect_config(p, args.separator, args.max_depth)
             if not args.auto:
                 config = prompt_rename(config, len(files), sep, p, args.max_depth)
         elif raw.lower().endswith((".yaml", ".yml")):
+            if pins:
+                raise ValueError(
+                    "--<axis> VALUE pinning requires a {placeholder} template, not a YAML config"
+                )
             config = load_config(raw)
+        elif has_bare_wildcard(raw):
+            template, axes = resolve_wildcard_template(raw, pinned=pins)
+            config = Config(template=template, axes=axes, keys=_auto_keys(axes))
         elif '{' in raw:
-            axes = _axes_from_local_template(raw)
-            config = Config(template=raw, axes=axes, keys=_auto_keys(axes))
+            template, axes = _axes_from_local_template(raw, pinned=pins, full_path=args.full_path)
+            config = Config(template=template, axes=axes, keys=_auto_keys(axes))
         else:
             print(
                 f"Error: {raw!r} is not a directory, YAML config, "
@@ -394,6 +536,9 @@ def main():
         if not m:
             print(f"Warning: --grid-layout {args.grid_layout!r} is not a valid NxM layout, ignoring",
                   file=sys.stderr)
+        elif int(m.group(1)) < 1 or int(m.group(2)) < 1:
+            print(f"Warning: --grid-layout {args.grid_layout!r} needs rows and cols >= 1, ignoring",
+                  file=sys.stderr)
         else:
             grid_layout = (int(m.group(1)), int(m.group(2)))
 
@@ -416,13 +561,26 @@ def main():
         axis_h=args.axis_h,
         axis_v=args.axis_v,
         session_name=args.name,
+        pinned_axes=list(pins),
         seek_greedy=settings.seek_greedy,
+        seek_fuzzy=settings.seek_fuzzy,
+        swap_modifiers=settings.swap_modifiers,
+        skip_missing=settings.skip_missing,
+        dim_missing=settings.dim_missing,
+        sidebar_copy=settings.sidebar_copy,
         keybindings=settings.keybindings,
+        highlight=settings.highlight,
+        highlight_candidates=settings.highlight_candidates,
+        sidebar_separator=settings.sidebar_separator,
+        sidebar_list_larger_than=settings.sidebar_list_larger_than,
         grid=args.grid,
         grid_values=args.grid_values,
         grid_layout=grid_layout,
         grid_sharex=not args.no_sharex,
         grid_sharey=not args.no_sharey,
+        show_info=args.info,
+        show_status_bar=args.status_bar,
+        show_keys=args.keys,
     )
     window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()

@@ -4,13 +4,24 @@ import html as _html
 import logging
 import re as _re
 import threading
+from collections.abc import Collection
 from enum import IntEnum
+from pathlib import Path
 from typing import Literal
 
 from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QFontMetrics,
+    QKeyEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QDockWidget,
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -18,16 +29,158 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QSizePolicy,
     QStackedWidget,
     QTextEdit,
+    QToolTip,
     QWidget,
 )
 
+from . import __version__
+from .fuzzy import fuzzy_filter, prefix_filter
+from .complete import (
+    complete_path,
+    complete_placeholder_name,
+    local_listdir,
+    expand_home,
+    normalize_template,
+    placeholder_html,
+    reset_placeholder_shapes,
+    sftp_listdir,
+)
+from .loader import MissingPixmap
 from .config import Config
-from .settings import SETTINGS_PATH, load_settings
+from .settings import (
+    DEFAULT_HIGHLIGHT,
+    DEFAULT_HIGHLIGHT_CANDIDATES,
+    SETTINGS_PATH,
+    Highlight,
+    load_settings,
+    parse_highlight,
+)
 
 log = logging.getLogger(__name__)
+
+# Fallback highlight formats, used until settings are applied.
+_HL_DEFAULT = parse_highlight(DEFAULT_HIGHLIGHT)
+_DIM_COLOR = "#555"
+_HL_DEFAULT_CANDIDATES = parse_highlight(DEFAULT_HIGHLIGHT_CANDIDATES)
+
+# Colour of a non-highlighted value link in the info sidebar.
+_LINK_COLOR = "#ddd"
+
+# Section headers in both sidebars ("path", an axis name, "view", …).  Warm
+# against the blue used for anything interactive, so a header reads as a label
+# rather than as something to click.
+_HEADER_COLOR = "#d8a657"
+
+# Key chords in the shortcut sidebar, picking up the app's accent so the chord
+# separates from its description at a glance.
+_KEY_COLOR = "#66aaff"
+
+# Floor for the shortcut sidebar's key column; the real width is measured from
+# the chords actually on show (see ShortcutPanel._key_column_px).
+_KEY_COL_MIN_PX = 90
+
+# ── info-sidebar links ────────────────────────────────────────────────────────
+
+_VALUE_HREF = "juxt:value/{axis}/{value}"
+_VALUE_HREF_RE = _re.compile(r"^juxt:value/(\d+)/(\d+)$")
+_AXIS_HREF = "juxt:axis/{axis}"
+_AXIS_HREF_RE = _re.compile(r"^juxt:axis/(\d+)$")
+
+# Width of the info sidebar's viewport that its text cannot use: the 8px body
+# margin and 4px document margin on each side, plus generous slack (measured,
+# the usable width came out about 7px short of the margins alone, and font
+# rounding differs between platforms).  Rows are packed against what is left,
+# so too small only costs a column of fill, while too large lets Qt break a
+# value across lines.
+_SIDEBAR_TEXT_INSET_PX = 40
+
+
+def _sp(text: str) -> str:
+    """Escape *text* for rich text, keeping runs of spaces intact."""
+    return _html.escape(text).replace(" ", "&nbsp;")
+
+
+def _hl_css(hl: Highlight) -> str:
+    """Inline CSS for a parsed highlight format."""
+    parts = []
+    if hl.color:
+        parts.append(f"color:{hl.color}")
+    if hl.bold:
+        parts.append("font-weight:bold")
+    if hl.italic:
+        parts.append("font-style:italic")
+    parts.append("text-decoration:underline" if hl.underline else "text-decoration:none")
+    return ";".join(parts)
+
+
+def _hl(text: str, hl: Highlight = _HL_DEFAULT) -> str:
+    """Apply the highlight format *hl* to the already-escaped *text*."""
+    if hl.raw is not None:
+        return hl.raw.replace("{}", text)
+    return (f'<span style="{_hl_css(hl)}">'
+            f'{_sp(hl.prefix)}{text}{_sp(hl.suffix)}</span>')
+
+
+def _rich(text: str) -> str:
+    """Mark *text* as rich text for _ElidingLabel, even without any tag."""
+    return f"<span>{text}</span>"
+
+
+def _candidate_html(
+    candidates: list[str], cursor: int, hl: Highlight = _HL_DEFAULT_CANDIDATES
+) -> str:
+    """Render a status-bar candidate list, highlighting the one at *cursor*."""
+    return "&nbsp;&nbsp;".join(
+        _hl(_sp(c), hl) if i == cursor else _sp(c)
+        for i, c in enumerate(candidates)
+    )
+
+
+def _value_href(axis_idx: int, val_idx: int) -> str:
+    """Anchor target encoding one (axis, value) pair for the info sidebar."""
+    return _VALUE_HREF.format(axis=axis_idx, value=val_idx)
+
+
+def _parse_value_href(href: str) -> tuple[int, int] | None:
+    """Inverse of :func:`_value_href`; returns None for foreign hrefs."""
+    m = _VALUE_HREF_RE.match(href)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _axis_href(axis_idx: int) -> str:
+    """Anchor target of one axis header in the info sidebar."""
+    return _AXIS_HREF.format(axis=axis_idx)
+
+
+def _parse_axis_href(href: str) -> int | None:
+    """Inverse of :func:`_axis_href`; returns None for foreign hrefs."""
+    m = _AXIS_HREF_RE.match(href)
+    return int(m.group(1)) if m else None
+
+
+def _pack_rows(widths: list[int], sep_w: int, limit: int) -> list[list[int]]:
+    """Group item indices into rows, each at most *limit* pixels wide.
+
+    *widths* are the item widths and *sep_w* the gap between neighbours in a
+    row.  Items go in order, filling a row before starting the next, so the
+    caller never leaves it to the text engine to decide where a value breaks.
+    An item wider than *limit* still gets a row of its own.
+    """
+    rows: list[list[int]] = []
+    used = 0
+    for idx, w in enumerate(widths):
+        if rows and used + sep_w + w <= limit:
+            rows[-1].append(idx)
+            used += sep_w + w
+        else:
+            rows.append([idx])
+            used = w
+    return rows
+
 
 # ── key-binding parser ────────────────────────────────────────────────────────
 
@@ -93,19 +246,34 @@ def _chord_str(key: int, mods: int) -> str:
     return "+".join(parts) if parts else "?"
 
 
+def _modifier_roles(swap: bool) -> tuple[Qt.KeyboardModifier, Qt.KeyboardModifier]:
+    """(value-picker modifier, reverse-navigation modifier) for axis letter keys.
+
+    Ctrl picks and Shift reverses by default; *swap* exchanges the two for
+    users who would rather hold Shift for the picker.
+    """
+    if swap:
+        return Qt.ShiftModifier, Qt.ControlModifier
+    return Qt.ControlModifier, Qt.ShiftModifier
+
+
 def _keybinding_conflicts(
     parsed_bindings: dict[tuple[int, int], str],
     axis_letters: set[str],
+    swap_modifiers: bool = False,
 ) -> list[str]:
     """Return one human-readable description per binding that shadows navigation.
 
     Conflicts per mode (key type → affected modes):
       bare letter       → seek always; tap + pin if the letter is an axis key
-      Shift+letter      → tap if letter is an axis key (navigate -1)
-      Ctrl+letter       → tap + pin if letter is an axis key (value picker)
+      picker modifier   → tap + pin if letter is an axis key (value picker)
+      reverse modifier  → tap if letter is an axis key (navigate -1)
+
+    Which physical modifier plays which role follows *swap_modifiers*, so the
+    warning names the chord that is actually shadowed.
     """
-    ctrl = Qt.ControlModifier.value
-    shift = Qt.ShiftModifier.value
+    picker, reverse = _modifier_roles(swap_modifiers)
+    picker, reverse = picker.value, reverse.value
     conflicts = []
     for (key, mods), action in sorted(parsed_bindings.items()):
         if not (Qt.Key_A <= key <= Qt.Key_Z):
@@ -116,12 +284,12 @@ def _keybinding_conflicts(
             clashing.append("seek")
             if letter in axis_letters:
                 clashing += ["tap", "pin"]
-        elif mods == shift:
-            if letter in axis_letters:
-                clashing.append("tap")
-        elif mods == ctrl:
+        elif mods == picker:
             if letter in axis_letters:
                 clashing += ["tap", "pin"]
+        elif mods == reverse:
+            if letter in axis_letters:
+                clashing.append("tap")
         if clashing:
             axis_note = f" (axis key '{letter}')" if letter in axis_letters else ""
             conflicts.append(
@@ -138,23 +306,30 @@ _COMMANDS = [
     "change-key",
     "copy-image",
     "copy-path",
+    "dim-missing",
     "fit",
     "fit-height",
+    "fit-off",
     "fit-width",
     "fullscreen",
     "grid",
+    "grid-dialog",
     "grid-layout",
+    "grid-off",
     "grid-sharex",
     "grid-sharey",
     "info",
+    "keys",
     "mode",
     "pattern",
     "quit",
     "reload",
     "remove-axis",
     "settings",
+    "skip-missing",
     "remove-value",
     "ungrid",
+    "version",
     "watch",
     "write",
     "swap-axes",
@@ -174,6 +349,7 @@ _CMD_ARGS: dict[str, list[str]] = {
     "axis-h": [],
     "axis-v": [],
     "change-key": [],
+    "dim-missing": ["on", "off"],
     "grid": [],
     "grid-layout": [],
     "grid-sharex": ["on", "off"],
@@ -182,9 +358,16 @@ _CMD_ARGS: dict[str, list[str]] = {
     "pattern": [],  # free-text path / template
     "remove-axis": [],
     "remove-value": [],
+    "skip-missing": ["on", "off"],
     "watch": ["true", "false"],
     "write": [],    # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
+}
+
+# What a command expects as its argument, shown while the argument is empty or
+# does not match any listed option.
+_ARG_FORMATS: dict[str, str] = {
+    "grid-layout": "NxM  (rows x columns, e.g. 2x3)",
 }
 
 # Commands whose argument is free-text — preserve case when the user types it.
@@ -197,17 +380,22 @@ _COMMAND_HELP: dict[str, str] = {
     "change-key":   "assign a key letter to an axis  (e.g. change-key sensor x)",
     "copy-image":   "copy current image to clipboard",
     "copy-path":    "copy current image file path to clipboard",
+    "dim-missing":  "dim sidebar values with no file on the last-moved axis  (on / off)",
     "axis-h":       "lock ←/→ to a named axis",
     "axis-v":       "lock ↑/↓ to a named axis",
     "fit":          "fit image to window",
     "fit-height":   "fit image height to viewport",
+    "fit-off":      "stop auto-fitting; keep the current zoom",
     "fit-width":    "fit image width to viewport",
     "fullscreen":   "toggle fullscreen",
     "grid":         "expand an axis into a tiled grid  (e.g. grid sensor  /  grid sensor SMAP SMOS  /  grid sensor 2x2)",
+    "grid-dialog":  "open the point-and-click grid builder  (Ctrl+Shift+G)",
     "grid-layout":  "change the grid layout without exiting  (e.g. grid-layout 2x3)",
+    "grid-off":     "leave grid view and return to the single image  (same as ungrid)",
     "grid-sharex":  "toggle or set synchronized horizontal pan/zoom  (on / off)",
     "grid-sharey":  "toggle or set synchronized vertical pan/zoom  (on / off)",
     "info":         "toggle the info sidebar",
+    "keys":         "toggle the keyboard shortcut sidebar  (Ctrl+Shift+K)",
     "mode":         "switch navigation mode  (tap / seek / pin)",
     "pattern":      "change the template / source path without restarting",
     "quit":         "quit juxt",
@@ -216,8 +404,10 @@ _COMMAND_HELP: dict[str, str] = {
     "remove-axis":  "remove an axis (collapses to its current value)",
     "remove-value": "remove a value from an axis  (e.g. remove-value sensor SMAP)",
     "ungrid":       "return to single-image view",
+    "version":      "show the juxt version",
     "write":        "write current config to a YAML file",
     "swap-axes":    "swap the ←/→ and ↑/↓ axis bindings",
+    "skip-missing": "skip combinations with no file when cycling  (on / off)",
     "switch-last":  "toggle between current and previous position",
     "watch":        "enable / disable / configure file watching",
     "zoom":         "set zoom level  (e.g. zoom 150)",
@@ -283,21 +473,87 @@ class NavMode(IntEnum):
         return ("tap", "seek", "pin")[self]
 
 
-def _window_title(config: "Config", session_name: str | None = None) -> str:
-    from pathlib import PurePosixPath
+# Longest title text after "juxt | ".  Past this the path gives way, from the
+# left, because the end of a template is what tells two sessions apart.
+_TITLE_MAX = 100
+# Longest "[axis: values]" suffix; pinning many values must not push the path out.
+_TITLE_PINS_MAX = 40
+# Fewest path characters kept, however much else the title carries.
+_TITLE_PATH_MIN = 20
+
+
+def _collapse_home(path: str, home: str) -> str:
+    """*path* with a leading *home* directory written as ``~``."""
+    home = home.rstrip("/\\")
+    if home and path.startswith(home) and path[len(home):len(home) + 1] in ("/", "\\"):
+        return "~" + path[len(home):]
+    return path
+
+
+def _elide_path(path: str, room: int) -> str:
+    """*path* cut from the left to at most *room* characters.
+
+    Starts at a path separator where it can, so the first component shown is
+    a whole one, and is marked with a leading ``…/``.
+    """
+    if len(path) <= room:
+        return path
+    tail = path[-max(room - 2, 1):]
+    if path[len(path) - len(tail) - 1] in "/\\":
+        return "…/" + tail                  # the cut fell between components
+    cut = _re.search(r"[\\/]", tail)
+    if cut is not None and cut.end() < len(tail):
+        return "…/" + tail[cut.end():]      # drop the partial first component
+    return "…" + path[-max(room - 1, 1):]   # one component too long on its own
+
+
+def _title_pins(config: "Config", pinned: Collection[str]) -> str:
+    """``[axis: a, b]`` for the axes pinned on the command line, with the
+    values they hold now (a reload may have changed them); "" for none."""
+    parts = [f"{name}: {', '.join(config.axes[name])}"
+             for name in pinned if config.axes.get(name)]
+    text = "; ".join(parts)
+    if len(text) > _TITLE_PINS_MAX:
+        text = text[:_TITLE_PINS_MAX - 1].rstrip(" ,;") + "…"
+    return f"[{text}]" if text else ""
+
+
+def _window_title(
+    config: "Config",
+    session_name: str | None = None,
+    pinned: Collection[str] = (),
+    home: str | None = None,
+) -> str:
+    """The window title: ``--name`` if given, else the template path.
+
+    The template is shown whole with the home directory as ``~`` (a remote
+    session leads with its host instead), followed by any pinned values, and
+    is cut from the left once the text after "juxt | " would pass _TITLE_MAX.
+    """
     if session_name:
         return f"juxt | {session_name}"
-    parts = PurePosixPath(config.template).parts
-    name = "/".join(parts[-2:]) if len(parts) >= 2 else (parts[0] if parts else config.template)
+    path = config.template
     if config.remote:
-        return f"juxt | {config.remote.host}: {name}"
-    return f"juxt | {name}"
+        lead = f"{config.remote.host}: "
+    else:
+        lead = ""
+        path = _collapse_home(path, str(Path.home()) if home is None else home)
+    pins = _title_pins(config, pinned)
+    reserved = len(lead) + (len(pins) + 1 if pins else 0)
+    path = _elide_path(path, max(_TITLE_MAX - reserved, _TITLE_PATH_MIN))
+    return f"juxt | {lead}{path}" + (f" {pins}" if pins else "")
+
+
+# Focus accent, matching the :default button border in dialogs.py.
+_ACCENT = QColor(102, 170, 255)
 
 
 class _CellView(QGraphicsView):
     """Single-image viewport used inside GridWidget."""
 
     zoomed = Signal(object)  # emits self.transform() after a wheel-zoom
+    clicked = Signal()       # emits on mouse press, to claim grid focus
+    menu_requested = Signal(object)  # emits the global QPoint of a right-click
 
     def __init__(self, label: str, parent=None):
         scene = QGraphicsScene()
@@ -308,6 +564,7 @@ class _CellView(QGraphicsView):
         scene.addItem(self._item)
         self._fit: Literal["image", "height", "width"] | None = None
         self._label_text = label
+        self._focused = False
 
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -323,6 +580,17 @@ class _CellView(QGraphicsView):
         self._scene.setSceneRect(QRectF(pm.rect()))
         if self._fit is not None:
             getattr(self, f"fit_{self._fit}")()
+
+    def set_label(self, text: str):
+        """Cells are reused as the visible window scrolls, so labels change."""
+        if text != self._label_text:
+            self._label_text = text
+            self.viewport().update()
+
+    def set_focused(self, on: bool):
+        if on != self._focused:
+            self._focused = on
+            self.viewport().update()
 
     def fit_image(self):
         self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
@@ -357,6 +625,9 @@ class _CellView(QGraphicsView):
         self._fit = None
         self.resetTransform()
 
+    def fit_off(self):
+        self._fit = None
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
             factor = 1.15 ** (event.angleDelta().y() / 120)
@@ -367,26 +638,43 @@ class _CellView(QGraphicsView):
             super().wheelEvent(event)
 
     def drawForeground(self, painter: QPainter, _rect):
-        if not self._label_text:
-            return
         painter.save()
         painter.resetTransform()   # switch to viewport pixel coordinates
-        fm = painter.fontMetrics()
-        pad_x, pad_y, margin = 5, 2, 4
-        text_w = fm.horizontalAdvance(self._label_text)
-        text_h = fm.height()
-        bg = QRectF(margin, margin, text_w + 2 * pad_x, text_h + 2 * pad_y)
-        painter.fillRect(bg, QColor(0, 0, 0, 160))
-        painter.setPen(QColor(224, 224, 224))
-        painter.drawText(
-            int(bg.x() + pad_x),
-            int(bg.y() + pad_y + text_h - fm.descent()),
-            self._label_text,
-        )
+        if self._focused:
+            # Marks the cell the grid axis is currently on — the one that
+            # scrolls the window when it steps past an edge.
+            painter.setPen(QPen(_ACCENT, 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(self.viewport().rect().adjusted(1, 1, -1, -1))
+        if self._label_text:
+            fm = painter.fontMetrics()
+            pad_x, pad_y, margin = 5, 2, 4
+            text_w = fm.horizontalAdvance(self._label_text)
+            text_h = fm.height()
+            bg = QRectF(margin, margin, text_w + 2 * pad_x, text_h + 2 * pad_y)
+            painter.fillRect(bg, _ACCENT if self._focused else QColor(0, 0, 0, 160))
+            painter.setPen(QColor(255, 255, 255) if self._focused
+                           else QColor(224, 224, 224))
+            painter.drawText(
+                int(bg.x() + pad_x),
+                int(bg.y() + pad_y + text_h - fm.descent()),
+                self._label_text,
+            )
         painter.restore()
+
+    def mousePressEvent(self, event):
+        # Press, not release, so claiming focus does not wait out a pan drag.
+        self.clicked.emit()
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, _event):
         self.fit_image()
+
+    def contextMenuEvent(self, event):
+        # The press that opened the menu already claimed grid focus, so the
+        # menu speaks about this pane.
+        self.menu_requested.emit(event.globalPos())
+        event.accept()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -396,6 +684,8 @@ class _CellView(QGraphicsView):
 
 class GridWidget(QWidget):
     """Grid of independent image viewports with optional scroll/zoom sync."""
+
+    focus_requested = Signal(int)   # cell index the user clicked into
 
     def __init__(
         self,
@@ -411,13 +701,17 @@ class GridWidget(QWidget):
         self._sharex = sharex
         self._sharey = sharey
         self._syncing = False
+        self._rows = rows
+        self._cols = cols
 
         layout = QGridLayout(self)
         layout.setSpacing(4)
         layout.setContentsMargins(0, 0, 0, 0)
         self._cells: list[_CellView] = []
 
-        for i, label in enumerate(labels):
+        # The layout is a hard cap: with more values than slots the extra ones
+        # are reached by scrolling the window, not by growing the grid.
+        for i, label in enumerate(labels[: rows * cols]):
             row, col = i // cols, i % cols
             cell = _CellView(label)
             layout.addWidget(cell, row, col)
@@ -429,6 +723,8 @@ class GridWidget(QWidget):
                 lambda val, c=cell: self._on_vscroll(val, c)
             )
             cell.zoomed.connect(lambda t, c=cell: self._on_zoom(t, c))
+            cell.clicked.connect(lambda i=i: self.focus_requested.emit(i))
+            cell.menu_requested.connect(self._image_view.show_image_menu)
 
     # ── sync handlers ─────────────────────────────────────────────────────────
 
@@ -467,15 +763,31 @@ class GridWidget(QWidget):
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def update_cells(self, base_pos: list, axis_idx: int, indices: list[int], pixmaps: dict):
-        for grid_i, vi in enumerate(indices):
-            if grid_i >= len(self._cells):
-                break
+    def capacity(self) -> int:
+        """How many values fit on screen at once."""
+        return len(self._cells)
+
+    def update_cells(
+        self,
+        base_pos: list,
+        axis_idx: int,
+        indices: list[int],
+        labels: list[str],
+        pixmaps: dict,
+        focused: int = -1,
+    ):
+        """Fill the cells from *indices* — the currently visible window."""
+        for slot, cell in enumerate(self._cells):
+            if slot >= len(indices):
+                cell.set_focused(False)
+                continue
             key = list(base_pos)
-            key[axis_idx] = vi
+            key[axis_idx] = indices[slot]
             pm = pixmaps.get(tuple(key))
             if pm and not pm.isNull():
-                self._cells[grid_i].set_pixmap(pm)
+                cell.set_pixmap(pm)
+            cell.set_label(labels[slot])
+            cell.set_focused(slot == focused)
 
     def fit_image(self):
         for cell in self._cells:
@@ -488,6 +800,10 @@ class GridWidget(QWidget):
     def fit_width(self):
         for cell in self._cells:
             cell.fit_width()
+
+    def fit_off(self):
+        for cell in self._cells:
+            cell.fit_off()
 
     def set_zoom(self, pct: float):
         for cell in self._cells:
@@ -514,6 +830,7 @@ class ImageView(QGraphicsView):
     state_changed = Signal()
     toggle_bar = Signal()
     toggle_info = Signal()
+    toggle_keys = Signal()
     config_changed = Signal()           # emitted after reload/pattern successfully replaces config
     grid_mode_changed = Signal(object)  # emits GridWidget on enter, None on exit
     _poll_result = Signal(object)       # emitted from poll worker; carries list or Exception
@@ -534,6 +851,11 @@ class ImageView(QGraphicsView):
         axis_h: str | None = None,
         axis_v: str | None = None,
         seek_greedy: bool = True,
+        seek_fuzzy: bool = True,
+        swap_modifiers: bool = False,
+        skip_missing: bool = False,
+        dim_missing: bool = False,
+        sidebar_copy: str = "selected",
         keybindings: dict[str, str] | None = None,
         grid: str | None = None,
         grid_values: list[str] | None = None,
@@ -572,6 +894,15 @@ class ImageView(QGraphicsView):
         self._active_axis_timer.setSingleShot(True)
         self._active_axis_timer.timeout.connect(self._clear_active_axis)
 
+        # Set by _refresh() when the change that triggered it should force
+        # the info sidebar to scroll the given (axis, value) into view,
+        # e.g. letter-shortcut stepping in tap mode; None otherwise, which
+        # keeps the sidebar's current scroll position instead.
+        self._sidebar_target: tuple[int, int] | None = None
+
+        # Read-only text widgets (the sidebars) whose selection Ctrl+C copies.
+        self._copy_sources: list[QTextEdit] = []
+
         self._watching = False
         self._watcher: QFileSystemWatcher | None = None
         self._path_to_key: dict[str, tuple] = {}
@@ -579,6 +910,11 @@ class ImageView(QGraphicsView):
         self._fit: Literal["image", "height", "width"] | None = None
         self._pre_fullscreen_maximized: bool | None = None
         self._seek_greedy: bool = seek_greedy
+        self._seek_fuzzy: bool = seek_fuzzy
+        self._swap_modifiers: bool = swap_modifiers
+        self._skip_missing: bool = skip_missing
+        self._dim_missing: bool = dim_missing
+        self._sidebar_copy: str = sidebar_copy
         self._keybindings: dict[tuple[int, int], str] = {}
         for _ks, _action in (keybindings or {}).items():
             try:
@@ -634,6 +970,8 @@ class ImageView(QGraphicsView):
         self._grid_axis: int | None = None
         self._grid_filter: list[int] | None = None   # None = all values
         self._grid_layout: tuple[int, int] | None = None  # explicit (rows, cols)
+        self._grid_slots: list[int] = []  # value index shown in each pane
+        self._grid_focus: int = 0        # pane the grid axis acts on
         self._grid_sharex: bool = grid_sharex
         self._grid_sharey: bool = grid_sharey
         self._grid_widget: GridWidget | None = None
@@ -661,25 +999,85 @@ class ImageView(QGraphicsView):
     def _key(self) -> tuple:
         return tuple(self.pos)
 
-    def _refresh(self):
+    def _refresh(self, sidebar_target: tuple[int, int] | None = None):
+        self._sidebar_target = sidebar_target
         if self._grid_axis is not None:
             self._refresh_grid()
             return
         pm = self.pixmaps.get(self._key())
         if pm:
+            resized = pm.size() != self._item.pixmap().size()
             self._item.setPixmap(pm)
             self._scene.setSceneRect(QRectF(pm.rect()))
+            # In fit mode an image of a different size is fitted afresh.  Same
+            # size keeps the view as it is, so a pan along the fitted axis
+            # survives flipping through congruent plots.
+            if resized and self._fit is not None:
+                getattr(self, f"fit_{self._fit}")()
         self.viewport().update()
         self.state_changed.emit()
+
+    def _grid_indices(self) -> list[int]:
+        """Value indices the grid is showing, in order (before windowing)."""
+        if self._grid_axis is None:
+            return []
+        if self._grid_filter is not None:
+            return self._grid_filter
+        return list(range(len(self.axis_values[self._grid_axis])))
+
+    def _grid_candidates(self) -> list[int]:
+        """Values the focused pane may cycle through.
+
+        Everything the grid was given, minus what the *other* panes are already
+        showing — stepping the axis walks the values that aren't on screen yet
+        instead of duplicating a neighbour.
+        """
+        others = {vi for i, vi in enumerate(self._grid_slots) if i != self._grid_focus}
+        return [vi for vi in self._grid_indices() if vi not in others]
+
+    def _grid_sync_focus(self):
+        """Push ``pos`` on the grid axis into the focused pane.
+
+        Anything that moves the axis — stepping, the value picker, Home/End —
+        lands here, so the pane the user is working in is the only one that
+        changes.  Panes stay distinct: picking a value another pane already
+        holds exchanges the two rather than showing it twice.
+        """
+        if not self._grid_slots:
+            return
+        cur = self.pos[self._grid_axis]
+        f = self._grid_focus
+        if self._grid_slots[f] == cur:
+            return
+        if cur in self._grid_slots:
+            self._grid_slots[self._grid_slots.index(cur)] = self._grid_slots[f]
+        self._grid_slots[f] = cur
+
+    def _grid_set_focus(self, slot: int):
+        """Make *slot* the pane the grid axis acts on (click-to-focus)."""
+        if self._grid_widget is None or not (0 <= slot < len(self._grid_slots)):
+            return
+        if slot == self._grid_focus:
+            return
+        self._grid_focus = slot
+        # Follow the pane with the axis position so the status bar, the info
+        # sidebar and the next step all speak about the pane in hand.
+        self.pos[self._grid_axis] = self._grid_slots[slot]
+        log.debug("grid: focus -> pane %d (%s)", slot,
+                  self.axis_values[self._grid_axis][self._grid_slots[slot]])
+        self._refresh()
 
     def _refresh_grid(self):
         if self._grid_widget is None:
             log.debug("_refresh_grid: no grid widget, skipping")
             return
-        indices = (self._grid_filter if self._grid_filter is not None
-                   else list(range(len(self.axis_values[self._grid_axis]))))
-        log.debug("_refresh_grid: axis=%d indices=%s pos=%s", self._grid_axis, indices, self.pos)
-        self._grid_widget.update_cells(self.pos, self._grid_axis, indices, self.pixmaps)
+        self._grid_sync_focus()
+        labels = [self.axis_values[self._grid_axis][vi] for vi in self._grid_slots]
+        log.debug("_refresh_grid: axis=%d slots=%s focus=%d pos=%s",
+                  self._grid_axis, self._grid_slots, self._grid_focus, self.pos)
+        self._grid_widget.update_cells(
+            self.pos, self._grid_axis, self._grid_slots, labels,
+            self.pixmaps, self._grid_focus)
         self.state_changed.emit()
 
     def _enter_grid(self, axis_idx: int, filter_indices: list[int] | None, layout: tuple[int, int] | None):
@@ -713,20 +1111,74 @@ class ImageView(QGraphicsView):
                 ((c, math.ceil(n / c)) for c in range(1, n + 1)),
                 key=lambda cr: abs((cr[0] * img_w) / max(1, cr[1] * img_h) - vp_ar),
             )
-        log.info("grid: axis=%r  %d cells  layout=%dx%d  sharex=%s  sharey=%s",
-                 self.axis_names[axis_idx], n, rows, cols, self._grid_sharex, self._grid_sharey)
+        capacity = rows * cols
+        log.info("grid: axis=%r  %d value%s  layout=%dx%d (%d cell%s)  sharex=%s  sharey=%s",
+                 self.axis_names[axis_idx], n, "" if n == 1 else "s", rows, cols,
+                 min(n, capacity), "" if min(n, capacity) == 1 else "s",
+                 self._grid_sharex, self._grid_sharey)
+        if n > capacity:
+            log.info("grid: %d values do not fit %d cells — the focused pane cycles "
+                     "the %d that are off screen", n, capacity, n - capacity)
 
-        labels = [all_vals[vi] for vi in indices]
+        # Each pane holds its own value; the axis only ever moves the focused one.
+        self._grid_slots = list(indices[:capacity])
+        if self.pos[axis_idx] in self._grid_slots:
+            self._grid_focus = self._grid_slots.index(self.pos[axis_idx])
+        else:
+            self._grid_focus = 0
+            self.pos[axis_idx] = self._grid_slots[0]
+
+        labels = [all_vals[vi] for vi in self._grid_slots]
         gw = GridWidget(self, rows, cols, labels, self._grid_sharex, self._grid_sharey)
+        gw.focus_requested.connect(self._grid_set_focus)
         self._grid_widget = gw
         self._refresh_grid()
         self.grid_mode_changed.emit(gw)
+
+    def _open_grid_dialog(self):
+        """Point-and-click front end for :grid (Ctrl+Shift+G)."""
+        from .dialogs import GridDialog, auto_layout
+
+        img_w, img_h = 800, 600
+        pm = self.pixmaps.get(tuple(self.pos))
+        if pm and not pm.isNull():
+            img_w, img_h = pm.width(), pm.height()
+        vp = self.viewport()
+        vp_w, vp_h = vp.width(), vp.height()
+
+        dlg = GridDialog(
+            list(self.axis_names),
+            [list(v) for v in self.axis_values],
+            axis=self._grid_axis if self._grid_axis is not None else self._h_axis(),
+            values=self._grid_filter,
+            layout=self._grid_layout,
+            sharex=self._grid_sharex,
+            sharey=self._grid_sharey,
+            in_grid=self._grid_axis is not None,
+            auto_layout_for=lambda n: auto_layout(n, img_w, img_h, vp_w, vp_h),
+            parent=self.window(),
+        )
+        result = dlg.exec()
+        self.setFocus()
+        if result == GridDialog.EXIT:
+            if self._grid_axis is not None:
+                self._exit_grid()
+            return
+        if result != QDialog.DialogCode.Accepted or dlg.spec is None:
+            return
+        spec = dlg.spec
+        self._grid_sharex = spec.sharex
+        self._grid_sharey = spec.sharey
+        self._enter_grid(spec.axis, spec.values, spec.layout)
+        self.state_changed.emit()
 
     def _exit_grid(self):
         log.info("grid: exiting grid mode (was axis=%r)", self.axis_names[self._grid_axis] if self._grid_axis is not None else None)
         self._grid_axis = None
         self._grid_filter = None
         self._grid_layout = None
+        self._grid_slots = []
+        self._grid_focus = 0
         self._grid_widget = None
         self.grid_mode_changed.emit(None)
         self._refresh()
@@ -739,28 +1191,87 @@ class ImageView(QGraphicsView):
             return self._locked_v
         return self.focus_stack[1] if len(self.focus_stack) >= 2 else None
 
-    def _navigate(self, axis: int, delta: int):
+    def _is_missing(self, pos) -> bool:
+        return isinstance(self.pixmaps.get(tuple(pos)), MissingPixmap)
+
+    def _missing_along(self, axis: int) -> list[bool]:
+        """Per value of *axis*: is the combination (others held fixed) missing?"""
+        probe = list(self.pos)
+        flags = []
+        for j in range(len(self.axis_values[axis])):
+            probe[axis] = j
+            flags.append(self._is_missing(probe))
+        return flags
+
+    def _step(self, axis: int, delta: int) -> int:
+        """Index reached by stepping *delta* on *axis*, wrapping around.
+
+        With skip_missing on, combinations without a file are passed over;
+        if every other value on the axis is missing the position stays put.
+        """
+        n = len(self.axis_values[axis])
+        cur = self.pos[axis]
+        if not self._skip_missing:
+            return (cur + delta) % n
+        probe = list(self.pos)
+        for i in range(1, n + 1):
+            probe[axis] = (cur + delta * i) % n
+            if not self._is_missing(probe):
+                return probe[axis]
+        return cur
+
+    def _navigate(self, axis: int, delta: int, ensure_visible: bool = False):
         n = len(self.axis_values[axis])
         self.prev = list(self.pos)
-        self.pos[axis] = (self.pos[axis] + delta) % n
+        if axis == self._grid_axis and self._grid_widget is not None:
+            # The grid axis scrolls inside the focused pane only, through the
+            # values no other pane is showing.
+            cands = self._grid_candidates()
+            cur = self.pos[axis]
+            k = cands.index(cur) if cur in cands else 0
+            self.pos[axis] = cands[(k + delta) % len(cands)] if cands else cur
+        else:
+            self.pos[axis] = self._step(axis, delta)
         self._active_axis = axis
         self._active_axis_timer.start(1000)
-        self._refresh()
+        self._refresh(sidebar_target=(axis, self.pos[axis]) if ensure_visible else None)
 
     def _focus(self, axis: int):
         if axis in self.focus_stack:
             self.focus_stack.remove(axis)
         self.focus_stack.insert(0, axis)
 
+    def goto_value(self, axis: int, val_idx: int):
+        """Jump to *val_idx* on *axis* and focus it (info-sidebar clicks)."""
+        if not 0 <= axis < len(self.axis_values):
+            return
+        if not 0 <= val_idx < len(self.axis_values[axis]):
+            return
+        self._focus(axis)
+        self._active_axis = axis
+        self._active_axis_timer.start(1000)
+        if self.pos[axis] != val_idx:
+            self.prev = list(self.pos)
+            self.pos[axis] = val_idx
+        self._refresh()
+
     # ── incremental-search (value picker / multi-select) ─────────────────────
 
+    def _match(self, query: str, pool) -> list[str]:
+        """Filter *pool* by *query*, best match first.
+
+        Fuzzy (subsequence) unless seek.fuzzy is off, in which case the older
+        case-insensitive prefix match applies.
+        """
+        return (fuzzy_filter if self._seek_fuzzy else prefix_filter)(query, pool)
+
     def _sel_candidates(self) -> list[str]:
-        """Items matching the current query by case-insensitive prefix."""
+        """Items matching the current query, best match first."""
         assert self._sel is not None
         q = self._sel["query"]
-        if self._sel["phase"] == "axis":
-            return [n for n in self.axis_names if n.lower().startswith(q)]
-        return [v for v in self.axis_values[self._sel["axis_idx"]] if v.lower().startswith(q)]
+        pool = (self.axis_names if self._sel["phase"] == "axis"
+                else self.axis_values[self._sel["axis_idx"]])
+        return self._match(q, pool)
 
     def _sel_open_axis(self, initial: str = ""):
         """Enter axis-selection phase (mode 1 entry point)."""
@@ -877,12 +1388,12 @@ class ImageView(QGraphicsView):
                 return self._grid_cmd_candidates(self._cmd["query"])
             else:
                 pool = _CMD_ARGS.get(verb, [])
-        return [c for c in pool if c.startswith(q)] if q else list(pool)
+        return self._match(q, pool)
 
     def _grid_cmd_candidates(self, query: str) -> list[str]:
         """Multi-token candidate list for the :grid arg phase (axis [val …] [NxM])."""
         if " " not in query:
-            return [n for n in self.axis_names if n.lower().startswith(query.lower())] if query else list(self.axis_names)
+            return self._match(query, self.axis_names)
         tokens = query.split(" ")
         axis_name = tokens[0]
         axis_idx = next((i for i, n in enumerate(self.axis_names) if n.lower() == axis_name.lower()), None)
@@ -892,9 +1403,7 @@ class ImageView(QGraphicsView):
         partial = "" if query.endswith(" ") else tokens[-1]
         used = set(t.lower() for t in (tokens[1:-1] if not query.endswith(" ") else tokens[1:]) if t)
         remaining = [v for v in all_vals if v.lower() not in used]
-        if partial:
-            remaining = [v for v in remaining if v.lower().startswith(partial.lower())]
-        return remaining
+        return self._match(partial, remaining)
 
     def _cmd_handle_key(self, event: QKeyEvent) -> bool:
         """Handle input while command mode is active. Returns True if consumed."""
@@ -1016,10 +1525,7 @@ class ImageView(QGraphicsView):
                     return True
                 verb = candidates[min(self._cmd["cursor"], len(candidates) - 1)]
                 if verb in _CMD_ARGS:
-                    initial = self._pattern_str() if verb == "pattern" else ""
-                    self._cmd = {"phase": "arg", "verb": verb, "query": initial,
-                                 "cursor": 0, "caret": len(initial)}
-                    self.state_changed.emit()
+                    self._cmd_open_args(verb)
                 else:
                     self._cmd = None
                     self._cmd_execute(verb)
@@ -1046,6 +1552,16 @@ class ImageView(QGraphicsView):
             return True
 
         ch = event.text()
+        if ch == " " and self._cmd["phase"] == "verb":
+            # A command name never holds a space, so it ends the name: take the
+            # best match and move on to its argument, as Enter does.  Commands
+            # without arguments ignore it (`:fit ` stays a prompt for `fit`).
+            candidates = self._cmd_candidates()
+            if candidates:
+                verb = candidates[max(0, min(self._cmd["cursor"], len(candidates) - 1))]
+                if verb in _CMD_ARGS:
+                    self._cmd_open_args(verb)
+            return True
         if ch and ch.isprintable():
             if is_free:
                 q = self._cmd["query"]
@@ -1060,6 +1576,13 @@ class ImageView(QGraphicsView):
             return True
 
         return False
+
+    def _cmd_open_args(self, verb: str):
+        """Switch the command prompt from naming *verb* to typing its argument."""
+        initial = self._pattern_str() if verb == "pattern" else ""
+        self._cmd = {"phase": "arg", "verb": verb, "query": initial,
+                     "cursor": 0, "caret": len(initial)}
+        self.state_changed.emit()
 
     def _cmd_execute(self, cmd: str):
         parts = cmd.strip().split()
@@ -1093,6 +1616,9 @@ class ImageView(QGraphicsView):
             self.fit_height()
         elif verb == "fit-width":
             self.fit_width()
+        elif verb == "fit-off":
+            self.fit_off()
+            self._flash("fit off")
         elif verb == "zoom":
             if args:
                 try:
@@ -1121,6 +1647,8 @@ class ImageView(QGraphicsView):
             from PySide6.QtGui import QDesktopServices
             path = ensure_settings_file(SETTINGS_PATH)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif verb == "version":
+            self._flash(f"juxt {__version__}", 5000)
         elif verb == "watch":
             arg = args[0] if args else ""
             if arg == "false":
@@ -1220,9 +1748,14 @@ class ImageView(QGraphicsView):
                         filter_indices.append(match)
 
             self._enter_grid(axis_idx, filter_indices, layout)
-        elif verb == "ungrid":
-            if self._grid_axis is not None:
+        elif verb == "grid-dialog":
+            self._open_grid_dialog()
+        elif verb in ("ungrid", "grid-off"):
+            if self._grid_axis is None:
+                self._flash("not in grid mode")
+            else:
                 self._exit_grid()
+                self._flash("grid off")
         elif verb == "grid-layout":
             if not args:
                 self._flash("usage: grid-layout NxM  (e.g. grid-layout 2x3)")
@@ -1239,6 +1772,14 @@ class ImageView(QGraphicsView):
                 self._flash("not in grid mode")
                 return
             self._enter_grid(self._grid_axis, self._grid_filter, (nr, nc))
+        elif verb in ("skip-missing", "dim-missing"):
+            attr = "_" + verb.replace("-", "_")
+            if not args:
+                setattr(self, attr, not getattr(self, attr))
+            elif args[0] in ("on", "off"):
+                setattr(self, attr, args[0] == "on")
+            self._flash(f"{verb} {'on' if getattr(self, attr) else 'off'}")
+            self.state_changed.emit()
         elif verb == "grid-sharex":
             if not args:
                 self._grid_sharex = not self._grid_sharex
@@ -1263,6 +1804,8 @@ class ImageView(QGraphicsView):
             self.state_changed.emit()
         elif verb == "info":
             self.toggle_info.emit()
+        elif verb == "keys":
+            self.toggle_keys.emit()
         elif verb == "remove-axis":
             name = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
             if not name:
@@ -1355,6 +1898,11 @@ class ImageView(QGraphicsView):
     def apply_settings(self, settings) -> None:
         """Apply a freshly loaded Settings object without restarting."""
         self._seek_greedy = settings.seek_greedy
+        self._seek_fuzzy = settings.seek_fuzzy
+        self._swap_modifiers = settings.swap_modifiers
+        self._skip_missing = settings.skip_missing
+        self._dim_missing = settings.dim_missing
+        self._sidebar_copy = settings.sidebar_copy
         new_kb: dict[tuple[int, int], str] = {}
         for ks, action in settings.keybindings.items():
             try:
@@ -1369,6 +1917,8 @@ class ImageView(QGraphicsView):
             self.toggle_bar.emit()
         elif action == "toggle-info":
             self.toggle_info.emit()
+        elif action == "toggle-keys":
+            self.toggle_keys.emit()
         else:
             self._cmd_execute(action)
 
@@ -1577,7 +2127,7 @@ class ImageView(QGraphicsView):
                         key_to_path[key] = lpath
                 else:
                     from .detect import _axes_from_local_template
-                    new_axes = _axes_from_local_template(config.template)
+                    _, new_axes = _axes_from_local_template(config.template)
                     if not new_axes:
                         raise ValueError("no images found for current template")
                     from itertools import product as _product
@@ -1794,103 +2344,46 @@ class ImageView(QGraphicsView):
         dlg.setValue(value)
 
     def _complete_path(self):
-        """Tab-complete the path portion of a free-text command argument."""
+        """Tab-complete the path portion of a free-text command argument.
+
+        Placeholders count as wildcards, so a template can be completed from
+        the top down — `plots/{sensor}/2024-0` + Tab lists what every sensor
+        directory holds — instead of completing one concrete path first and
+        deleting the components that should vary.
+        """
         query = self._cmd["query"]
         caret = self._cmd.get("caret", len(query))
         prefix = query[:caret]
         suffix = query[caret:]
 
-        from .detect import _is_remote_pattern, _parse_remote_pattern
-        if _is_remote_pattern(prefix):
-            self._complete_path_remote(prefix, suffix, _parse_remote_pattern)
-        else:
-            self._complete_path_local(prefix, suffix)
-
-    def _complete_path_local(self, prefix: str, suffix: str):
-        import glob as _glob
-        import os as _os
-
-        expanded = _os.path.expanduser(prefix)
-        raw_matches = sorted(_glob.glob(expanded + "*"))
-        if not raw_matches:
-            self._tab_matches = []
-            self.state_changed.emit()
+        comp = complete_placeholder_name(prefix, self.axis_names)
+        if comp is None:
+            from .detect import _is_remote_pattern
+            if _is_remote_pattern(prefix):
+                comp = self._complete_path_remote(prefix)
+            else:
+                comp = complete_path(prefix, local_listdir())
+        if comp is None:
             return
 
-        home = _os.path.expanduser("~")
-        use_tilde = prefix.startswith("~") and expanded.startswith(home)
-
-        def _fmt(p: str) -> str:
-            s = ("~" + p[len(home):]) if use_tilde else p
-            return s + ("/" if _os.path.isdir(p) else "")
-
-        if len(raw_matches) == 1:
-            new_prefix = _fmt(raw_matches[0])
-            self._tab_matches = []
-        else:
-            lcp = _os.path.commonprefix(raw_matches)
-            new_prefix = ("~" + lcp[len(home):]) if use_tilde else lcp
-            self._tab_matches = [
-                _os.path.basename(m.rstrip("/")) + ("/" if _os.path.isdir(m) else "")
-                for m in raw_matches
-            ]
-
-        self._cmd["query"] = new_prefix + suffix
-        self._cmd["caret"] = len(new_prefix)
+        self._tab_matches = comp.matches
+        self._cmd["query"] = prefix + comp.append + suffix
+        self._cmd["caret"] = len(prefix) + len(comp.append)
         self.state_changed.emit()
 
-    def _complete_path_remote(self, prefix: str, suffix: str, _parse_remote_pattern):
+    def _complete_path_remote(self, prefix: str):
+        """Complete a `host:/path` prefix over the session's SFTP connection."""
         if self.config.remote is None or self._remote_conn[1] is None:
-            return
+            return None
+        from .detect import _parse_remote_pattern
         try:
             remote_cfg, remote_path = _parse_remote_pattern(prefix)
         except Exception:
-            return
-        # Only use the existing connection if the host matches
-        rc = self.config.remote
-        if remote_cfg.host != rc.host:
-            return
-
-        import posixpath
-        import stat as _stat
-        # Split into the directory to list and the partial filename to filter by
-        if remote_path.endswith("/") or not remote_path:
-            parent, partial = remote_path or "/", ""
-        else:
-            parent, partial = posixpath.split(remote_path)
-            parent = parent or "/"
-
-        host_prefix = f"{rc.user}@{rc.host}" if rc.user else rc.host
-
-        try:
-            entries = self._remote_conn[1].listdir_attr(parent)
-        except Exception:
-            return
-
-        matched = sorted((e for e in entries if e.filename.startswith(partial)),
-                         key=lambda e: e.filename)
-        if not matched:
-            self._tab_matches = []
-            self.state_changed.emit()
-            return
-
-        def _is_dir(e) -> bool:
-            return e.st_mode is not None and _stat.S_ISDIR(e.st_mode)
-
-        raw_paths = [posixpath.join(parent, e.filename) + ("/" if _is_dir(e) else "")
-                     for e in matched]
-
-        if len(matched) == 1:
-            new_prefix = f"{host_prefix}:{raw_paths[0]}"
-            self._tab_matches = []
-        else:
-            lcp = posixpath.commonprefix(raw_paths)
-            new_prefix = f"{host_prefix}:{lcp}"
-            self._tab_matches = [e.filename + ("/" if _is_dir(e) else "") for e in matched]
-
-        self._cmd["query"] = new_prefix + suffix
-        self._cmd["caret"] = len(new_prefix)
-        self.state_changed.emit()
+            return None
+        # Only the host we are already connected to can be listed
+        if remote_cfg.host != self.config.remote.host:
+            return None
+        return complete_path(remote_path, sftp_listdir(self._remote_conn[1]))
 
     def _pattern_str(self) -> str:
         """Reconstruct the full pattern string for the current config."""
@@ -1905,6 +2398,7 @@ class ImageView(QGraphicsView):
         if self._reload_in_progress:
             self._flash("reload already in progress")
             return
+        raw = expand_home(normalize_template(raw))  # anonymous {} → {axis_1}, …; ~ → home
         self._reload_in_progress = True
         if self._watching and self.config.remote is not None:
             self._poll_timer.stop()
@@ -1933,7 +2427,7 @@ class ImageView(QGraphicsView):
                 from .detect import (
                     _is_remote_pattern, _parse_remote_pattern,
                     _axes_from_sftp_template, _axes_from_local_template,
-                    detect_config,
+                    detect_config, has_bare_wildcard, resolve_wildcard_template,
                 )
                 from .config import Config, _auto_keys, load_config
 
@@ -2020,11 +2514,12 @@ class ImageView(QGraphicsView):
                         for combo in _product(*axis_values)
                     }
 
-                elif '{' in raw:
-                    new_axes = _axes_from_local_template(raw)
+                elif has_bare_wildcard(raw):
+                    new_template, new_axes = resolve_wildcard_template(raw)
                     if not new_axes:
                         raise ValueError(f"no images found for pattern {raw!r}")
-                    new_config = Config(template=raw, axes=new_axes, keys=_auto_keys(new_axes))
+                    new_config = Config(
+                        template=new_template, axes=new_axes, keys=_auto_keys(new_axes))
                     axis_names = list(new_axes.keys())
                     axis_values = list(new_axes.values())
                     n = 1
@@ -2034,7 +2529,26 @@ class ImageView(QGraphicsView):
                     self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
                     key_to_path = {
                         tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
-                        raw.format(**dict(zip(axis_names, combo)))
+                        new_template.format(**dict(zip(axis_names, combo)))
+                        for combo in _product(*axis_values)
+                    }
+
+                elif '{' in raw:
+                    new_template, new_axes = _axes_from_local_template(raw)
+                    if not new_axes:
+                        raise ValueError(f"no images found for pattern {raw!r}")
+                    new_config = Config(
+                        template=new_template, axes=new_axes, keys=_auto_keys(new_axes))
+                    axis_names = list(new_axes.keys())
+                    axis_values = list(new_axes.values())
+                    n = 1
+                    for vs in axis_values:
+                        n *= len(vs)
+                    _check()
+                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
+                    key_to_path = {
+                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
+                        new_template.format(**dict(zip(axis_names, combo)))
                         for combo in _product(*axis_values)
                     }
 
@@ -2188,6 +2702,14 @@ class ImageView(QGraphicsView):
         self.centerOn(self._scene.sceneRect().center())
         self._fit = "width"
 
+    def fit_off(self):
+        """Stop fitting: keep the view as it is, and leave it alone when the
+        window is resized or the image changes.  Zooming also ends it."""
+        if self._grid_widget is not None:
+            self._grid_widget.fit_off()
+            return
+        self._fit = None
+
     def reset_zoom(self):
         if self._grid_widget is not None:
             self._grid_widget.reset_zoom()
@@ -2221,6 +2743,14 @@ class ImageView(QGraphicsView):
     def keyPressEvent(self, event: QKeyEvent):
         k = event.key()
         mods = event.modifiers()
+
+        # Ctrl+C copies a sidebar text selection when there is one.  Checked
+        # before everything else so it wins over an axis key or a binding on
+        # the same chord; without a selection (or with sidebar.copy: off) the
+        # chord falls through as usual.
+        if (k == Qt.Key_C and mods == Qt.ControlModifier
+                and self._sidebar_copy == "selected" and self._copy_selection()):
+            return
 
         # Configurable keybindings — checked first, work in every state
         bound = self._keybindings.get((k, mods.value))
@@ -2316,8 +2846,10 @@ class ImageView(QGraphicsView):
         if mods == Qt.ControlModifier and Qt.Key_A <= k <= Qt.Key_Z:
             ch_lower = chr(k).lower()
 
+        picker_mod, reverse_mod = _modifier_roles(self._swap_modifiers)
+
         if self.nav_mode == NavMode.PIN:
-            if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
+            if mods == picker_mod and ch_lower in self.key_to_axis:
                 self._sel_open_value(self.key_to_axis[ch_lower])
             elif mods == Qt.NoModifier and ch_lower in self.key_to_axis:
                 self._focus(self.key_to_axis[ch_lower])
@@ -2332,15 +2864,86 @@ class ImageView(QGraphicsView):
                 super().keyPressEvent(event)
 
         elif self.nav_mode == NavMode.TAP:
-            if mods == Qt.ControlModifier and ch_lower in self.key_to_axis:
+            if mods == picker_mod and ch_lower in self.key_to_axis:
                 self._sel_open_value(self.key_to_axis[ch_lower])
-            elif ch_lower in self.key_to_axis and mods in (Qt.NoModifier, Qt.ShiftModifier):
+            elif ch_lower in self.key_to_axis and mods in (Qt.NoModifier, reverse_mod):
+                # The modifier decides the direction, not the letter's case:
+                # with the roles swapped an uppercase letter opens the picker.
                 axis = self.key_to_axis[ch_lower]
-                delta = -1 if ch.isupper() else 1
                 self._focus(axis)
-                self._navigate(axis, delta)
+                self._navigate(axis, -1 if mods == reverse_mod else 1,
+                               ensure_visible=True)
             else:
                 super().keyPressEvent(event)
+
+    # ── sidebar text selection ───────────────────────────────────────────────
+
+    def add_copy_source(self, widget: QTextEdit) -> None:
+        """Let Ctrl+C copy whatever is selected in *widget*.
+
+        The sidebars never take keyboard focus, so Qt's own copy shortcut
+        cannot reach them; the view relays it instead.  A selection in one
+        source clears the others, so the chord never has two candidates.
+        """
+        self._copy_sources.append(widget)
+        widget.selectionChanged.connect(lambda w=widget: self._on_source_selection(w))
+
+    def _on_source_selection(self, widget: QTextEdit) -> None:
+        if not widget.textCursor().hasSelection():
+            return
+        for other in self._copy_sources:
+            if other is not widget and other.textCursor().hasSelection():
+                cursor = other.textCursor()
+                cursor.clearSelection()
+                other.setTextCursor(cursor)
+
+    def _copy_selection(self) -> bool:
+        """Copy the selected sidebar text; False when nothing is selected."""
+        for src in self._copy_sources:
+            cursor = src.textCursor()
+            # A hidden dock can still hold a selection; it was never in sight.
+            if src.isVisible() and cursor.hasSelection():
+                # The fragment, not selectedText(): that one uses U+2029 for
+                # line breaks and keeps the non-breaking spaces in the values.
+                text = cursor.selection().toPlainText()
+                QApplication.clipboard().setText(text)
+                self._flash(f"copied selection ({len(text)} characters)")
+                return True
+        return False
+
+    # ── context menu ─────────────────────────────────────────────────────────
+
+    def _shortcut_for(self, action: str) -> str:
+        """The chord currently bound to *action*, or "" when it is unbound."""
+        for (key, mods), bound in self._keybindings.items():
+            if bound == action:
+                return _chord_str(key, mods)
+        return ""
+
+    def build_image_menu(self) -> QMenu:
+        """The right-click menu for the image currently on screen.
+
+        Also serves the grid panes: the press that opened the menu has already
+        moved grid focus, so the current position names the pane in hand.
+        Each entry carries the chord bound to its action, so rebinding
+        copy-path in settings.yaml moves the shortcut shown here too.
+        """
+        menu = QMenu(self)
+        for label, action in (("Copy image &path", "copy-path"),
+                              ("Copy &image", "copy-image")):
+            act = menu.addAction(label)
+            chord = self._shortcut_for(action)
+            if chord:
+                act.setShortcut(chord)
+            act.triggered.connect(lambda _checked=False, a=action: self._cmd_execute(a))
+        return menu
+
+    def show_image_menu(self, global_pos):
+        self.build_image_menu().exec(global_pos)
+
+    def contextMenuEvent(self, event):
+        self.show_image_menu(event.globalPos())
+        event.accept()
 
     def mouseDoubleClickEvent(self, _event):
         self.fit_image()
@@ -2368,6 +2971,10 @@ class ImageView(QGraphicsView):
 
 
 class InfoPanel(QTextEdit):
+    """Read-only sidebar listing every axis; values are clickable links."""
+
+    value_clicked = Signal(int, int)  # axis index, value index
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
@@ -2378,35 +2985,478 @@ class InfoPanel(QTextEdit):
             "font-family: 'Courier New', monospace; font-size: 9pt; "
             "border: none; padding: 8px; }"
         )
+        # Anchors carry the value links; keep them looking like plain values.
+        self.document().setDefaultStyleSheet(
+            f"a {{ color: {_LINK_COLOR}; text-decoration: none; }}"
+        )
+        self.viewport().setMouseTracking(True)
+        self._highlight = _HL_DEFAULT
+        self._separator = "  "
+        self._list_larger_than = 20
+        self._last_view: "ImageView | None" = None
+        self._path_lines_cache_key: tuple[str, int] | None = None
+        self._path_lines_cache: int = 1
+        self._refreshing = False
+        # Axis name → expanded, for axes the user flipped away from the
+        # automatic choice (see _is_expanded); keyed by name so it survives
+        # a reload that reorders the axes.
+        self._expanded: dict[str, bool] = {}
+        self._press_axis: int | None = None
+        # href → full text, for every value the last layout had to elide.
+        self._elided: dict[str, str] = {}
+
+    def set_highlight(self, hl: Highlight) -> None:
+        """Set the format used for the current value on each axis."""
+        self._highlight = hl
+
+    def set_value_list_style(self, separator: str, list_larger_than: int) -> None:
+        """Set the inline-value separator and the one-per-line length threshold."""
+        self._separator = separator
+        self._list_larger_than = list_larger_than
 
     def mousePressEvent(self, event):
+        href = self.anchorAt(event.position().toPoint())
         super().mousePressEvent(event)
         w = self.window()
         if hasattr(w, "view"):
             w.view.setFocus()
+        self._press_axis = None
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        target = _parse_value_href(href)
+        if target is not None:
+            self.value_clicked.emit(*target)
+        else:
+            self._press_axis = _parse_axis_href(href)
 
-    def refresh(self, view: "ImageView"):
-        e = _html.escape
-        path = view._key_to_path(view._key())
-        parts = [
-            f"<span style='color:#888'>path</span><br>"
-            f"{e(path)}<br><br>"
-        ]
-        for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
-            cur = view.pos[i]
-            val_html = "&nbsp;&nbsp;".join(
-                f'<span style="color:#6af">{e(v)}</span>' if j == cur else e(v)
-                for j, v in enumerate(vals)
-            )
-            parts.append(
-                f"<span style='color:#888'>{e(name)}</span><br>{val_html}<br><br>"
-            )
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        # A header toggles on release, and only for a plain click, so that
+        # dragging across one to select its text does not rebuild the
+        # document under the selection.
+        axis, self._press_axis = self._press_axis, None
+        if (axis is not None
+                and event.button() == Qt.MouseButton.LeftButton
+                and _parse_axis_href(self.anchorAt(event.position().toPoint())) == axis
+                and not self.textCursor().hasSelection()):
+            self.toggle_axis(axis)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        href = self.anchorAt(event.position().toPoint())
+        over_link = (_parse_value_href(href) is not None
+                     or _parse_axis_href(href) is not None)
+        self.viewport().setCursor(
+            Qt.CursorShape.PointingHandCursor if over_link
+            else Qt.CursorShape.IBeamCursor
+        )
+
+    def viewportEvent(self, event):
+        # Qt's own tooltip lookup did not reliably reach the viewport, so the
+        # panel answers it: a value cut short shows its full text, anything
+        # else shows nothing.
+        if event.type() == QEvent.Type.ToolTip:
+            full = self._elided.get(self.anchorAt(event.pos()))
+            if full:
+                QToolTip.showText(event.globalPos(), full, self.viewport())
+            else:
+                QToolTip.hideText()
+            return True
+        return super().viewportEvent(event)
+
+    def _auto_expanded(self, vals: list[str]) -> bool:
+        """Whether an axis starts out one value per row: any value with a
+        space, or longer than the threshold, would read badly run together."""
+        return any(" " in v or len(v) > self._list_larger_than for v in vals)
+
+    def _is_expanded(self, name: str, vals: list[str]) -> bool:
+        if name in self._expanded:
+            return self._expanded[name]
+        return self._auto_expanded(vals)
+
+    def toggle_axis(self, axis: int) -> None:
+        """Flip one axis between several values per row and one per row."""
+        view = self._last_view
+        if view is None or not 0 <= axis < len(view.axis_names):
+            return
+        name, vals = view.axis_names[axis], view.axis_values[axis]
+        expanded = not self._is_expanded(name, vals)
+        if expanded == self._auto_expanded(vals):
+            self._expanded.pop(name, None)   # back to automatic, follows settings
+        else:
+            self._expanded[name] = expanded
+        self.refresh(view, follow_target=False)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._last_view is not None:
+            self.refresh(self._last_view)
+
+    def _worst_case_path(self, view: "ImageView") -> str:
+        """The longest path *view*'s template could ever produce: every
+        placeholder resolved to its longest value on that axis.
+
+        Not necessarily a real combination, but its length is a true upper
+        bound on any actual path's length, which is all a wrap-height
+        reservation needs.
+        """
+        path = view.config.template
+        for name, vals in zip(view.axis_names, view.axis_values):
+            path = path.replace(f"{{{name}}}", max(vals, key=len))
+        return path
+
+    def _worst_case_line_count(self, worst_case_path: str) -> int:
+        """Number of lines the widest possible path wraps to at the current
+        width, cached per (text, width) so the common case — same config,
+        same size — costs nothing beyond a dict lookup."""
+        cache_key = (worst_case_path, self.viewport().width())
+        if cache_key != self._path_lines_cache_key:
+            self._path_lines_cache = self._line_count(worst_case_path)
+            self._path_lines_cache_key = cache_key
+        return self._path_lines_cache
+
+    def _line_count(self, text: str) -> int:
+        """Number of visual lines *text* wraps to at the panel's current
+        width. Renders *text* alone through this widget's own document —
+        reusing the real font and margins instead of guessing at them — and
+        never paints on screen since it's always immediately overwritten
+        within the same refresh() call."""
         self.setHtml(
             "<html><body style='font-family:\"Courier New\",monospace; "
-            "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
-            + "".join(parts)
-            + "</body></html>"
+            "font-size:9pt; margin:8px;'>" + _html.escape(text) + "</body></html>"
         )
+        return max(1, self.document().begin().layout().lineCount())
+
+    def _fragment_span_for_href(self, href: str) -> tuple[int, int] | None:
+        """(start, end) document positions of the text fragment whose anchor
+        href is exactly *href*, or None if it isn't in the document.
+
+        Walks fragments directly rather than searching rendered text, since
+        the target value's text isn't necessarily unique across the sidebar
+        (e.g. the same value string on two different axes).
+        """
+        block = self.document().begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid() and frag.charFormat().anchorHref() == href:
+                    return frag.position(), frag.position() + frag.length()
+                it += 1
+            block = block.next()
+        return None
+
+    def _value_link(
+        self, axis: int, val: int, text: str, *, current: bool, dim: bool,
+        room: int, fm: QFontMetrics, bold_fm: QFontMetrics,
+    ) -> tuple[str, int]:
+        """(html, pixel width) of one value's link, elided to fit *room*.
+
+        A value wider than a whole row is cut short with an ellipsis instead
+        of being broken across lines; its full text is kept for the tooltip.
+        """
+        hl = self._highlight
+        # The highlight's own delimiters take room too; a raw html: template
+        # cannot be measured, so it is assumed not to add any.
+        decor = hl.prefix + hl.suffix if current and hl.raw is None else ""
+        metrics = bold_fm if current and hl.bold else fm
+        decor_w = metrics.horizontalAdvance(decor)
+        limit = max(room - decor_w, fm.horizontalAdvance("…"))
+        shown, href = text, _value_href(axis, val)
+        if metrics.horizontalAdvance(text) > limit:
+            shown = metrics.elidedText(text, Qt.TextElideMode.ElideRight, limit)
+            self._elided[href] = text
+        if current:
+            inner = _hl(_sp(shown), hl)
+        elif dim:
+            inner = f"<span style='color:{_DIM_COLOR}'>{_sp(shown)}</span>"
+        else:
+            inner = _sp(shown)
+        width = metrics.horizontalAdvance(shown) + decor_w
+        return f'<a href="{href}">{inner}</a>', width
+
+    def _axes_html(self, view: "ImageView", text_px: int) -> str:
+        """The axis sections, laid out for *text_px* of usable line width.
+
+        Rows are packed here, by measured width, and joined with explicit
+        breaks.  The values and their separators are non-breaking, so left
+        to Qt a whole axis is one unbreakable word that gets cut at an
+        arbitrary character.
+        """
+        self._elided.clear()
+        fm = self.fontMetrics()
+        bold_font = self.font()
+        bold_font.setBold(True)
+        bold_fm = QFontMetrics(bold_font)
+        text_px = max(text_px, 4 * fm.horizontalAdvance("M"))
+        bullet_w = fm.horizontalAdvance("• ")
+        sep_w = fm.horizontalAdvance(self._separator)
+        sep_html = _sp(self._separator)
+
+        dim_axis = view.focus_stack[0] if view._dim_missing else None
+        parts = []
+        for i, (name, vals) in enumerate(zip(view.axis_names, view.axis_values)):
+            gaps = view._missing_along(i) if i == dim_axis else None
+            expanded = self._is_expanded(name, vals)
+            room = text_px - (bullet_w if expanded else 0)
+            links = [
+                self._value_link(
+                    i, j, v, current=(j == view.pos[i]), dim=bool(gaps and gaps[j]),
+                    room=room, fm=fm, bold_fm=bold_fm,
+                )
+                for j, v in enumerate(vals)
+            ]
+            if expanded:
+                val_html = "<br>".join(f"&bull;&nbsp;{h}" for h, _w in links)
+            else:
+                rows = _pack_rows([w for _h, w in links], sep_w, text_px)
+                val_html = "<br>".join(
+                    sep_html.join(links[k][0] for k in row) for row in rows
+                )
+            marker = "▾" if expanded else "▸"
+            parts.append(
+                f'<a href="{_axis_href(i)}">'
+                f"<span style='color:{_HEADER_COLOR}'>{marker}&nbsp;{_html.escape(name)}</span>"
+                f"</a><br>{val_html}<br><br>"
+            )
+        return "".join(parts)
+
+    def refresh(self, view: "ImageView", follow_target: bool = True):
+        # setHtml() below can grow or shrink the document enough to toggle
+        # the scrollbar's visibility, which changes the viewport's width and
+        # so fires a synchronous resizeEvent() *while still inside* this same
+        # setHtml() call. resizeEvent() calls refresh() again to reflow for
+        # the new width, reentering here before the outer setHtml() has
+        # returned, which corrupts the document (observed as its content
+        # appearing twice). The nested call is skipped; the outer one packs
+        # its rows again below if the width did change under it.
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self._last_view = view
+            self.ensurePolished()
+            saved_scroll = self.verticalScrollBar().value()
+            e = _html.escape
+            path = view._key_to_path(view._key())
+            # Pad the path with blank lines up to the widest path this config
+            # could ever show, so the axis list below never shifts when the
+            # current path's own wrapped height changes between navigations
+            # (most noticeable — and most disorienting — when it's a click on
+            # a sidebar value that triggers the change).
+            worst_lines = self._worst_case_line_count(self._worst_case_path(view))
+            pad = max(0, worst_lines - self._line_count(path))
+            path_html = (
+                f"<span style='color:{_HEADER_COLOR}'>path</span><br>"
+                f"{e(path)}" + "<br>" * pad + "<br><br>"
+            )
+            # The rows depend on the viewport width, which the scrollbar
+            # takes a slice of once the document outgrows it.  Lay out for
+            # the width in force, and if showing the result changed that
+            # width, lay out again for the new one (it settles in a pass or
+            # two: a narrower layout is only ever taller).
+            width = self.viewport().width()
+            for _attempt in range(3):
+                self.setHtml(
+                    "<html><body style='font-family:\"Courier New\",monospace; "
+                    "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+                    + path_html
+                    + self._axes_html(view, width - _SIDEBAR_TEXT_INSET_PX)
+                    + "</body></html>"
+                )
+                if self.viewport().width() == width:
+                    break
+                width = self.viewport().width()
+            # setHtml() always resets the scrollbar to the top; put it back
+            # where the user left it first, so a forced-visible target
+            # (below) is judged against the scroll position the user
+            # actually had, not against the fresh-document top setHtml()
+            # just reset it to.
+            self.verticalScrollBar().setValue(saved_scroll)
+
+            # A refresh triggered by e.g. tap-mode letter-shortcut stepping
+            # asks to keep a specific value visible. ensureCursorVisible()
+            # scrolls the minimum needed for that, or not at all when it's
+            # already on screen. A value long enough to word-wrap spans more
+            # than one document position, so ensure the end is visible
+            # first and the start second, since the second call wins if the
+            # whole span is taller than the viewport.
+            target = view._sidebar_target if follow_target else None
+            if (
+                target is not None
+                and 0 <= target[0] < len(view.axis_names)
+                and target[1] == view.pos[target[0]]
+            ):
+                span = self._fragment_span_for_href(_value_href(*target))
+                if span is not None:
+                    start, end = span
+                    for pos in (end, start):
+                        cursor = QTextCursor(self.document())
+                        cursor.setPosition(pos)
+                        self.setTextCursor(cursor)
+                        self.ensureCursorVisible()
+        finally:
+            self._refreshing = False
+
+
+class ShortcutPanel(QTextEdit):
+    """Read-only sidebar listing the shortcuts that are live right now.
+
+    Everything here is read back out of the view rather than hard-coded: the
+    navigation mode decides which letter-key section applies, the axis keys
+    are the ones currently assigned, the modifier roles follow modifiers.swap,
+    and the chords come from the user's own keybindings.  A panel that lists
+    keys the running juxt does not have would be worse than no panel at all.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setMinimumWidth(240)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet(
+            "QTextEdit { background: #111; color: #ddd; "
+            "font-family: 'Courier New', monospace; font-size: 9pt; "
+            "border: none; padding: 8px; }"
+        )
+        self._last_view: "ImageView | None" = None
+        self._refreshing = False
+
+    def resizeEvent(self, event):
+        # The key column is measured against the viewport, which is not laid
+        # out yet at construction; re-measure whenever the dock is resized.
+        super().resizeEvent(event)
+        if self._last_view is not None:
+            self.refresh(self._last_view)
+
+    @staticmethod
+    def _sections(view: "ImageView") -> list[tuple[str, list[tuple[str, str]]]]:
+        picker_mod, reverse_mod = _modifier_roles(view._swap_modifiers)
+        picker = "Ctrl" if picker_mod == Qt.ControlModifier else "Shift"
+        reverse = "Ctrl" if reverse_mod == Qt.ControlModifier else "Shift"
+
+        navigate = [
+            ("← / →", f"cycle {view.axis_names[view._h_axis()]}"),
+            ("↑ / ↓", f"cycle {view.axis_names[view._v_axis()]}"
+                     if view._v_axis() is not None else "cycle the second axis"),
+            ("Space", "flip to the previous position"),
+            ("Home / End", "first / last value on the ←/→ axis"),
+            ("1–9", "Nth value on the ←/→ axis"),
+            (":", "command mode"),
+            ("Enter", "toggle fullscreen"),
+            ("Escape", "leave fullscreen / cancel"),
+        ]
+
+        if view.nav_mode == NavMode.TAP:
+            mode = [
+                ("letter", "step +1 on that axis"),
+                (f"{reverse}+letter", "step −1 on that axis"),
+                (f"{picker}+letter", "open the value picker for that axis"),
+            ]
+        elif view.nav_mode == NavMode.PIN:
+            mode = [
+                ("letter", "focus that axis on ←/→"),
+                (f"{picker}+letter", "open the value picker for that axis"),
+            ]
+        else:
+            mode = [
+                ("letter", "search axes, then values"),
+                ("Enter", "confirm the first candidate"),
+                ("Backspace", "undo one character / step back"),
+            ]
+
+        view_controls = [
+            ("0", "zoom back to 100%"),
+            ("double-click", "fit the image to the window"),
+            ("drag", "pan"),
+            ("wheel", "step the ←/→ axis"),
+            ("Shift+wheel", "step the ↑/↓ axis"),
+            ("Ctrl+wheel", "zoom under the cursor"),
+            ("right-click", "copy path / image menu"),
+        ]
+
+        sections = [
+            ("navigate", navigate),
+            (f"{view.nav_mode.label} mode", mode),
+        ]
+        if view.nav_mode != NavMode.SEEK:
+            axis_keys = [(ch, view.axis_names[i])
+                         for ch, i in sorted(view.key_to_axis.items())]
+            if axis_keys:
+                sections.append(("axis keys", axis_keys))
+        sections.append(("view", view_controls))
+
+        bound = sorted(
+            (_chord_str(k, m), action)
+            for (k, m), action in view._keybindings.items()
+        )
+        if bound:
+            sections.append(("bound to actions", bound))
+        return sections
+
+    def _key_column_px(self, sections) -> int:
+        """Width the key column needs for the widest chord on show.
+
+        Measured rather than fixed: the panel's font is whatever the platform
+        resolves 'Courier New' to, so a hard-coded width wraps chords like
+        Ctrl+Shift+H on some systems and leaves a gap on others.  Capped at
+        half the viewport so a stray long entry cannot squeeze the
+        descriptions out.
+        """
+        fm = self.fontMetrics()
+        widest = max(
+            (fm.horizontalAdvance(key) for _title, rows in sections for key, _d in rows),
+            default=0,
+        )
+        ceiling = max(_KEY_COL_MIN_PX, self.viewport().width() // 2)
+        return min(max(widest + 12, _KEY_COL_MIN_PX), ceiling)
+
+    def refresh(self, view: "ImageView"):
+        # quote=False: this lands in cell content, and Qt's rich-text reader
+        # leaves &#x27; standing where a plain apostrophe reads fine.
+        def e(s: str) -> str:
+            return _html.escape(s, quote=False)
+
+        # setHtml() can toggle the scrollbar, which resizes the viewport and
+        # re-enters here through resizeEvent() before the outer call returns —
+        # the same reentrancy InfoPanel guards against, with the same fix.
+        if self._refreshing:
+            return
+        self._refreshing = True
+        self._last_view = view
+        sections = self._sections(view)
+        key_col = self._key_column_px(sections)
+        parts = []
+        for title, rows in sections:
+            # A table, not two spans on one line: a description long enough to
+            # wrap continues in its own column instead of running back under
+            # the chord, where the two were impossible to tell apart.
+            cells = "".join(
+                "<tr>"
+                f"<td valign='top' width='{key_col}' style='color:{_KEY_COLOR}'>"
+                # The chord itself must not break across lines, so its spaces
+                # ("Home / End") stay non-breaking.
+                f"{e(key).replace(' ', '&nbsp;')}</td>"
+                # The description keeps ordinary spaces, so it wraps at word
+                # boundaries within the column.
+                f"<td valign='top'>{e(desc)}</td>"
+                "</tr>"
+                for key, desc in rows
+            )
+            parts.append(
+                f"<div style='color:{_HEADER_COLOR}; font-weight:bold'>{e(title)}</div>"
+                f"<table cellspacing='0' cellpadding='1' width='100%'>{cells}</table>"
+                "<br>"
+            )
+        try:
+            self.setHtml(
+                "<html><body style='font-family:\"Courier New\",monospace; "
+                "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+                + "".join(parts)
+                + "</body></html>"
+            )
+        finally:
+            self._refreshing = False
 
 
 class MainWindow(QMainWindow):
@@ -2422,17 +3472,33 @@ class MainWindow(QMainWindow):
         axis_h: str | None = None,
         axis_v: str | None = None,
         session_name: str | None = None,
+        pinned_axes: Collection[str] = (),
         seek_greedy: bool = True,
+        seek_fuzzy: bool = True,
+        swap_modifiers: bool = False,
+        skip_missing: bool = False,
+        dim_missing: bool = False,
+        sidebar_copy: str = "selected",
         keybindings: dict[str, str] | None = None,
+        highlight: Highlight | None = None,
+        highlight_candidates: Highlight | None = None,
+        sidebar_separator: str = "  ",
+        sidebar_list_larger_than: int = 20,
         grid: str | None = None,
         grid_values: list[str] | None = None,
         grid_layout: tuple[int, int] | None = None,
         grid_sharex: bool = True,
         grid_sharey: bool = True,
+        show_info: bool = False,
+        show_status_bar: bool = True,
+        show_keys: bool = False,
     ):
         super().__init__()
         self._session_name = session_name
-        self.setWindowTitle(_window_title(config, session_name))
+        self._pinned_axes = tuple(pinned_axes)
+        self._hl = highlight or _HL_DEFAULT
+        self._hl_candidates = highlight_candidates or _HL_DEFAULT_CANDIDATES
+        self.setWindowTitle(_window_title(config, session_name, self._pinned_axes))
         self.view = ImageView(
             config, pixmaps, self,
             watch=watch,
@@ -2443,6 +3509,11 @@ class MainWindow(QMainWindow):
             axis_h=axis_h,
             axis_v=axis_v,
             seek_greedy=seek_greedy,
+            seek_fuzzy=seek_fuzzy,
+            swap_modifiers=swap_modifiers,
+            skip_missing=skip_missing,
+            dim_missing=dim_missing,
+            sidebar_copy=sidebar_copy,
             keybindings=keybindings,
             grid=grid,
             grid_values=grid_values,
@@ -2476,8 +3547,11 @@ class MainWindow(QMainWindow):
             "white-space: pre;"
         )
         bar.addPermanentWidget(self._help_label)
+        bar.setVisible(show_status_bar)
 
         self._info_panel = InfoPanel()
+        self._info_panel.set_highlight(self._hl)
+        self._info_panel.set_value_list_style(sidebar_separator, sidebar_list_larger_than)
         self._info_dock = QDockWidget("Info", self)
         self._info_dock.setWidget(self._info_panel)
         self._info_dock.setAllowedAreas(
@@ -2488,14 +3562,39 @@ class MainWindow(QMainWindow):
             QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._info_dock)
-        self._info_dock.hide()
+        self._info_dock.setVisible(show_info)
+        if show_info:
+            self._info_panel.refresh(self.view)
+        self._info_panel.value_clicked.connect(self.view.goto_value)
+
+        # Docked opposite the info sidebar so the two can be open at once.
+        self._shortcut_panel = ShortcutPanel()
+        self._shortcut_dock = QDockWidget("Shortcuts", self)
+        self._shortcut_dock.setWidget(self._shortcut_panel)
+        self._shortcut_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self._shortcut_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetClosable |
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+        )
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._shortcut_dock)
+        self._shortcut_dock.setVisible(show_keys)
+        if show_keys:
+            self._shortcut_panel.refresh(self.view)
+
+        self.view.add_copy_source(self._info_panel)
+        self.view.add_copy_source(self._shortcut_panel)
 
         self.view.state_changed.connect(self._update_status)
         self.view.state_changed.connect(self._refresh_info_panel)
+        self.view.state_changed.connect(self._refresh_shortcut_panel)
         self.view.toggle_bar.connect(self._toggle_status_bar)
         self.view.toggle_info.connect(self._toggle_info_panel)
+        self.view.toggle_keys.connect(self._toggle_shortcut_panel)
         self.view.config_changed.connect(
-            lambda: self.setWindowTitle(_window_title(self.view.config, self._session_name))
+            lambda: self.setWindowTitle(
+                _window_title(self.view.config, self._session_name, self._pinned_axes))
         )
         self.view.grid_mode_changed.connect(self._on_grid_mode_changed)
 
@@ -2551,7 +3650,14 @@ class MainWindow(QMainWindow):
             self._status_label.setText(v._flash_msg)
             return
 
-        grid_str = f"  grid:{v.axis_names[v._grid_axis]}" if v._grid_axis is not None else ""
+        grid_str = ""
+        if v._grid_axis is not None:
+            grid_str = f"  grid:{v.axis_names[v._grid_axis]}"
+            n_panes = len(v._grid_slots)
+            if n_panes > 1:    # say which pane the axis is acting on
+                grid_str += f"[pane {v._grid_focus + 1}/{n_panes}"
+                hidden = len(v._grid_indices()) - n_panes
+                grid_str += f" +{hidden}]" if hidden > 0 else "]"
         mode_str = f"[{v.nav_mode.label}{grid_str}]{'  ●' if v._watching else ''}"
 
         if v._cmd is not None:
@@ -2559,6 +3665,7 @@ class MainWindow(QMainWindow):
             query = v._cmd["query"]
             raw = v._cmd["cursor"]
             cursor = raw if raw < 0 else (min(raw, len(candidates) - 1) if candidates else 0)
+            prompt_html = None
             if v._cmd["phase"] == "verb":
                 prompt = f":{query}▌"
                 hlit = candidates[min(cursor, len(candidates) - 1)] if candidates and cursor >= 0 else None
@@ -2567,7 +3674,11 @@ class MainWindow(QMainWindow):
                 verb = v._cmd["verb"]
                 if verb in _FREE_TEXT_ARGS:
                     caret = v._cmd.get("caret", len(query))
-                    prompt = f":{verb} {_cmd_query_display(query, caret)}"
+                    shown = _cmd_query_display(query, caret)
+                    prompt = f":{verb} {shown}"
+                    # Colour each {placeholder} so a multi-axis template stays
+                    # readable while it is being typed.
+                    prompt_html = _sp(f":{verb} ") + placeholder_html(shown)
                 else:
                     prompt = f":{verb} {query}▌"
                 desc = _COMMAND_HELP.get(v._cmd["verb"], "")
@@ -2576,15 +3687,23 @@ class MainWindow(QMainWindow):
             elif desc:
                 self._help_label.setText(f"( {desc} )")
             if candidates:
-                cand_str = "  ".join(
-                    f"[{c}]" if i == cursor else c
-                    for i, c in enumerate(candidates)
+                cand_html = _candidate_html(candidates, cursor, self._hl_candidates)
+                head = prompt_html if prompt_html is not None else _sp(prompt)
+                self._status_label.setText(
+                    _rich(f"{head}&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}")
                 )
-                self._status_label.setText(f"{prompt}  →  {cand_str}")
             elif v._cmd["phase"] == "verb" and query:
-                self._status_label.setText(f"{prompt}  (unknown command)")
+                self._status_label.setText(
+                    _rich(f"{_sp(prompt)}&nbsp;&nbsp;(unknown&nbsp;command)")
+                )
+            elif v._cmd["phase"] == "arg" and v._cmd["verb"] in _ARG_FORMATS:
+                self._status_label.setText(_rich(
+                    f"{_sp(prompt)}&nbsp;&nbsp;→&nbsp;&nbsp;{_sp(_ARG_FORMATS[v._cmd['verb']])}"
+                ))
             else:
-                self._status_label.setText(prompt)
+                self._status_label.setText(
+                    _rich(prompt_html if prompt_html is not None else _sp(prompt))
+                )
             return
 
         if v._sel is not None:
@@ -2597,14 +3716,14 @@ class MainWindow(QMainWindow):
             else:
                 axis_name = v.axis_names[v._sel["axis_idx"]]
                 prompt = f"{axis_name}? {query}▌"
-            if candidates:
-                cand_str = "  ".join(
-                    f"[{c}]" if i == cursor else c
-                    for i, c in enumerate(candidates)
-                )
-            else:
-                cand_str = "(no match)"
-            self._status_label.setText(f"{mode_str}  |  {prompt}  →  {cand_str}")
+            cand_html = (
+                _candidate_html(candidates, cursor, self._hl_candidates) if candidates
+                else _sp("(no match)")
+            )
+            self._status_label.setText(_rich(
+                f"{_sp(mode_str)}&nbsp;&nbsp;|&nbsp;&nbsp;{_sp(prompt)}"
+                f"&nbsp;&nbsp;→&nbsp;&nbsp;{cand_html}"
+            ))
             return
 
         h_idx = v._h_axis()
@@ -2619,13 +3738,12 @@ class MainWindow(QMainWindow):
         v_name = v.axis_names[v_idx] if v_idx is not None else "—"
         bind_str = f"→/← {h_name}  ↑/↓ {v_name}"
         sep = "  |  "
-        e = _html.escape
-        sp = lambda s: e(s).replace(" ", "&nbsp;")  # noqa: E731
+        sp = _sp
         sep_html = "&nbsp;&nbsp;|&nbsp;&nbsp;"
         active = v._active_axis
         coord_html = (
             "&nbsp;&nbsp;".join(
-                f'<span style="color:#6af">{sp(p)}</span>' if i == active else sp(p)
+                _hl(sp(p), self._hl) if i == active else sp(p)
                 for i, p in enumerate(coord_parts)
             ) if active is not None else None
         )
@@ -2707,10 +3825,22 @@ class MainWindow(QMainWindow):
         if self._info_dock.isVisible():
             self._info_panel.refresh(self.view)
 
+    def _toggle_shortcut_panel(self):
+        if self._shortcut_dock.isVisible():
+            self._shortcut_dock.hide()
+        else:
+            self._shortcut_panel.refresh(self.view)
+            self._shortcut_dock.show()
+
+    def _refresh_shortcut_panel(self):
+        if self._shortcut_dock.isVisible():
+            self._shortcut_panel.refresh(self.view)
+
     def _warn_keybinding_conflicts(self, *, flash: bool = True) -> bool:
         """Log (and optionally flash) warnings for bindings that shadow navigation."""
         axis_letters = set(self.view.key_to_axis.keys())
-        conflicts = _keybinding_conflicts(self.view._keybindings, axis_letters)
+        conflicts = _keybinding_conflicts(
+            self.view._keybindings, axis_letters, self.view._swap_modifiers)
         for msg in conflicts:
             log.warning("Keybinding conflict: %s", msg)
         if flash and conflicts:
@@ -2728,6 +3858,16 @@ class MainWindow(QMainWindow):
             self._settings_watcher.addPath(str(SETTINGS_PATH))
         settings = load_settings(SETTINGS_PATH)
         self.view.apply_settings(settings)
+        self._hl = settings.highlight
+        self._hl_candidates = settings.highlight_candidates
+        self._info_panel.set_highlight(self._hl)
+        self._info_panel.set_value_list_style(
+            settings.sidebar_separator, settings.sidebar_list_larger_than
+        )
+        self._refresh_info_panel()
+        self._refresh_shortcut_panel()
+        self._update_status()
+        reset_placeholder_shapes()  # {date} & friends may have been re-configured
         import juxt.detect as _detect
         _detect._MAX_VALS = settings.max_vals
         _detect._MAX_VALS_DISPLAY = settings.max_vals_display

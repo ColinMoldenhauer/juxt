@@ -65,6 +65,8 @@ Three navigation modes are available. Switch at runtime with `:mode tap|seek|pin
 | `0` | Reset zoom to 100% |
 | `:` | Open command mode (vim-style) |
 | Ctrl+Shift+H | Toggle status bar |
+| Ctrl+Shift+I | Toggle info sidebar |
+| Ctrl+Shift+G | Open the grid builder dialogue |
 | Enter | Toggle fullscreen |
 | Escape | Exit fullscreen / cancel command |
 
@@ -78,10 +80,13 @@ Triggered by `:`. Type a command and press Enter to execute; Escape or Backspace
 | `:fit` | Fit image to window (both dimensions) |
 | `:fit height` / `:fit-height` | Fit image height to viewport |
 | `:fit width` / `:fit-width` | Fit image width to viewport |
+| `:fit-off` | Stop fitting; keep the current zoom |
 | `:zoom N` | Set zoom to N% (e.g. `:zoom 50`, `:zoom 200`) |
 | `:fullscreen` | Toggle fullscreen |
 | `:mode tap\|seek\|pin` | Switch navigation mode |
 | `:switch-last` | Toggle between current and previous position (same as Spacebar) |
+| `:version` | Show the juxt version (`juxt --version` prints it and exits) |
+| `:grid-dialog` | Open the grid builder dialogue (same as Ctrl+Shift+G) |
 
 ### tap (default)
 

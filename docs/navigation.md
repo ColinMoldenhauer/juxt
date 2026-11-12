@@ -30,9 +30,16 @@ These bindings work identically regardless of which mode is active.
 | `0` | Reset zoom to 100% |
 | `Ctrl` + scroll wheel | Zoom in/out, anchored under the cursor |
 | Click + drag | Pan the image |
+| Right-click | Context menu: copy the image path or the image itself |
 | `Enter` | Toggle fullscreen |
 | `Ctrl+Shift+H` | Toggle the status bar |
 | `Ctrl+Shift+I` | Toggle the info sidebar |
+| `Ctrl+Shift+G` | Open the grid builder dialogue |
+| `Ctrl+Shift+C` | Copy the current image path to the clipboard |
+| `Ctrl+Shift+K` | Toggle the shortcut sidebar |
+| `Ctrl+C` | Copy the text selected in a sidebar; with nothing selected it cancels a command or value picker ([`sidebar.copy`](ui.md#copying-sidebar-text) `: off` never takes the chord for copying) |
+
+**Fit mode.** juxt starts with the image fitted to the window, and stays in fit mode: the image is fitted again when the window is resized and when you step to an image of a different size. Images of the same size keep the view as it is, so a pan along a fitted height or width survives flipping through congruent plots. Fit mode ends when you zoom (`0`, `:zoom N`, `Ctrl` + scroll wheel) or run `:fit-off`, which leaves the current zoom as it is. `:fit`, `:fit-height`, `:fit-width` or a double-click start it again.
 
 ### Other
 
@@ -68,11 +75,13 @@ Arrow keys still work and navigate the top two entries in the focus stack, as in
 
 **Trade-off vs. pin:** every step costs one keypress, but Shift is needed for the reverse direction. Pin removes the Shift cost for sustained cycling at the expense of an explicit focus step before navigating.
 
+**Swapping the modifiers:** which of `Ctrl` and `Shift` opens the picker and which reverses is a setting — see [Modifier roles](#modifier-roles).
+
 ---
 
 ## seek
 
-Every letter key starts an incremental prefix search, first for an axis name, then for a value on that axis. Good when there are many axes or you don't want to memorise per-axis letter bindings.
+Every letter key starts an incremental search, first for an axis name, then for a value on that axis. Good when there are many axes or you don't want to memorise per-axis letter bindings.
 
 | Key | Action |
 |---|---|
@@ -84,7 +93,9 @@ Every letter key starts an incremental prefix search, first for an axis name, th
 
 **Greedy auto-confirm:** when exactly one candidate remains, it is selected automatically without pressing Enter.
 
-**Phase transition:** after confirming an axis, the mode transitions immediately into value selection on that axis using the same prefix matching. Backspace on an empty value query returns to axis selection.
+**Phase transition:** after confirming an axis, the mode transitions immediately into value selection on that axis using the same matching. Backspace on an empty value query returns to axis selection.
+
+**Fuzzy matching:** see [Fuzzy matching](#fuzzy-matching) below — typed characters need only appear in order, so `smp` finds `SMAP`.
 
 ---
 
@@ -105,13 +116,55 @@ Letter keys only shift focus — they do not advance the axis. Use arrow keys af
 
 ## Value picker
 
-`Ctrl` + a letter key opens an incremental value picker for that axis in any mode. Type a prefix to filter the list; the match is case-insensitive. When exactly one candidate remains it is confirmed automatically; press `Enter` to confirm the first candidate explicitly at any point; press `Escape` to cancel.
+`Ctrl` + a letter key opens an incremental value picker for that axis in any mode. Type to filter the list; the match is case-insensitive and [fuzzy](#fuzzy-matching). When exactly one candidate remains it is confirmed automatically; press `Enter` to confirm the first candidate explicitly at any point; press `Escape` to cancel.
+
+---
+
+## Modifier roles
+
+Two modifiers act on an axis letter key, and which does what is configurable:
+
+| | Value picker | Navigate −1 (tap only) |
+|---|---|---|
+| Default | `Ctrl` + letter | `Shift` + letter |
+| `modifiers.swap: true` | `Shift` + letter | `Ctrl` + letter |
+
+```yaml
+modifiers:
+  swap: true
+```
+
+Bare letters are unaffected — they still step +1 in tap mode and focus the axis in pin mode. Pin mode has no reverse binding, so under the swap `Ctrl` + letter simply does nothing there, exactly as `Shift` + letter does today.
+
+The startup warning about [custom keybindings](#custom-keybindings) that shadow navigation follows the swap, so it names the chord that is actually shadowed.
+
+---
+
+## Fuzzy matching
+
+Every search surface — command mode, seek mode, the value picker and the `:grid` argument list — matches the typed characters as a *subsequence*: they must appear in order, but need not be adjacent. `smp` finds `SMAP`, `fh` finds `fit-height`, `gsx` finds `grid-sharex`.
+
+Candidates are ranked so the likely reading comes first, which is what `Enter` takes and what greedy auto-confirm acts on:
+
+1. an exact match, then a prefix match, then a plain subsequence
+2. fewer jumps — a gap that lands right after `-`, `_`, `.`, `/`, `:` or a space reads as an initial, so `fh` prefers `fit-height` over `fit-width`
+3. an earlier first match, then a tighter span, then a shorter candidate
+
+Ties keep the order the candidates already had (axis order, value order, alphabetical for commands).
+
+Set `seek.fuzzy: false` in `~/.juxt/settings.yaml` for the older strict prefix matching (hyphens and underscores are still skipped there, so `gridl` finds `grid-layout`):
+
+```yaml
+seek:
+  greedy: true
+  fuzzy: false
+```
 
 ---
 
 ## Command mode
 
-Press `:` to open command mode. The status bar shows your input and a prefix-filtered list of matching commands as you type; a short description of the highlighted command is shown right-aligned. Press `Enter` to execute, `Escape` or `Backspace`-to-empty to cancel.
+Press `:` to open command mode. The status bar shows your input and a [fuzzy-filtered](#fuzzy-matching) list of matching commands as you type; a short description of the highlighted command is shown right-aligned. Press `Enter` to execute, `Escape` or `Backspace`-to-empty to cancel.
 
 | Command | Action |
 |---|---|
@@ -119,12 +172,15 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:fit` | Fit image to window (both dimensions) |
 | `:fit-height` | Fit image height to the viewport |
 | `:fit-width` | Fit image width to the viewport |
+| `:fit-off` | Stop fitting and keep the current zoom |
 | `:zoom N` | Set zoom to N% (e.g. `:zoom 50`, `:zoom 200`) |
 | `:fullscreen` | Toggle fullscreen |
 | `:mode tap` | Switch to tap mode |
 | `:mode seek` | Switch to seek mode |
 | `:mode pin` | Switch to pin mode |
+| `:keys` | Toggle the shortcut sidebar (same as `Ctrl+Shift+K`) |
 | `:switch-last` | Toggle between current and previous position (same as `Space`) |
+| `:version` | Show the juxt version in the status bar (`juxt --version` prints it from the shell) |
 | `:axis-h NAME` | Lock `←`/`→` to a named axis |
 | `:axis-v NAME` | Lock `↑`/`↓` to a named axis |
 | `:axis-auto` | Restore dynamic axis-to-arrow assignment |
@@ -133,8 +189,9 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 | `:grid AXIS VAL …` | Same, but show only the listed values |
 | `:grid AXIS NxM` | Same, with an explicit layout (e.g. `:grid sensor 2x2`) |
 | `:grid AXIS VAL … NxM` | Values and explicit layout combined |
+| `:grid-dialog` | Open the grid builder dialogue (same as `Ctrl+Shift+G`) |
 | `:grid-layout NxM` | Change the layout of the current grid without exiting (e.g. `:grid-layout 1x3`) |
-| `:ungrid` | Return to single-image view |
+| `:grid-off` / `:ungrid` | Return to single-image view |
 | `:grid-sharex [on\|off]` | Toggle or set synchronized horizontal pan/zoom across cells (default: on) |
 | `:grid-sharey [on\|off]` | Toggle or set synchronized vertical pan/zoom across cells (default: on) |
 | `:reload` | Re-detect axes and reload images from the current source |
@@ -149,9 +206,61 @@ Press `:` to open command mode. The status bar shows your input and a prefix-fil
 
 ### :pattern — changing the source at runtime
 
-`:pattern` accepts the same forms as the CLI `PATH` argument: a local template with `{placeholders}`, a local directory, a YAML config file, or a remote SSH path. The argument is pre-filled with the current template so you can edit it in place. A progress dialog blocks the window while images are loaded or downloaded.
+A command that takes an argument is entered in two steps: type its name and press `Enter`, or type a **space** right after the name to go straight to the argument (`:grid-layout 2x3`, `:gridl 2x3`, `:mode pin`). While the argument is empty the status bar shows the expected format, e.g. `NxM` for `:grid-layout`. Commands without arguments ignore the space.
+
+`:pattern` accepts the same forms as the CLI `PATH` argument: a local template with `{placeholders}`, a local directory, a YAML config file, or a remote SSH path. The argument is pre-filled with the current template so you can edit it in place. A leading `~` is expanded to your home directory, here as well as in the `PATH` argument and in YAML configs. A progress dialog blocks the window while images are loaded or downloaded.
 
 Free-text arguments (`:pattern`, `:write`) support full cursor editing: `←`/`→` move the caret, `Home`/`End` jump to the ends, `Delete` removes the character at the caret. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session.
+
+#### Placeholder-aware completion
+
+Completion treats every `{placeholder}` as a wildcard, so a template is built top-down instead of completing a concrete path first and deleting the components that should vary:
+
+```
+:pattern plots/⇥                        →  ASCAT/  SMAP/  SMOS/
+:pattern plots/{sensor}/⇥               →  AM/  PM/          (all sensors merged)
+:pattern plots/{sensor}/{overpass}/2⇥   →  2024-03-15.png  2024-03-16.png
+```
+
+Only the text after the last placeholder is completed, so placeholders already typed survive. A component that *ends* on a placeholder completes with whatever the candidates share — `/` when they are all directories, the common extension for files.
+
+Two shortcuts make the placeholders themselves quicker to type:
+
+- **`{`** followed by `Tab` completes the current axis names: `plots/{s⇥` → `plots/{sensor}`.
+- **`{}`** needs no name at all. Anonymous placeholders are numbered when the pattern is applied, so `plots/{}/{}.png` becomes `plots/{axis_1}/{axis_2}.png`.
+
+While a free-text argument is being typed, each placeholder is coloured by position in the status bar, which keeps a multi-axis template readable.
+
+#### Placeholders that stand for a known value
+
+A placeholder ending a component has no partial word to extend, so completion falls back to what the candidates share. For a placeholder whose name says what kind of value it holds, that is too much: over `2024-03-15_L2.png` and `2024-03-16_L3.png`, `{date}` would complete to `{date}_L`, and the `L` then has to be deleted to make room for the next placeholder.
+
+Names with a known **value shape** stop at the end of the value instead:
+
+```
+:pattern plots/{sensor}/AM/{date}⇥        →  plots/{sensor}/AM/{date}_
+:pattern plots/{sensor}/AM/{yyyy-mm-dd}⇥  →  plots/{sensor}/AM/{yyyy-mm-dd}_
+```
+
+Which names those are is entirely up to `placeholders:` in `~/.juxt/settings.yaml`. juxt writes the section on first run with the names it ships:
+
+```yaml
+placeholders:
+  date: [yyyy-mm-dd, yyyy_mm_dd, yyyymmdd]
+  datetime: [yyyy-mm-ddThh:mm:ss, yyyy-mm-dd_hhmmss, yyyymmdd_hhmmss]
+  time: [hh:mm:ss, hh-mm-ss, hhmmss]
+  year: yyyy
+  month: mm
+  day: dd
+  doy: ddd
+  orbit: 'o\d{5}'      # add your own: a regex, a shorthand, or a list of either
+```
+
+Nothing is assumed beyond that file, so deleting an entry really does remove it. A value is a date-style shorthand (`yyyy`, `yy`, `mm`, `dd`, `hh`, `ss`, `ddd`, `T` and separators), a regular expression, or a list of alternatives.
+
+Independently of the file, a placeholder whose *name* is itself a shorthand is recognised on sight, so `{yyyy-mm-dd}` and `{yyyymmdd}` work with no configuration at all. And a shape only ever guides the completion: when it matches nothing, the placeholder falls back to matching anything, so an unusual date format still completes.
+
+Shorthand names double as axis names, so `{yyyy-mm-dd}` can stand in a template as it is.
 
 ---
 
@@ -169,6 +278,54 @@ Grid view tiles all (or a subset of) values from one axis into a grid of indepen
 
 The layout is chosen automatically to best match the viewport's aspect ratio given the image dimensions; use `NxM` to override.
 
+#### Layouts smaller than the value count
+
+`NxM` is a hard cap, not a hint: `:grid sensor 2x1` gives you exactly two panes
+even when the axis has more values. Each pane holds its own value, and the
+values that don't fit stay reachable through the **focused pane** — the one
+drawn with a highlighted border and label.
+
+Stepping the grid axis scrolls **only the focused pane**, through the values no
+other pane is currently showing. The focus never moves on its own and the other
+panes hold still, so you can flip one tile against a fixed reference:
+
+```
+:grid sensor 2x1        # sensor = ASCAT SMAP SMOS
+                        # panes  [ASCAT] SMAP
+s                       # panes  [SMOS]  SMAP    ← only the focused pane moved
+s                       # panes  [ASCAT] SMAP    ← wraps; SMAP is never offered
+```
+
+**Click any pane to focus it.** The grid axis then acts on that pane instead,
+and its list of candidates updates to exclude whatever the other panes hold.
+
+The status bar names the focused pane, e.g. `[tap  grid:sensor[pane 1/2 +1]]` —
+pane 1 of 2, with 1 value not on screen. When every value already has a pane
+there is nothing left to cycle and the grid axis does nothing; use a smaller
+layout if you want to scroll through them.
+
+### The grid builder dialogue
+
+`Ctrl+Shift+G` (or `:grid-dialog`) opens a small dialogue that builds the same
+grid without typing a command — useful when you don't remember the axis or value
+spellings.
+
+| Field | Meaning |
+|---|---|
+| **Axis** | Which axis to tile. Defaults to the current grid axis, or the `←`/`→` axis when not in grid view. |
+| **Values** | Tick the values to show. `All` / `None` / `Invert` set them in bulk. |
+| **Layout** | With `auto` ticked the spin boxes show the layout that fits the viewport; stepping either one takes it off `auto` and sets rows × cols by hand. Re-tick `auto` to go back. A layout smaller than the value count gives the focused pane something to cycle, as above. |
+| **Sync pan/zoom** | The `:grid-sharex` / `:grid-sharey` toggles. |
+
+The line above the buttons previews the result, e.g. `3 cells → 2×2 (auto)`, and
+says so when an explicit layout has fewer panes than selected values — those
+values stay reachable through the focused pane. **Show grid**
+applies the settings; when opened from inside grid view the dialogue also offers
+**Exit grid**, equivalent to `:ungrid`.
+
+Opening the dialogue while a grid is active pre-fills every field from that grid,
+so it doubles as an editor for the current view.
+
 ### :grid — interactive completion
 
 `:grid` supports interactive argument completion. After pressing `Enter` to confirm the verb, the status bar shows axis name candidates:
@@ -185,7 +342,7 @@ Use `←`/`→` to cycle candidates or type a prefix to narrow them. Press **`Ta
 
 Press **`Tab`** again on each value to append it to the filter list. Press **`Enter`** to execute with the current selection — or just type the arguments manually if you know them.
 
-**Navigation in grid mode** works the same as normal: arrow keys and letter keys advance all other axes simultaneously — every cell updates together.
+**Navigation in grid mode** works the same as normal for every axis except the grid axis: arrow keys and letter keys advance all other axes simultaneously, and every cell updates together. The *grid* axis is confined to the focused pane — it swaps that one pane's value for another that is not already on screen, leaving the rest of the grid as a fixed reference. With a value subset, only values from that subset are ever offered.
 
 **Pan and zoom** are synchronized across all cells by default. Each cell is an independent `QGraphicsView`, so you can also pan/drag within a single cell independently when sync is off.
 
@@ -203,7 +360,7 @@ juxt "plots/{sensor}_{date}.png" --grid sensor --grid-layout 1x3
 juxt "plots/{sensor}_{date}.png" --grid sensor --no-sharex --no-sharey
 ```
 
-The status bar shows the active grid axis in the mode indicator, e.g. `[tap  grid:sensor]`.
+The status bar shows the active grid axis in the mode indicator, e.g. `[tap  grid:sensor]`, and names the focused pane when there is more than one, e.g. `[tap  grid:sensor[pane 2/2 +1]]` — the trailing `+1` counts values with no pane of their own.
 
 ---
 
@@ -218,25 +375,37 @@ The status bar at the bottom shows:
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode; description of the highlighted command shown right-aligned
 
-Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted.
+Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted. Values in the sidebar are clickable: a left click jumps to that value and focuses its axis.
+
+### Highlight format
+
+The colour and delimiters used for the current value (info sidebar, active axis, candidate lists) are set in `~/.juxt/settings.yaml`; see [Highlight format](ui.md#highlight-format).
 
 ### Custom keybindings
 
-Any action (including every `:command` plus `toggle-statusbar` and `toggle-info`) can be bound to a key chord in `~/.juxt/settings.yaml`:
+Any action (including every `:command` plus `toggle-statusbar`, `toggle-info` and `toggle-keys`) can be bound to a key chord in `~/.juxt/settings.yaml`:
 
 ```yaml
 keybindings:
   Ctrl+Shift+H: toggle-statusbar
+  Ctrl+Shift+G: grid-dialog
+  Ctrl+Shift+C: copy-path
+  Ctrl+Shift+K: toggle-keys
   F11: fullscreen
   Ctrl+R: reload
 ```
+
+Rebinding an action moves the shortcut shown next to it in the right-click
+menu, so the menu always names the chord that actually works.
 
 **Conflict warning.** Navigation keys are mode-specific:
 
 | Chord type | Conflicts with |
 |---|---|
 | Bare letter (e.g. `H`) | seek mode always (any letter starts a search); tap + pin if the letter is an axis key |
-| `Shift+letter` axis key | tap mode (uppercase = navigate −1) |
+| `Shift+letter` axis key | tap mode (navigate −1) |
 | `Ctrl+letter` axis key | tap + pin mode (opens value picker) |
+
+The last two rows exchange places under [`modifiers.swap`](#modifier-roles).
 
 When juxt detects a conflict it logs a warning and flashes a notice in the status bar — both at startup and whenever the settings file is saved. The binding still takes effect; the warning is advisory.

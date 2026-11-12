@@ -310,3 +310,32 @@ class TestDumpConfig:
         assert reloaded.remote.host == "srv"
         assert reloaded.remote.user == "bob"
         assert reloaded.remote.port == 2222
+
+
+class TestHomeInPaths:
+    @pytest.fixture
+    def home(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        return tmp_path
+
+    def test_template_in_a_config_file_expands_the_tilde(self, home, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("template: '~/plots/{s}.png'\naxes: {s: [a, b]}\n")
+        assert load_config(str(cfg)).template.startswith(str(home))
+
+    def test_discover_directory_expands_the_tilde(self, home, tmp_path):
+        d = home / "plots"
+        d.mkdir()
+        for name in ("a_1.png", "a_2.png", "b_1.png", "b_2.png"):
+            (d / name).write_bytes(b"")
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("discover:\n  directory: ~/plots\n  separator: _\n")
+        assert load_config(str(cfg)).template.startswith(str(d))
+
+    def test_saving_to_a_tilde_path_writes_under_home(self, home):
+        from juxt.config import Config, dump_config
+
+        cfg = Config(template="p/{s}.png", axes={"s": ["a", "b"]}, keys={"s": "s"})
+        dump_config(cfg, "~/saved.yaml")
+        assert (home / "saved.yaml").is_file()
