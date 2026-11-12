@@ -7,9 +7,15 @@ Download the archive for your platform, extract it, and run — no Python or pip
 
 | Platform | File | Run |
 |---|---|---|
-| Windows | `juxt-windows.zip` | Extract, then double-click `juxt\juxt.exe` or run it from a command prompt |
-| Linux | `juxt-linux.zip` | Extract, then `./juxt/juxt path/to/config.yaml` |
-| macOS | `juxt-macos.zip` | Extract, then `open juxt.app` — **built for Apple Silicon (arm64), untested** |
+| Windows (x86_64) | `juxt-windows-x86_64.zip` | Extract, then double-click `juxt\juxt.exe` or run it from a command prompt |
+| Linux (x86_64) | `juxt-linux-x86_64.zip` | Extract, then `./juxt/juxt path/to/config.yaml` |
+| Linux (arm64) | `juxt-linux-arm64.zip` | Extract, then `./juxt/juxt path/to/config.yaml` |
+| macOS (Apple Silicon) | `juxt-macos-arm64.zip` | Extract, then `open juxt.app` |
+| macOS (Intel) | `juxt-macos-x86_64.zip` | Extract, then `open juxt.app` |
+
+**Linux only:** the binaries are built against glibc 2.35, so they run on Ubuntu 22.04,
+Linux Mint 21, Debian 12 and anything newer. On older distros, install via pip instead.
+Windows on ARM runs the x86_64 build under emulation.
 
 **macOS only:** macOS Gatekeeper will block the unsigned app on first launch.
 Right-click the app → Open → Open to bypass, or run once from the terminal:
