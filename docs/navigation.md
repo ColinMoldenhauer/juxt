@@ -152,7 +152,7 @@ Candidates are ranked so the likely reading comes first, which is what `Enter` t
 
 Ties keep the order the candidates already had (axis order, value order, alphabetical for commands).
 
-Set `seek.fuzzy: false` in `~/.juxt/settings.yaml` for the older strict prefix matching:
+Set `seek.fuzzy: false` in `~/.juxt/settings.yaml` for the older strict prefix matching (hyphens and underscores are still skipped there, so `gridl` finds `grid-layout`):
 
 ```yaml
 seek:
@@ -191,7 +191,7 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:grid AXIS VAL … NxM` | Values and explicit layout combined |
 | `:grid-dialog` | Open the grid builder dialogue (same as `Ctrl+Shift+G`) |
 | `:grid-layout NxM` | Change the layout of the current grid without exiting (e.g. `:grid-layout 1x3`) |
-| `:ungrid` | Return to single-image view |
+| `:grid-off` / `:ungrid` | Return to single-image view |
 | `:grid-sharex [on\|off]` | Toggle or set synchronized horizontal pan/zoom across cells (default: on) |
 | `:grid-sharey [on\|off]` | Toggle or set synchronized vertical pan/zoom across cells (default: on) |
 | `:reload` | Re-detect axes and reload images from the current source |
@@ -206,7 +206,9 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 
 ### :pattern — changing the source at runtime
 
-`:pattern` accepts the same forms as the CLI `PATH` argument: a local template with `{placeholders}`, a local directory, a YAML config file, or a remote SSH path. The argument is pre-filled with the current template so you can edit it in place. A progress dialog blocks the window while images are loaded or downloaded.
+A command that takes an argument is entered in two steps: type its name and press `Enter`, or type a **space** right after the name to go straight to the argument (`:grid-layout 2x3`, `:gridl 2x3`, `:mode pin`). While the argument is empty the status bar shows the expected format, e.g. `NxM` for `:grid-layout`. Commands without arguments ignore the space.
+
+`:pattern` accepts the same forms as the CLI `PATH` argument: a local template with `{placeholders}`, a local directory, a YAML config file, or a remote SSH path. The argument is pre-filled with the current template so you can edit it in place. A leading `~` is expanded to your home directory, here as well as in the `PATH` argument and in YAML configs. A progress dialog blocks the window while images are loaded or downloaded.
 
 Free-text arguments (`:pattern`, `:write`) support full cursor editing: `←`/`→` move the caret, `Home`/`End` jump to the ends, `Delete` removes the character at the caret. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session.
 

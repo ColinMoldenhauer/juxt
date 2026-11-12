@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .complete import SCRIPT_FLAGS, WORDS_FLAG, normalize_template
+from .complete import SCRIPT_FLAGS, WORDS_FLAG, expand_home, normalize_template
 from .complete import main as _complete_main
 
 # Shell completion runs on every Tab press, so answer it here — before Qt is
@@ -224,7 +224,7 @@ def _print_help() -> None:
 
   commands (press : in the viewer, Tab completes)
     :fit  :fit-width  :fit-height  :fit-off  :zoom N  :fullscreen
-    :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :ungrid
+    :grid AXIS [VALUES|NxM]  :grid-dialog  :grid-layout NxM  :grid-off
     :grid-sharex on|off  :grid-sharey on|off
     :axis-h NAME  :axis-v NAME  :axis-auto  :swap-axes
     :mode tap|seek|pin  :switch-last  :info  :keys
@@ -382,7 +382,7 @@ def main():
         args.path = chosen
 
     try:
-        raw = normalize_template(args.path)  # anonymous {} → {axis_1}, {axis_2}, …
+        raw = expand_home(normalize_template(args.path))  # anonymous {} → {axis_1}, …; ~ → home
         if _is_remote_pattern(raw):
             remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
             if '{' in remote_tmpl:

@@ -609,6 +609,111 @@ class TestFitFollowsImage:
         assert v.transform().m11() == pytest.approx(1.0)
 
 
+class TestGridCommands:
+    def _type(self, v, qtbot, text):
+        qtbot.keyClicks(v, text)
+        qtbot.keyClick(v, Qt.Key.Key_Return)
+
+    def test_grid_off_leaves_grid_view(self, sized_view):
+        v = sized_view
+        v._cmd_execute("grid sensor")
+        assert v._grid_axis is not None
+        v._cmd_execute("grid-off")
+        assert v._grid_axis is None and v._grid_widget is None
+        assert v._flash_msg == "grid off"
+
+    def test_grid_off_outside_grid_says_so(self, sized_view):
+        v = sized_view
+        v._cmd_execute("grid-off")
+        assert v._flash_msg == "not in grid mode"
+
+    def test_grid_off_is_listed_and_typeable(self, sized_view, qtbot):
+        from juxt.viewer import _COMMAND_HELP, _COMMANDS
+
+        assert "grid-off" in _COMMANDS and "grid-off" in _COMMAND_HELP
+        v = sized_view
+        v._cmd_execute("grid sensor")
+        self._type(v, qtbot, ":grid-off")
+        assert v._grid_axis is None
+
+    def test_one_by_one_layout_gives_a_single_pane(self, sized_view):
+        v = sized_view
+        v._cmd_execute("grid sensor")
+        v._cmd_execute("grid-layout 1x1")
+        assert v._grid_layout == (1, 1)
+        assert len(v._grid_slots) == 1
+        assert (v._grid_widget._rows, v._grid_widget._cols) == (1, 1)
+
+    def test_layout_typed_in_one_line_is_applied(self, sized_view, qtbot):
+        """The space after the command name opens its argument, so the whole
+        line works as typed instead of being dropped as an unknown command."""
+        v = sized_view
+        v._cmd_execute("grid sensor")
+        self._type(v, qtbot, ":grid-layout 1x1")
+        assert v._grid_layout == (1, 1)
+        assert len(v._grid_slots) == 1
+
+    def test_layout_typed_with_a_fuzzy_name(self, sized_view, qtbot):
+        v = sized_view
+        v._cmd_execute("grid sensor")
+        self._type(v, qtbot, ":gridl 1x2")
+        assert v._grid_layout == (1, 2)
+
+    def test_space_after_a_command_opens_its_argument(self, sized_view, qtbot):
+        v = sized_view
+        qtbot.keyClicks(v, ":grid-layout ")
+        assert v._cmd["phase"] == "arg" and v._cmd["verb"] == "grid-layout"
+        assert v._cmd["query"] == ""
+
+    def test_space_after_a_command_without_arguments_is_ignored(self, sized_view, qtbot):
+        v = sized_view
+        qtbot.keyClicks(v, ":fullscreen ")
+        assert v._cmd["phase"] == "verb" and v._cmd["query"] == "fullscreen"
+
+    def test_leading_space_is_ignored(self, sized_view, qtbot):
+        v = sized_view
+        qtbot.keyClicks(v, ": ")
+        assert v._cmd["phase"] == "verb" and v._cmd["query"] == ""
+
+    def test_empty_layout_argument_shows_the_expected_format(self, main_window, qtbot):
+        v = main_window.view
+        qtbot.keyClicks(v, ":grid-layout ")
+        main_window._update_status()
+        lbl = main_window._status_label
+        text = lbl._full_html if lbl._full_html is not None else lbl._full_plain
+        assert "NxM" in text
+
+    def test_format_hint_stays_while_the_layout_is_incomplete(self, main_window, qtbot):
+        v = main_window.view
+        qtbot.keyClicks(v, ":grid-layout 2x")
+        main_window._update_status()
+        lbl = main_window._status_label
+        text = lbl._full_html if lbl._full_html is not None else lbl._full_plain
+        assert "NxM" in text
+
+
+class TestCommandNamesSkipHyphens:
+    def test_fuzzy_matches_across_the_hyphen(self):
+        from juxt.fuzzy import fuzzy_filter
+        from juxt.viewer import _COMMANDS
+
+        assert fuzzy_filter("gridl", _COMMANDS)[0] == "grid-layout"
+        assert fuzzy_filter("fith", _COMMANDS)[0] == "fit-height"
+
+    def test_strict_prefix_matches_across_the_hyphen(self):
+        from juxt.fuzzy import prefix_filter
+        from juxt.viewer import _COMMANDS
+
+        assert prefix_filter("gridl", _COMMANDS) == ["grid-layout"]
+
+    def test_gridl_reaches_grid_layout_with_either_matcher(self, sized_view):
+        v = sized_view
+        for fuzzy in (True, False):
+            v._seek_fuzzy = fuzzy
+            v._cmd = {"phase": "verb", "query": "gridl", "cursor": 0}
+            assert v._cmd_candidates()[0] == "grid-layout"
+
+
 class TestVersionCommand:
     def test_flashes_the_installed_version(self, sized_view):
         import juxt

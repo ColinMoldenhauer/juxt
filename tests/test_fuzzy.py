@@ -67,3 +67,15 @@ class TestPrefixFilter:
 
     def test_empty_query_keeps_pool_order(self):
         assert prefix_filter("", SENSORS) == SENSORS
+
+    def test_hyphens_and_underscores_are_skipped(self):
+        pool = ["grid-layout", "grid-dialog", "snake_case"]
+        assert prefix_filter("gridl", pool) == ["grid-layout"]
+        assert prefix_filter("grid-l", pool) == ["grid-layout"]
+        assert prefix_filter("snakec", pool) == ["snake_case"]
+
+    def test_a_lone_separator_still_filters(self):
+        assert prefix_filter("-", ["a-b", "-x", "c"]) == ["-x"]
+
+    def test_later_letters_still_have_to_match(self):
+        assert prefix_filter("gridx", ["grid-layout"]) == []
