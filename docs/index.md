@@ -30,6 +30,8 @@ juxt scans the filenames, infers the axes, and opens an interactive viewer. Pres
 
 See the [Installation](installation.md) page for full setup options, including the SSH extra for remote image directories.
 
+Want to see it first? Try the [web demo](demo.md).
+
 ## How it works
 
 At startup juxt preloads all images into memory (target use case: ~100 plots, ~2–5 MB each decoded). Navigation is then instant — no per-keypress I/O. Three navigation modes are available, switchable at runtime with `:mode`.
@@ -38,6 +40,7 @@ At startup juxt preloads all images into memory (target use case: ~100 plots, ~2
 
 | Page | What's there |
 |---|---|
+| [Web demo](demo.md) | Try the navigation in your browser, no install needed |
 | [UI overview](ui.md) | Annotated screenshots of the main window, status bar states, and info sidebar |
 | [Installation](installation.md) | pip, extras, requirements |
 | [Configuration](configuration.md) | Template mode, auto-discover, all config keys |

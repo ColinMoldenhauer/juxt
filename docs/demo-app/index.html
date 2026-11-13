@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>juxt web demo</title>
+<style>
+  :root {
+    --bg: #111; --panel: #181818; --bar: #1d1d1d; --fg: #ddd; --dim: #888;
+    --accent: #26a69a; --hl: #ffd54f; --err: #cc4444; --line: #2c2c2c;
+    --mono: "Courier New", ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 var(--mono); overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100%; outline: none; }
+  #titlebar { display: flex; align-items: center; gap: 10px; padding: 4px 10px;
+    background: var(--bar); border-bottom: 1px solid var(--line); color: var(--dim); }
+  #titlebar b { color: var(--accent); }
+  #titlebar .sp { flex: 1; }
+  #titlebar button { background: none; border: 1px solid var(--line); color: var(--dim);
+    font: inherit; padding: 1px 8px; border-radius: 3px; cursor: pointer; }
+  #titlebar button:hover, #titlebar button.on { color: var(--fg); border-color: var(--accent); }
+  #main { flex: 1; display: flex; min-height: 0; }
+  .side { width: 230px; flex: none; background: var(--panel); overflow-y: auto;
+    padding: 8px 10px; white-space: normal; }
+  #keys { border-right: 1px solid var(--line); }
+  #info { border-left: 1px solid var(--line); }
+  .side h4 { margin: 10px 0 2px; color: var(--accent); font-weight: normal; }
+  .side h4:first-child { margin-top: 0; }
+  .side .row { display: flex; gap: 8px; }
+  .side .row kbd { flex: none; min-width: 5.5em; color: var(--hl); font: inherit; }
+  .side .path { word-break: break-all; margin-bottom: 8px; }
+  .side .val { cursor: pointer; padding: 0 3px; border-radius: 2px; display: inline-block; }
+  .side .val:hover { background: #2a2a2a; }
+  .side .val.cur { background: var(--hl); color: #000; font-weight: bold; }
+  #view { flex: 1; position: relative; min-width: 0; overflow: hidden; background: #0b0b0b;
+    cursor: grab; touch-action: none; }
+  #view.drag { cursor: grabbing; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+    background: rgba(0,0,0,.78); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 14px; max-width: 92%; text-align: center; color: var(--fg); pointer-events: none;
+    transition: opacity .3s; }
+  #hint kbd, .kbd { color: var(--hl); font: inherit; }
+  #hint.hide { opacity: 0; }
+  #focusmsg { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.55); color: var(--fg); font-size: 15px; pointer-events: none; }
+  #app:not(:focus-within) #focusmsg { display: flex; }
+  #statusbar { padding: 4px 10px; background: var(--bar); border-top: 1px solid var(--line);
+    white-space: pre; overflow: hidden; display: flex; gap: 14px; min-height: 26px; }
+  #statusbar.hidden { display: none; }
+  #status { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #helpline { color: var(--dim); }
+  .hl { background: var(--hl); color: #000; padding: 0 2px; }
+  .cand-cur { color: var(--hl); }
+  .unbound { color: var(--err); }
+  .dim { color: var(--dim); }
+  @media (max-width: 760px) { .side { display: none !important; } #statusbar { font-size: 11px; } }
+</style>
+</head>
+<body>
+<div id="app" tabindex="0">
+  <div id="titlebar">
+    <span><b>juxt</b> | plots/{sensor}_{date}_{overpass}_{source}.png</span>
+    <span class="sp"></span>
+    <button id="b-keys" title=":keys">keys</button>
+    <button id="b-info" title=":info">info</button>
+    <button id="b-bar" title=":statusbar" class="on">status</button>
+    <button id="b-full" title=":fullscreen">fullscreen</button>
+  </div>
+  <div id="main">
+    <div class="side" id="keys" hidden></div>
+    <div id="view">
+      <canvas id="cv"></canvas>
+      <div id="hint"></div>
+      <div id="focusmsg">click here to give the demo keyboard focus</div>
+    </div>
+    <div class="side" id="info" hidden></div>
+  </div>
+  <div id="statusbar"><div id="status"></div><div id="helpline"></div></div>
+</div>
+
+<script>
+"use strict";
+// ───────────────────────────── config (mirrors examples/sample_config.yaml) ──
+const VERSION = "web demo";
+const TEMPLATE = "plots/{sensor}_{date}_{overpass}_{source}.png";
+const AXES = [
+  { name: "sensor",   values: ["ASCAT", "SMAP", "SMOS"] },
+  { name: "date",     values: ["2024-03-15", "2024-03-16"] },
+  { name: "overpass", values: ["AM", "PM"] },
+  { name: "source",   values: ["L2", "L3"] },
+];
+const KEYS = { s: 0, d: 1, o: 2, r: 3 };           // letter → axis index
+const MODES = ["tap", "seek", "pin"];
+const IW = 900, IH = 620;                          // plot size, as in make_sample.py
+
+// ───────────────────────────── synthetic plots (port of make_sample.py) ──────
+function hash(str) { let h = 2166136261; for (const c of str) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function hsv(h, s, v) { const i = Math.floor(h * 6), f = h * 6 - i, p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+  const [r, g, b] = [[v, t, p], [q, v, p], [p, v, t], [p, q, v], [t, p, v], [v, p, q]][i % 6];
+  return `rgb(${r * 255 | 0},${g * 255 | 0},${b * 255 | 0})`; }
+const SENSOR_HUE = { ASCAT: 0.58, SMAP: 0.30, SMOS: 0.02 };
+
+function makePlot(coords) {
+  const [sensor, date, overpass, source] = coords;
+  const c = document.createElement("canvas"); c.width = IW; c.height = IH;
+  const g = c.getContext("2d");
+  g.fillStyle = "#141423"; g.fillRect(0, 0, IW, IH);
+  const hue = SENSOR_HUE[sensor], dOff = AXES[1].values.indexOf(date),
+        oOff = AXES[2].values.indexOf(overpass), sOff = AXES[3].values.indexOf(source);
+  const rng = mulberry32(hash(coords.join("|")));
+  const COLS = 18, ROWS = 12, cw = Math.floor((IW - 40) / COLS), ch = Math.floor((IH - 80) / ROWS);
+  for (let r = 0; r < ROWS; r++) for (let q = 0; q < COLS; q++) {
+    const v = (rng() + dOff * .12 + oOff * .08 + sOff * .06) % 1;
+    g.fillStyle = hsv(hue, .55 + oOff * .15, .3 + v * .65);
+    g.fillRect(20 + q * cw, 40 + r * ch, cw - 1, ch - 1);
+  }
+  g.fillStyle = "rgba(0,0,0,.8)"; g.fillRect(0, 0, IW, 36);
+  g.fillStyle = "#dcdcdc"; g.font = "15px 'Courier New', monospace"; g.textBaseline = "middle";
+  g.fillText(`sensor=${sensor}    date=${date}    overpass=${overpass}    source=${source}`, 8, 18);
+  for (let x = 0; x < IW; x++) { g.fillStyle = hsv(hue, .7, x / IW); g.fillRect(x, IH - 18, 1, 14); }
+  return c;
+}
+
+// preload everything into a dict keyed by coordinate tuple, like the desktop app
+const plots = new Map();
+(function preload() {
+  const rec = (i, cur) => { if (i === AXES.length) { plots.set(cur.join("|"), makePlot(cur)); return; }
+    for (const v of AXES[i].values) rec(i + 1, [...cur, v]); };
+  rec(0, []);
+})();
+
+// ───────────────────────────── fuzzy matching (port of juxt/fuzzy.py) ────────
+const BOUNDARY = "-_. /:=";
+function fzScore(query, cand) {
+  const q = query.toLowerCase(), c = cand.toLowerCase();
+  if (!q) return [0, 0, 0, 0, cand.length];
+  const pos = []; let i = 0;
+  for (const ch of q) { i = c.indexOf(ch, i); if (i < 0) return null; pos.push(i); i++; }
+  const tier = c === q ? 0 : c.startsWith(q) ? 1 : 2;
+  let jumps = 0;
+  pos.forEach((p, n) => { if (n && p !== pos[n - 1] + 1 && !(p && BOUNDARY.includes(c[p - 1]))) jumps++; });
+  return [tier, jumps, pos[0], pos[pos.length - 1] - pos[0], cand.length];
+}
+function fuzzy(query, pool) {
+  if (!query) return [...pool];
+  const cmp = (a, b) => { for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return a[k] - b[k]; return 0; };
+  return pool.map((c, i) => [fzScore(query, c), i, c]).filter(x => x[0])
+    .sort((a, b) => cmp(a[0], b[0]) || a[1] - b[1]).map(x => x[2]);
+}
+
+// ───────────────────────────── state ─────────────────────────────────────────
+const S = {
+  pos: AXES.map(() => 0), prev: null, focus: AXES.map((_, i) => i),
+  mode: 0, active: null, activeTimer: 0,
+  sel: null, cmd: null, flashMsg: null, flashTimer: 0,
+  fit: "both",                     // "both" | "height" | "width" | null
+  zoom: 1, tx: 0, ty: 0,           // view transform (zoom = screen px per image px)
+  statusBar: true, info: false, keys: false,
+};
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d"), view = $("view");
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hAxis = () => S.focus[0], vAxis = () => S.focus.length > 1 ? S.focus[1] : null;
+const curCoords = () => AXES.map((a, i) => a.values[S.pos[i]]);
+const curPath = () => TEMPLATE.replace(/\{(\w+)\}/g, (_, n) => AXES[AXES.findIndex(a => a.name === n)].values[S.pos[AXES.findIndex(a => a.name === n)]]);
+
+// ───────────────────────────── canvas view ───────────────────────────────────
+function fitScale() {
+  const w = view.clientWidth, h = view.clientHeight;
+  if (S.fit === "height") return h / IH;
+  if (S.fit === "width") return w / IW;
+  return Math.min(w / IW, h / IH);
+}
+function applyFit() {
+  if (!S.fit) return;
+  S.zoom = fitScale();
+  S.tx = (view.clientWidth - IW * S.zoom) / 2;
+  S.ty = S.fit === "height" || S.fit === "both" ? (view.clientHeight - IH * S.zoom) / 2 : 0;
+}
+function draw() {
+  const dpr = window.devicePixelRatio || 1, w = view.clientWidth, h = view.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); applyFit();
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.imageSmoothingEnabled = S.zoom < 2;
+  ctx.drawImage(plots.get(curCoords().join("|")), S.tx, S.ty, IW * S.zoom, IH * S.zoom);
+}
+function setZoom(z, ax, ay) {                       // zoom anchored at a screen point
+  z = Math.max(0.05, Math.min(32, z));
+  ax = ax ?? view.clientWidth / 2; ay = ay ?? view.clientHeight / 2;
+  S.tx = ax - (ax - S.tx) * z / S.zoom; S.ty = ay - (ay - S.ty) * z / S.zoom; S.zoom = z; S.fit = null;
+}
+new ResizeObserver(() => { applyFit(); render(); }).observe(view);
+
+// ───────────────────────────── navigation ────────────────────────────────────
+function focusAxis(a) { S.focus = [a, ...S.focus.filter(x => x !== a)]; }
+function markActive(a) { S.active = a; clearTimeout(S.activeTimer); S.activeTimer = setTimeout(() => { S.active = null; render(); }, 1000); }
+function navigate(axis, delta) {
+  S.prev = [...S.pos]; const n = AXES[axis].values.length;
+  S.pos[axis] = (S.pos[axis] + delta + n * 8) % n; markActive(axis); render();
+}
+function jump(axis, idx) { if (S.pos[axis] !== idx) S.prev = [...S.pos]; S.pos[axis] = idx; markActive(axis); render(); }
+function gotoValue(axis, idx) { focusAxis(axis); jump(axis, idx); }
+function swapPrev() { if (S.prev) { [S.pos, S.prev] = [S.prev, [...S.pos]]; render(); } }
+function flash(msg, ms = 2500) { S.flashMsg = msg; clearTimeout(S.flashTimer); S.flashTimer = setTimeout(() => { S.flashMsg = null; render(); }, ms); render(); }
+
+// ───────────────────────────── value picker / seek ───────────────────────────
+const selPool = () => S.sel.phase === "axis" ? AXES.map(a => a.name) : AXES[S.sel.axis].values;
+const selCands = () => fuzzy(S.sel.query, selPool());
+function selTryCommit() {
+  const c = selCands();
+  if (c.length === 1) selCommit(c[0]);
+  else { S.sel.cursor = c.length ? Math.min(S.sel.cursor, c.length - 1) : 0; render(); }
+}
+function selCommit(value) {
+  if (S.sel.phase === "axis") {
+    const a = AXES.findIndex(x => x.name === value); focusAxis(a);
+    S.sel = { phase: "value", query: "", axis: a, cursor: 0 }; selTryCommit();
+  } else {
+    const a = S.sel.axis; S.sel = null; jump(a, AXES[a].values.indexOf(value));
+  }
+}
+function openAxisSel(initial) { S.sel = { phase: "axis", query: initial.toLowerCase(), cursor: 0 }; selTryCommit(); }
+function openValueSel(a) { focusAxis(a); S.sel = { phase: "value", query: "", axis: a, cursor: 0 }; selTryCommit(); }
+function selKey(e) {
+  const k = e.key, c = selCands();
+  if (k === "Escape") S.sel = null;
+  else if (k === "Backspace") {
+    if (S.sel.query) { S.sel.query = S.sel.query.slice(0, -1); S.sel.cursor = 0; }
+    else if (S.sel.phase === "value") S.sel = { phase: "axis", query: "", cursor: 0 };
+    else S.sel = null;
+  }
+  else if (k === "ArrowRight" || k === "Tab" && !e.shiftKey) { if (c.length) S.sel.cursor = (S.sel.cursor + 1) % c.length; }
+  else if (k === "ArrowLeft" || k === "Tab") { if (c.length) S.sel.cursor = (S.sel.cursor - 1 + c.length) % c.length; }
+  else if (/^[1-9]$/.test(k)) { if (+k - 1 < c.length) return selCommit(c[+k - 1]); }
+  else if (k === "Enter") { if (c.length) return selCommit(c[S.sel.cursor]); }
+  else if (k.length === 1) { S.sel.query += k.toLowerCase(); S.sel.cursor = 0; return selTryCommit(); }
+  render();
+}
+
+// ───────────────────────────── command mode ──────────────────────────────────
+const COMMANDS = {
+  "q": "quit (not in the web demo)", "fit": "fit image to window", "fit-height": "fit image height to viewport",
+  "fit-width": "fit image width to viewport", "fit-off": "stop fitting, keep the current zoom",
+  "zoom": "set zoom to N% (e.g. :zoom 200)", "fullscreen": "toggle fullscreen",
+  "mode": "switch navigation mode: tap | seek | pin", "switch-last": "toggle between current and previous position",
+  "info": "toggle the info sidebar", "keys": "toggle the shortcut sidebar", "statusbar": "toggle the status bar",
+  "version": "show the juxt version",
+};
+const ARG_CANDS = { mode: MODES };
+function cmdCands() {
+  const c = S.cmd;
+  if (c.phase === "verb") return fuzzy(c.query, Object.keys(COMMANDS));
+  return ARG_CANDS[c.verb] ? fuzzy(c.query, ARG_CANDS[c.verb]) : [];
+}
+function cmdKey(e) {
+  const c = S.cmd, k = e.key, cands = cmdCands();
+  if (k === "Escape") S.cmd = null;
+  else if (k === "Backspace") {
+    if (c.query) c.query = c.query.slice(0, -1);
+    else if (c.phase === "arg") { c.phase = "verb"; c.query = c.verb; }
+    else S.cmd = null;
+    c.cursor = -1;
+  }
+  else if (k === "Tab" || k === "ArrowRight") { e.shiftKey && k === "Tab" ? c.cursor = (c.cursor - 1 + cands.length) % cands.length : c.cursor = (c.cursor + 1) % Math.max(cands.length, 1); }
+  else if (k === "ArrowLeft") c.cursor = (c.cursor - 1 + cands.length) % Math.max(cands.length, 1);
+  else if (k === "Enter") return cmdEnter();
+  else if (k === " " && c.phase === "verb") {
+    const v = cands[Math.max(c.cursor, 0)];
+    if (v && (v === c.query || cands.length === 1 || c.cursor >= 0)) { c.verb = v; c.phase = "arg"; c.query = ""; c.cursor = -1; }
+  }
+  else if (k.length === 1) { c.query += k; c.cursor = -1; }
+  render();
+}
+function cmdEnter() {
+  const c = S.cmd; const cands = cmdCands();
+  let verb, arg = "";
+  if (c.phase === "verb") {
+    const parts = c.query.trim().split(/\s+/); verb = parts[0]; arg = parts.slice(1).join(" ");
+    if (!COMMANDS[verb]) verb = cands[Math.max(c.cursor, 0)] || verb;
+  } else {
+    verb = c.verb; arg = c.query.trim();
+    if (ARG_CANDS[verb] && !ARG_CANDS[verb].includes(arg)) arg = cands[Math.max(c.cursor, 0)] || arg;
+  }
+  S.cmd = null; runCmd(verb, arg);
+}
+function runCmd(verb, arg) {
+  const fit = m => { S.fit = m; applyFit(); render(); };
+  switch (verb) {
+    case "q": flash("can't quit a web page — close the tab instead :)"); break;
+    case "fit": fit("both"); break;
+    case "fit-height": fit("height"); break;
+    case "fit-width": fit("width"); break;
+    case "fit-off": S.fit = null; render(); break;
+    case "fullscreen": toggleFullscreen(); break;
+    case "switch-last": swapPrev(); break;
+    case "info": toggle("info"); break;
+    case "keys": toggle("keys"); break;
+    case "statusbar": toggle("statusBar"); break;
+    case "version": flash(`juxt ${VERSION}`); break;
+    case "zoom": {
+      const n = parseFloat(arg);
+      if (isFinite(n) && n > 0) { setZoom(n / 100); render(); } else flash("usage: :zoom N   (percent)");
+      break;
+    }
+    case "mode": {
+      let m = MODES.indexOf(arg); if (m < 0 && /^[012]$/.test(arg)) m = +arg;
+      if (m < 0) flash("usage: :mode tap|seek|pin"); else { S.mode = m; S.sel = null; render(); }
+      break;
+    }
+    default: flash(`unknown command: ${verb || "(empty)"}`);
+  }
+}
+
+// ───────────────────────────── keyboard ──────────────────────────────────────
+function toggle(what) { S[what] = !S[what]; render(); }
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen(); else $("app").requestFullscreen?.().catch(() => flash("fullscreen blocked by the browser"));
+}
+function resetZoom() { setZoom(1); S.tx = (view.clientWidth - IW) / 2; S.ty = (view.clientHeight - IH) / 2; render(); }
+
+function onKey(e) {
+  if (e.metaKey || e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
+  const k = e.key, ctrl = e.ctrlKey, shift = e.shiftKey;
+  const used = () => { e.preventDefault(); e.stopPropagation(); };
+
+  // global chords
+  if (ctrl && shift && /^[hikHIK]$/.test(k)) { used(); toggle({ h: "statusBar", i: "info", k: "keys" }[k.toLowerCase()]); return; }
+  if (ctrl && !shift && k.toLowerCase() === "c" && (S.cmd || S.sel)) { used(); S.cmd = S.sel = null; render(); return; }
+
+  if (S.cmd) { used(); cmdKey(e); return; }
+  if (k === "0" && !ctrl) { used(); resetZoom(); return; }
+  if (S.sel) { used(); selKey(e); return; }
+  if (e.altKey) return;
+
+  if (k === ":") { used(); S.cmd = { phase: "verb", query: "", cursor: -1 }; render(); return; }
+
+  const arrows = { ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 1], ArrowUp: [1, -1] };
+  if (arrows[k]) {
+    used(); const [which, d] = arrows[k], a = which ? vAxis() : hAxis();
+    if (a !== null) navigate(a, d); return;
+  }
+  if (k === " ") { used(); swapPrev(); return; }
+  if (k === "Home" || k === "End") { used(); const h = hAxis(); jump(h, k === "Home" ? 0 : AXES[h].values.length - 1); return; }
+  if (/^[1-9]$/.test(k) && !ctrl) { used(); const h = hAxis(); if (+k - 1 < AXES[h].values.length) jump(h, +k - 1); return; }
+  if (k === "Enter") { used(); toggleFullscreen(); return; }
+  if (k === "Escape") { if (document.fullscreenElement) document.exitFullscreen(); return; }
+
+  if (k.length !== 1 || !/[a-z]/i.test(k)) return;
+  const lower = k.toLowerCase(), axis = KEYS[lower];
+  const mode = MODES[S.mode];
+  if (mode === "seek") { if (!ctrl && !shift || shift && !ctrl) { used(); openAxisSel(lower); } return; }
+  if (axis === undefined) return;
+  if (ctrl && !shift) { used(); openValueSel(axis); return; }        // picker (tap & pin)
+  if (ctrl) return;
+  used();
+  if (mode === "pin") { if (!shift) { focusAxis(axis); markActive(axis); render(); } return; }
+  focusAxis(axis); navigate(axis, shift ? -1 : 1);                   // tap
+}
+$("app").addEventListener("keydown", onKey, true);
+
+// ───────────────────────────── mouse / touch ─────────────────────────────────
+let drag = null;
+view.addEventListener("pointerdown", e => { $("app").focus(); hideHint(); drag = { x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty, moved: false };
+  view.setPointerCapture(e.pointerId); view.classList.add("drag"); });
+view.addEventListener("pointermove", e => { if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+  if (drag.moved) { S.tx = drag.tx + dx; S.ty = drag.ty + dy; draw(); } });
+view.addEventListener("pointerup", () => { drag = null; view.classList.remove("drag"); });
+view.addEventListener("dblclick", () => { S.fit = "both"; applyFit(); render(); });
+view.addEventListener("wheel", e => {
+  e.preventDefault();
+  if (e.ctrlKey) { const r = view.getBoundingClientRect(); setZoom(S.zoom * Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); render(); return; }
+  const a = e.shiftKey ? vAxis() : hAxis(); const d = (e.deltaY || e.deltaX) > 0 ? 1 : -1;
+  if (a !== null) navigate(a, d);
+}, { passive: false });
+view.addEventListener("contextmenu", e => e.preventDefault());
+
+$("b-keys").onclick = () => { toggle("keys"); $("app").focus(); };
+$("b-info").onclick = () => { toggle("info"); $("app").focus(); };
+$("b-bar").onclick = () => { toggle("statusBar"); $("app").focus(); };
+$("b-full").onclick = () => { toggleFullscreen(); $("app").focus(); };
+document.addEventListener("fullscreenchange", () => setTimeout(() => { applyFit(); render(); }, 50));
+document.addEventListener("click", e => {
+  const v = e.target.closest(".val"); if (!v) return;
+  gotoValue(+v.dataset.a, +v.dataset.i); $("app").focus();
+});
+
+// ───────────────────────────── rendering of chrome ───────────────────────────
+function candHtml(c, cursor) {
+  return c.map((x, i) => i === cursor ? `<span class="cand-cur">[${esc(x)}]</span>` : esc(x)).join("  ");
+}
+function renderStatus() {
+  const st = $("status"), help = $("helpline"); help.textContent = "";
+  const mode = MODES[S.mode], modeStr = `[${mode}]`;
+  if (S.flashMsg) { st.textContent = S.flashMsg; return; }
+  if (S.cmd) {
+    const c = S.cmd, cands = cmdCands(), cur = c.cursor < 0 ? -1 : Math.min(c.cursor, cands.length - 1);
+    const prompt = c.phase === "verb" ? `:${c.query}▌` : `:${c.verb} ${c.query}▌`;
+    const hl = cands[Math.max(cur, 0)];
+    const desc = c.phase === "verb" ? (hl ? COMMANDS[hl] : "") : COMMANDS[c.verb];
+    if (desc) help.textContent = `( ${desc} )`;
+    if (cands.length) st.innerHTML = `${esc(prompt)}  →  ${candHtml(cands, cur)}`;
+    else if (c.phase === "verb" && c.query) st.innerHTML = `${esc(prompt)}  (unknown command)`;
+    else st.textContent = prompt;
+    return;
+  }
+  if (S.sel) {
+    const c = selCands(), q = S.sel.query;
+    const prompt = S.sel.phase === "axis" ? `axis? ${q}▌` : `${AXES[S.sel.axis].name}? ${q}▌`;
+    st.innerHTML = `${esc(modeStr)}  |  ${esc(prompt)}  →  ${c.length ? candHtml(c, S.sel.cursor) : "(no match)"}`;
+    return;
+  }
+  const coords = AXES.map((a, i) => {
+    const w = Math.max(...a.values.map(v => v.length));
+    const t = esc(`${a.name}=${a.values[S.pos[i]].padEnd(w)}`);
+    return i === S.active ? `<span class="hl">${t}</span>` : t;
+  }).join("  ");
+  const h = AXES[hAxis()].name, v = vAxis() === null ? "—" : AXES[vAxis()].name;
+  const bind = `→/← ${h}  ↑/↓ ${v}`;
+  let hints;
+  if (mode === "seek") hints = AXES.map(a => a.name).join("  ");
+  else {
+    const bound = Object.entries(KEYS).sort().map(([ch, i]) => `[${ch}] ${AXES[i].name}`).join("  ");
+    const unbound = AXES.filter((_, i) => !Object.values(KEYS).includes(i)).map(a => `<span class="unbound">${esc(a.name)}</span>`).join("  ");
+    hints = esc(bound) + (unbound ? "  " + unbound : "");
+  }
+  st.innerHTML = [esc(modeStr), coords, esc(bind), hints].join("  |  ");
+}
+function renderInfo() {
+  let h = `<h4>path</h4><div class="path">${esc(curPath())}</div>`;
+  AXES.forEach((a, i) => {
+    h += `<h4>▸ ${esc(a.name)}</h4>` + a.values.map((v, j) =>
+      `<span class="val${j === S.pos[i] ? " cur" : ""}" data-a="${i}" data-i="${j}">${esc(v)}</span>`).join(" ");
+  });
+  $("info").innerHTML = h;
+}
+function renderKeys() {
+  const row = (k, d) => `<div class="row"><kbd>${esc(k)}</kbd><span>${esc(d)}</span></div>`;
+  const mode = MODES[S.mode];
+  let h = `<h4>arrows</h4>` + row("← →", AXES[hAxis()].name) + row("↑ ↓", vAxis() === null ? "—" : AXES[vAxis()].name);
+  h += `<h4>letters (${mode})</h4>`;
+  if (mode === "tap") h += row("s d o r", "step +1 on that axis") + row("S D O R", "step −1") + row("Ctrl+s…", "value picker");
+  else if (mode === "pin") h += row("s d o r", "focus axis → arrows") + row("Ctrl+s…", "value picker");
+  else h += row("any letter", "fuzzy-search axis, then value") + row("Enter", "confirm first match") + row("Backspace", "step back");
+  h += `<h4>axis keys</h4>` + Object.entries(KEYS).sort().map(([c, i]) => row(c, AXES[i].name)).join("");
+  h += `<h4>always</h4>` + row("Space", "flip to previous") + row("Home / End", "first / last") + row("1–9", "Nth value")
+     + row("0", "zoom 100%") + row("dbl-click", "fit") + row("wheel", "step axis") + row("Ctrl+wheel", "zoom") + row("drag", "pan")
+     + row(":", "command mode") + row("Enter", "fullscreen") + row("Ctrl+Shift+H", "status bar") + row("Ctrl+Shift+I", "info") + row("Ctrl+Shift+K", "this panel");
+  $("keys").innerHTML = h;
+}
+function render() {
+  draw(); renderStatus();
+  $("statusbar").classList.toggle("hidden", !S.statusBar && !S.cmd && !S.sel);
+  $("info").hidden = !S.info; $("keys").hidden = !S.keys;
+  $("b-info").classList.toggle("on", S.info); $("b-keys").classList.toggle("on", S.keys); $("b-bar").classList.toggle("on", S.statusBar);
+  if (S.info) renderInfo(); if (S.keys) renderKeys();
+}
+
+// ───────────────────────────── onboarding hint ───────────────────────────────
+function hideHint() { $("hint").classList.add("hide"); }
+$("hint").innerHTML = `Try <kbd>s</kbd> <kbd>d</kbd> <kbd>o</kbd> <kbd>r</kbd> to step axes (<kbd>S</kbd> backwards), <kbd>Space</kbd> to flip back,
+  <kbd>:mode seek</kbd> or <kbd>:mode pin</kbd> to switch modes, <kbd>:info</kbd> / <kbd>:keys</kbd> for the sidebars.`;
+setTimeout(hideHint, 12000);
+
+applyFit(); render(); $("app").focus();
+</script>
+</body>
+</html>
