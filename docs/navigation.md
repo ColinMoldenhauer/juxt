@@ -199,6 +199,7 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:copy-image` | Copy the current image to the clipboard |
 | `:write [PATH]` / `:w [PATH]` | Write the current config to a YAML file; opens a file dialog if PATH is omitted |
 | `:pattern PATH` | Change the template / source path without restarting (see below) |
+| `:subset AXIS [VALUES]` | Edit the values of an axis: delete, reorder, rename or add (see below) |
 | `:watch` / `:watch true` | Enable live file watching / polling |
 | `:watch false` | Disable live file watching / polling |
 | `:watch N` | Set remote poll interval to N seconds |
@@ -263,6 +264,25 @@ Independently of the file, a placeholder whose *name* is itself a shorthand is r
 Shorthand names double as axis names, so `{yyyy-mm-dd}` can stand in a template as it is.
 
 ---
+
+### :subset — editing the values of an axis
+
+`:subset` picks an axis (type a few letters, `Enter`) and opens its current values as one editable line, much like `:pattern` opens the template:
+
+```
+:subset sensor  ASCAT SMAP SMOS▌
+```
+
+Edit the line and press `Enter`; the line becomes the axis, in the order written.
+
+- **Delete** a value by removing it from the line.
+- **Reorder** by moving it. Images follow their values.
+- **Add or rename** by typing a value that is not in the axis yet. Its images are loaded from the template for every combination of the other axes; combinations without a file show the usual missing placeholder. A value with no file at all is refused, which catches typos.
+- A value containing blanks is written in double quotes. Values that differ from an existing one only in case are taken to be that value.
+
+`Tab` completes the word under the caret with the values found on disk and lists the candidates when several match, which is also how to see what can be added. `Escape` cancels. Your position is kept when its value survives.
+
+The whole edit can be given in one go, e.g. `:subset sensor SMAP ASCAT`. Adding values is not supported for remote sessions yet (deleting and reordering are); use `:pattern` there.
 
 ## Grid view
 

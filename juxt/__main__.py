@@ -230,6 +230,7 @@ def _print_help() -> None:
     :mode tap|seek|pin  :switch-last  :info  :keys
     :pattern PATH  :reload  :watch true|false
     :remove-axis NAME  :remove-value AXIS VALUE
+    :subset AXIS [VALUES]  edit an axis: delete, reorder, rename, add
     :change-key AXIS LETTER  :settings
     :copy-image  :copy-path  :write [PATH]  :quit""")
 
