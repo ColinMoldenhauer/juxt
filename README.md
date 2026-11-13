@@ -164,6 +164,15 @@ Point `JUXT_COMPLETE` at `juxt-complete` if juxt lives in a virtualenv you do no
 export JUXT_COMPLETE=~/env/juxt/bin/juxt-complete
 ```
 
+Once the template is on the line, the options after it complete too. The placeholders become `--NAME` pin flags, and a pin's values are looked up on disk, narrowed by the pins already typed:
+
+```
+$ juxt "plots/{sensor}/{model}/{date}.png" --sensor SMOS --model ⇥
+dobson  mironov  park-2019  wang-schmugge     # only what exists under SMOS
+```
+
+`--axis-h`, `--axis-v` and `--grid` complete the placeholder names, and `--grid-values` the values of the `--grid` axis. The lookup is the scan juxt runs at startup, limited to the placeholder you are on, and gives up after half a second (`JUXT_COMPLETE_TIMEOUT=SECONDS` to change it) so a slow network share cannot freeze the prompt. Remote templates, directories and YAML configs have nothing to look up, and a pin that finds nothing falls back to completing a path, which is what a `--root` pointing at unrelated trees needs.
+
 Placeholders standing for a known kind of value complete only as far as that value: `plots/{date}⇥` stops at `plots/{date}_` rather than swallowing the rest of the filename. The names that count are the ones listed under `placeholders:` in `~/.juxt/settings.yaml`, which juxt seeds with `date datetime time year month day doy` — edit or delete them, and completion follows. Date-style shorthands such as `{yyyy-mm-dd}` are recognised on sight, with or without an entry.
 
 | Command | Action |

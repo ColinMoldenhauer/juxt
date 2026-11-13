@@ -370,3 +370,232 @@ class TestBashFunction:
     def test_falls_back_to_filenames_without_any_helper(self, nested_plot_dir):
         reply = _run_completion(nested_plot_dir.parent, ["juxt", "plot"])
         assert reply == ["plots"]
+
+
+# ---------------------------------------------------------------------------
+# Option values: --NAME pins, axis names, --grid-values
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def uneven_dir(tmp_path):
+    """sensor/model/date.png where sensor B has no model m2 and A no m3."""
+    layout = {"A": ["m1", "m2"], "B": ["m1", "m3"]}
+    for sensor, models in layout.items():
+        for model in models:
+            for date in ("d1", "d2"):
+                path = tmp_path / "plots" / sensor / model / f"{date}.png"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"")
+    return tmp_path
+
+
+UNEVEN = "plots/{sensor}/{model}/{date}.png"
+
+
+class TestOptionValueCompletion:
+    def test_template_placeholders_are_offered_as_pin_flags(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("--m", words=[UNEVEN]) == ["--model", "--max-depth"]
+        assert cli_complete("--s", words=[UNEVEN])[0] == "--sensor"
+
+    def test_a_flag_already_used_is_not_offered_again(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert "--sensor" not in cli_complete("--", words=[UNEVEN, "--sensor", "A"])
+        assert "--model" in cli_complete("--", words=[UNEVEN, "--sensor", "A"])
+
+    def test_a_placeholder_named_like_an_option_stays_that_option(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert cli_complete("--na", words=["plots/{name}.png"]) == ["--name"]
+
+    def test_pin_values_are_discovered(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("", "--sensor", [UNEVEN, "--sensor"]) == ["A", "B"]
+
+    def test_pins_narrow_the_other_placeholders(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--sensor", "A", "--model"]
+        assert cli_complete("", "--model", words) == ["m1", "m2"]
+        words = [UNEVEN, "--sensor", "B", "--model"]
+        assert cli_complete("", "--model", words) == ["m1", "m3"]
+
+    def test_unpinned_placeholders_are_not_narrowed(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("", "--model", [UNEVEN, "--model"]) == ["m1", "m2", "m3"]
+
+    def test_a_flags_own_pins_do_not_narrow_itself(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--sensor", "A", "--sensor"]
+        assert cli_complete("", "--sensor", words) == ["A", "B"]
+
+    def test_values_continue_across_a_list_and_skip_the_ones_typed(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--model", "m1", "m3"]
+        assert cli_complete("", "m3", words) == ["m2"]
+
+    def test_the_typed_prefix_filters(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("m", "--model", [UNEVEN, "--model"]) == ["m1", "m2", "m3"]
+        assert cli_complete("m2", "--model", [UNEVEN, "--model"]) == ["m2"]
+
+    def test_nothing_left_to_offer_is_not_a_cue_for_filenames(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--sensor", "A", "B"]
+        assert cli_complete("", "B", words) == []
+
+    def test_a_quoted_template_is_understood(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("", "--sensor", [f'"{UNEVEN}"', "--sensor"]) == ["A", "B"]
+        assert cli_complete("", "--sensor", [f"'{UNEVEN}'", "--sensor"]) == ["A", "B"]
+
+    def test_options_before_the_template_are_skipped(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = ["-a", "--max-depth", "3", "--name", "run", UNEVEN, "--sensor"]
+        assert cli_complete("", "--sensor", words) == ["A", "B"]
+
+    def test_values_needing_quotes_are_quoted(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "plots" / "run 1").mkdir(parents=True)
+        (tmp_path / "plots" / "run 1" / "x.png").write_bytes(b"")
+        (tmp_path / "plots" / "run2").mkdir()
+        (tmp_path / "plots" / "run2" / "x.png").write_bytes(b"")
+        got = cli_complete("", "--run", ["plots/{run}/x.png", "--run"])
+        assert got == ["'run 1'", "run2"]
+
+    def test_a_pinned_value_may_be_a_path_the_scan_cannot_find(self, tmp_path, monkeypatch):
+        """`--root` can name unrelated trees, so an empty scan falls back to paths."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "run1").mkdir()
+        (tmp_path / "run2").mkdir()
+        got = cli_complete("ru", "--root", ["{root}/*.png", "--root"])
+        assert got == ["run1/", "run2/"]
+
+    def test_remote_and_directory_templates_offer_no_values(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        from juxt.complete import discover_values
+        assert discover_values("host:/data/{sensor}.png", "sensor", {}) == []
+        assert discover_values("plots", "sensor", {}) == []
+        assert discover_values("plots/{sensor}/none/{x}.png", "sensor", {}) == []
+
+    def test_recursive_placeholders_are_discovered(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        got = cli_complete("", "--plot", ["{root}/{**plot}.png", "--root", "plots/A", "--plot"])
+        assert got == ["m1/d1", "m1/d2", "m2/d1", "m2/d2"]
+
+
+class TestAxisNameCompletion:
+    @pytest.mark.parametrize("option", ["--axis-h", "--axis-v", "--grid"])
+    def test_names_come_from_the_template(self, uneven_dir, monkeypatch, option):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("", option, [UNEVEN, option]) == ["sensor", "model", "date"]
+        assert cli_complete("d", option, [UNEVEN, option]) == ["date"]
+
+    def test_names_need_a_template(self):
+        assert cli_complete("", "--axis-h", ["--axis-h"]) == []
+
+    def test_only_one_name_is_taken(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--axis-h", "sensor"]
+        assert not {"sensor", "model", "date"} & set(cli_complete("", "sensor", words))
+
+    def test_a_dash_after_an_option_with_a_value_offers_nothing(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("-", "--axis-h", [UNEVEN, "--axis-h"]) == []
+
+    def test_grid_values_follow_the_grid_axis(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--grid", "model", "--grid-values"]
+        assert cli_complete("", "--grid-values", words) == ["m1", "m2", "m3"]
+        words = [UNEVEN, "--grid", "model", "--grid-values", "m2"]
+        assert cli_complete("", "m2", words) == ["m1", "m3"]
+
+    def test_grid_values_respect_pins(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--sensor", "A", "--grid", "model", "--grid-values"]
+        assert cli_complete("", "--grid-values", words) == ["m1", "m2"]
+
+    def test_grid_values_without_a_grid_axis_offer_nothing(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("", "--grid-values", [UNEVEN, "--grid-values"]) == []
+
+
+@pytest.mark.skipif(not hasattr(__import__("signal"), "setitimer"),
+                    reason="the time budget needs POSIX interval timers")
+class TestDiscoveryBudget:
+    def test_a_slow_scan_is_abandoned(self, uneven_dir, monkeypatch):
+        import time
+
+        import juxt.detect
+        from juxt.complete import discover_values
+
+        monkeypatch.chdir(uneven_dir)
+        monkeypatch.setattr(juxt.detect, "_axes_from_local_template",
+                            lambda *a, **k: time.sleep(5))
+        start = time.perf_counter()
+        assert discover_values(UNEVEN, "sensor", {}, timeout=0.05) == []
+        assert time.perf_counter() - start < 2
+
+    def test_the_budget_can_be_set_from_the_environment(self, uneven_dir, monkeypatch):
+        import time
+
+        import juxt.detect
+        from juxt.complete import discover_values
+
+        monkeypatch.chdir(uneven_dir)
+        monkeypatch.setenv("JUXT_COMPLETE_TIMEOUT", "0.05")
+        monkeypatch.setattr(juxt.detect, "_axes_from_local_template",
+                            lambda *a, **k: time.sleep(5))
+        start = time.perf_counter()
+        assert discover_values(UNEVEN, "sensor", {}) == []
+        assert time.perf_counter() - start < 2
+
+    def test_the_timer_is_cleared_afterwards(self, uneven_dir, monkeypatch):
+        import signal
+
+        from juxt.complete import discover_values
+
+        monkeypatch.chdir(uneven_dir)
+        assert discover_values(UNEVEN, "sensor", {}, timeout=5) == ["A", "B"]
+        assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
+
+
+class TestHelperCommandWithWords:
+    def test_the_whole_line_reaches_cli_complete(self, uneven_dir, monkeypatch, capsys):
+        monkeypatch.chdir(uneven_dir)
+        assert main(["--", UNEVEN, "--sensor", "A", "--model", ""]) == 0
+        assert capsys.readouterr().out.split() == ["m1", "m2"]
+
+
+@bash_required
+class TestBashPassesTheWholeLine:
+    def test_bash_function(self, uneven_dir, helper):
+        reply = _run_completion(
+            uneven_dir, ["juxt", f"'{UNEVEN}'", "--sensor", "A", "--model", ""],
+            f'export JUXT_COMPLETE="{helper}"')
+        assert reply == ["m1", "m2"]
+
+    def test_bash_function_with_options_before_the_template(self, uneven_dir, helper):
+        reply = _run_completion(
+            uneven_dir, ["juxt", "-a", UNEVEN, "--sensor", ""],
+            f'export JUXT_COMPLETE="{helper}"')
+        assert reply == ["A", "B"]
+
+    def test_a_single_value_is_closed_with_a_space(self, uneven_dir, helper):
+        reply = _run_completion(
+            uneven_dir, ["juxt", UNEVEN, "--sensor", "B", "--model", "m3"],
+            f'export JUXT_COMPLETE="{helper}"')
+        assert reply == ["m3 "]
+
+    def test_ble_hook(self, uneven_dir, helper):
+        script = f'''
+            set -u
+            export PATH=/nonexistent
+            export JUXT_COMPLETE="{helper}"
+            source "{COMPLETION_BASH}"
+            {BLE_STUBS}
+            COMPS=""
+            comp_words=(juxt {shlex.quote(UNEVEN)} --sensor B --model "")
+            comp_cword=5
+            ble/cmdinfo/complete:juxt
+        '''
+        yielded = [l for l in _run_bash(uneven_dir, script).split("\n") if l]
+        assert yielded == ["juxt|m1", "juxt|m3"]

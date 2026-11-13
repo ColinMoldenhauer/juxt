@@ -16,10 +16,14 @@
 # Set JUXT_COMPLETE to the full path of the helper when juxt lives in a
 # virtualenv that is not active.
 
-# Fill _juxt_complete_reply with the candidates for word $2, preceded by $1.
-# Returns non-zero when no helper could answer, so callers fall back.
+# Fill _juxt_complete_reply with the candidates for word $1, which follows the
+# words $2... (the command name excluded).  The helper needs the whole line, not
+# just the word before the cursor: the template and the --NAME pins typed so far
+# decide what a value can be.  Returns non-zero when no helper could answer, so
+# callers fall back.
 _juxt_complete_words() {
-    local prev=$1 cur=$2 out line
+    local cur=$1 out line
+    shift
     local -a cmd=()
 
     if [[ -n ${JUXT_COMPLETE:-} ]]; then
@@ -32,7 +36,7 @@ _juxt_complete_words() {
         return 1
     fi
 
-    out=$("${cmd[@]}" "$prev" "$cur" 2>/dev/null) || return 1
+    out=$("${cmd[@]}" "$@" "$cur" 2>/dev/null) || return 1
 
     _juxt_complete_reply=()
     while IFS= read -r line; do
@@ -46,15 +50,13 @@ _juxt_complete_words() {
 }
 
 _juxt_completion() {
-    local cur prev line
+    local cur line
     local -a _juxt_complete_reply=()
 
     cur=${COMP_WORDS[COMP_CWORD]}
-    prev=""
-    ((COMP_CWORD > 0)) && prev=${COMP_WORDS[COMP_CWORD - 1]}
 
     COMPREPLY=()
-    if ! _juxt_complete_words "$prev" "$cur"; then
+    if ! _juxt_complete_words "$cur" "${COMP_WORDS[@]:1:COMP_CWORD-1}"; then
         # No helper, or one too old to understand us -- plain filenames.
         while IFS= read -r line; do COMPREPLY+=("$line"); done \
             < <(compgen -f -- "$cur")
@@ -91,11 +93,10 @@ function ble/complete/action:juxt/complete {
 function ble/complete/action:juxt/get-desc { ble/complete/action:plain/get-desc; }
 
 function ble/cmdinfo/complete:juxt {
-    local cur=$COMPS prev=""
-    ((${comp_cword:-0} > 0)) && prev=${comp_words[comp_cword - 1]}
+    local cur=$COMPS
 
     local -a _juxt_complete_reply=()
-    _juxt_complete_words "$prev" "$cur" || return 1
+    _juxt_complete_words "$cur" "${comp_words[@]:1:comp_cword-1}" || return 1
     ((${#_juxt_complete_reply[@]})) || return 1
 
     # Show bare names in the menu, the way file completion does.

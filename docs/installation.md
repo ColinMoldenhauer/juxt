@@ -96,6 +96,8 @@ plots/{sensor}/2024-03-15.png  plots/{sensor}/2024-03-16.png
 
 Braces need no quoting: bash and zsh only expand them when they contain a comma or a range.
 
+Once the template is typed, `--NAME` pins complete as well: the placeholders are offered as flags, and `--sensor ` lists the values found on disk, narrowed by any pins already on the line (`--sensor SMOS --model ` shows only the models that exist for SMOS). `--axis-h`, `--axis-v` and `--grid` complete placeholder names; `--grid-values` completes the values of the `--grid` axis. Looking values up scans the filesystem the way startup does, but it is cut off after 0.5 seconds (set `JUXT_COMPLETE_TIMEOUT` to change this), so a slow share costs a missed completion rather than a frozen prompt.
+
 **ble.sh** users are covered too. ble.sh reimplements completion and reads a `{placeholder}` as a brace expansion, so the word it hands to a normal completion function has lost its braces and every candidate gets filtered away again. The snippet therefore also registers a native ble.sh hook, which sees the word as you typed it. Nothing extra to configure, but the `eval` line has to run after ble.sh is loaded.
 
 Remote `host:/path` arguments are not completed at the shell — that needs a live SFTP session, so use `:pattern` inside the app instead.

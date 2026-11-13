@@ -15,11 +15,15 @@ The bottom of the module is the `juxt-complete` helper command, which gives the
 """
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import html as _html
 import os
 import re
+import shlex
+import signal
 import stat as _stat
+import threading
 from dataclasses import dataclass, field
 
 # A placeholder is either named — {sensor} — or anonymous — {} — which is
@@ -520,15 +524,237 @@ _OPAQUE_VALUE_OPTIONS = {
 _PATH_OPTIONS = {"--save"}
 
 
-def cli_complete(cur: str, prev: str = "") -> list[str]:
-    """Candidates for the word *cur*, given the word before it."""
-    if prev in _OPAQUE_VALUE_OPTIONS:
+# Options whose value is the name of one of the template's {placeholders}.
+_AXIS_NAME_OPTIONS = {"--axis-h", "--axis-v", "--grid"}
+
+# Every option that takes a value, i.e. whose argument is not PATH.
+_VALUE_OPTIONS = _OPAQUE_VALUE_OPTIONS | _PATH_OPTIONS
+
+# Options argparse gives `nargs="+"`: they swallow every word up to the next flag.
+_GREEDY_OPTIONS = {"-s", "--separator", "--grid-values"}
+
+# Discovery is a filesystem scan, so it gets a time budget: past it, completion
+# gives up on values rather than freezing the prompt (a cold network share, or
+# a `{**name}` walk over a large tree).  JUXT_COMPLETE_TIMEOUT overrides it.
+DISCOVERY_TIMEOUT = 0.5
+
+
+def _unquote(word: str) -> str:
+    """Strip one pair of enclosing quotes (or a lone opening one) from *word*.
+
+    The shell hands completion the words as typed, so a template written
+    `"plots/{sensor}.png"` arrives with its quotes.  Only a leading quote is
+    acted on, so a Windows path with backslashes passes through untouched.
+    """
+    if word[:1] in ("'", '"'):
+        return word[1:-1] if len(word) > 1 and word[-1] == word[0] else word[1:]
+    return word
+
+
+def placeholder_names(template: str) -> list[str]:
+    """The axis names a template defines, in order of appearance, without repeats.
+
+    Anonymous `{}` get their generated `axis_N` names and the `**` marker of a
+    recursive `{**name}` is dropped, so these are the names `--NAME` pins use.
+    """
+    names = PLACEHOLDER_NAME_RE.findall(normalize_template(template))
+    return list(dict.fromkeys(n[2:] if n.startswith("**") else n for n in names))
+
+
+def _is_flag(word: str) -> bool:
+    """True for an option word; a lone `-` is a value, as it is for argparse."""
+    return word.startswith("-") and len(word) > 1
+
+
+def _split_command_line(words: list[str]) -> tuple[str | None, list[str]]:
+    """Find PATH among *words*: `(template, words_after_it)`.
+
+    PATH is the first word that is neither an option nor an option's value.
+    Pins must come after it, so everything of interest is in the second part.
+    """
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if not word:
+            i += 1
+            continue
+        if _is_flag(word):
+            i += 1
+            if "=" in word:
+                continue
+            if word in _GREEDY_OPTIONS:
+                while i < len(words) and not _is_flag(words[i]):
+                    i += 1
+            elif word in _VALUE_OPTIONS:
+                i += 1
+            continue
+        return word, words[i + 1:]
+    return None, []
+
+
+def _flag_groups(words: list[str]) -> list[tuple[str, list[str]]]:
+    """Group *words* into `(flag, [values...])`, in order; leading values are dropped."""
+    groups: list[tuple[str, list[str]]] = []
+    for word in words:
+        if _is_flag(word):
+            groups.append((word, []))
+        elif groups:
+            groups[-1][1].append(word)
+    return groups
+
+
+def _is_pin_flag(flag: str, names: list[str]) -> bool:
+    """True when *flag* is `--NAME` for a placeholder NAME and not a juxt option."""
+    return flag.startswith("--") and flag not in CLI_OPTIONS and flag[2:] in names
+
+
+def _pins_from(groups, names: list[str], skip: str | None = None) -> dict[str, list[str]]:
+    """The `--NAME VALUE ...` pins typed so far, minus the placeholder *skip*."""
+    return {
+        flag[2:]: vals for flag, vals in groups
+        if vals and flag[2:] != skip and _is_pin_flag(flag, names)
+    }
+
+
+@contextlib.contextmanager
+def _time_budget(seconds: float):
+    """Raise TimeoutError in the body after *seconds* (POSIX main thread only).
+
+    Elsewhere there is no way to interrupt a scan, so the body just runs.
+    """
+    if (seconds <= 0 or not hasattr(signal, "setitimer")
+            or threading.current_thread() is not threading.main_thread()):
+        yield
+        return
+
+    def _expired(*_):
+        raise TimeoutError("completion time budget exceeded")
+
+    previous = signal.signal(signal.SIGALRM, _expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def discover_values(template: str, name: str, pins: dict[str, list[str]],
+                    timeout: float | None = None) -> list[str]:
+    """The values the placeholder *name* takes on disk, given the *pins* typed so far.
+
+    This is the same scan juxt runs at startup, so what completion offers is
+    what the viewer would find: pins narrow it exactly as they do there, which
+    is what keeps `--sensor SMOS --model <Tab>` cheap and relevant.  Returns an
+    empty list for anything that cannot be scanned locally (a remote, a plain
+    directory, a YAML config) and for a scan that fails or runs out of time.
+    """
+    from pathlib import Path
+
+    from .detect import (_axes_from_local_template, _is_remote_pattern,
+                         has_bare_wildcard, resolve_wildcard_template)
+
+    raw = expand_home(normalize_template(template))
+    wildcard = has_bare_wildcard(raw)
+    if (_is_remote_pattern(raw) or raw.lower().endswith((".yaml", ".yml"))
+            or Path(raw).is_dir() or not ("{" in raw or wildcard)):
         return []
+    if timeout is None:
+        try:
+            timeout = float(os.environ.get("JUXT_COMPLETE_TIMEOUT", ""))
+        except ValueError:
+            timeout = DISCOVERY_TIMEOUT
+    try:
+        with _time_budget(timeout):
+            if wildcard:
+                _, axes = resolve_wildcard_template(raw, pinned=pins)
+            else:
+                _, axes = _axes_from_local_template(raw, pinned=pins)
+    except (ValueError, OSError):  # TimeoutError is an OSError
+        return []
+    return list(axes.get(name, []))
+
+
+def _option_value(words: list[str], flag: str) -> str | None:
+    """The word right after the last *flag* in *words*, if any."""
+    for i in range(len(words) - 2, -1, -1):
+        if words[i] == flag:
+            return words[i + 1]
+    return None
+
+
+def _flag_value_candidates(flag: str, vals: list[str], template: str | None,
+                           names: list[str], groups, words: list[str],
+                           word: str) -> list[str] | None:
+    """Candidates for the value of *flag*, *vals* being what it already has.
+
+    None means juxt has no opinion (not an option with knowable values, or a
+    scan that found nothing), so the caller falls back to completing a path:
+    a pinned value may be a directory that no `*` would discover.  An empty
+    list means there is simply nothing left to offer, e.g. every value is
+    already on the line.
+    """
+    if template is None:
+        return None
+    if flag in _AXIS_NAME_OPTIONS:
+        return None if vals else [n for n in names if n.startswith(word)]
+
+    if flag == "--grid-values":
+        axis = _option_value(words, "--grid")
+        if axis not in names:
+            return None
+        pool = discover_values(template, axis, _pins_from(groups, names))
+    elif _is_pin_flag(flag, names):
+        pool = discover_values(template, flag[2:], _pins_from(groups, names, skip=flag[2:]))
+    else:
+        return None
+    if not pool:
+        return None
+    found = [shlex.quote(v) for v in pool if v not in vals and v.startswith(word)]
+    # A typed prefix that matches no value is probably a path; nothing typed
+    # and nothing left means every value is already on the line.
+    return found if found or not word else None
+
+
+def cli_complete(cur: str, prev: str = "", words: list[str] | None = None) -> list[str]:
+    """Candidates for the word *cur*.
+
+    *words* is every word on the line before *cur*, command name excluded.  It
+    lets completion see the template and the `--NAME` pins typed so far; without
+    it only *prev* is known and the option values below cannot be completed.
+    """
+    if words is None:
+        words = [prev] if prev else []
     if prev in (":", "="):
         # COMP_WORDBREAKS split a host:path or --option=value in two.
         return []
-    if cur.startswith("-") and prev not in _PATH_OPTIONS:
-        return [o for o in CLI_OPTIONS if o.startswith(cur)]
+
+    words = [_unquote(w) for w in words]
+    word = _unquote(cur)
+    template, tail = _split_command_line(words)
+    names = placeholder_names(template) if template else []
+    groups = _flag_groups(tail)
+
+    if cur.startswith("-"):
+        if prev in _OPAQUE_VALUE_OPTIONS:
+            return []
+        if prev not in _PATH_OPTIONS:
+            # The template's placeholders are offered as --NAME pins too.
+            used = {flag for flag, _ in groups}
+            pins = [f"--{n}" for n in names
+                    if f"--{n}" not in CLI_OPTIONS and f"--{n}" not in used]
+            return [o for o in pins + CLI_OPTIONS if o.startswith(cur)]
+
+    # An option placed before PATH is not in `groups`, but may be the previous word.
+    if prev in _OPAQUE_VALUE_OPTIONS and not (groups and groups[-1][0] == prev):
+        groups = groups + [(prev, [])]
+    if groups:
+        flag, vals = groups[-1]
+        found = _flag_value_candidates(flag, vals, template, names, groups, words, word)
+        if found is not None:
+            return found
+        if flag in _OPAQUE_VALUE_OPTIONS and not vals:
+            return []  # the value is free text juxt cannot know
 
     from .detect import _is_remote_pattern
     if _is_remote_pattern(cur):
@@ -568,7 +794,7 @@ def main(argv: list[str] | None = None) -> int:
         args = args[1:]
     cur = args[-1] if args else ""
     prev = args[-2] if len(args) > 1 else ""
-    for word in cli_complete(cur, prev):
+    for word in cli_complete(cur, prev, args[:-1]):
         print(word)
     return 0
 
