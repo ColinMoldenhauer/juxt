@@ -167,3 +167,101 @@ class TestVersionFlag:
 
         _print_help()
         assert "--version" in capsys.readouterr().out
+
+
+class TestListAxes:
+    """--list-axes runs discovery, prints the axes, and exits without a GUI."""
+
+    def _run(self, *argv, stdin=""):
+        import os
+        import subprocess
+        import sys
+
+        return subprocess.run(
+            [sys.executable, "-m", "juxt", *argv],
+            capture_output=True, text=True, timeout=60, input=stdin,
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        )
+
+    def test_flag_is_parsed_and_defaults_off(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/"])
+        assert _parse_args()[0].list_axes is False
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/", "--list-axes"])
+        assert _parse_args()[0].list_axes is True
+
+    def test_is_not_swallowed_as_an_axis_pin(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv", ["juxt", "plots/{sensor}.png", "--list-axes", "--sensor", "A"])
+        _args, pins = _parse_args()
+        assert pins == {"sensor": ["A"]}
+
+    def test_is_in_the_help_text(self, capsys):
+        from juxt.__main__ import _print_help
+
+        _print_help()
+        assert "--list-axes" in capsys.readouterr().out
+
+    def test_format_lists_every_value_aligned(self):
+        from juxt.__main__ import _format_axes
+        from juxt.config import Config
+
+        values = [str(i) for i in range(25)]
+        cfg = Config(template="p/{a}_{longer}.png",
+                     axes={"a": ["x", "y"], "longer": values}, keys={})
+        lines = _format_axes(cfg).splitlines()
+        assert lines[0] == "template: p/{a}_{longer}.png"
+        assert lines[2] == "a (2):        x  y"
+        assert lines[3] == "longer (25):  " + "  ".join(values)
+
+    def test_format_without_axes_is_just_the_template(self):
+        from juxt.__main__ import _format_axes
+        from juxt.config import Config
+
+        assert _format_axes(Config(template="p.png", axes={}, keys={})) == "template: p.png"
+
+    def test_directory_scan_prints_axes_without_prompting(self, flat_plot_dir):
+        r = self._run(str(flat_plot_dir), "--list-axes")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.splitlines()[0] == f"template: {flat_plot_dir.as_posix()}/{{axis_0}}_{{axis_1}}.png"
+        assert "axis_0 (2):  A  B" in r.stdout
+        assert "axis_1 (2):  d1  d2" in r.stdout
+        assert "Change separator" not in r.stdout
+
+    def test_template_scan_uses_placeholder_names(self, flat_plot_dir):
+        r = self._run(f"{flat_plot_dir}/{{sensor}}_{{date}}.png", "--list-axes")
+        assert r.returncode == 0, r.stderr
+        assert "sensor (2):  A  B" in r.stdout
+        assert "date (2):    d1  d2" in r.stdout
+
+    def test_pinned_values_are_listed_as_given(self, flat_plot_dir):
+        r = self._run(f"{flat_plot_dir}/{{sensor}}_{{date}}.png", "--list-axes",
+                      "--sensor", "A")
+        assert r.returncode == 0, r.stderr
+        assert "sensor (1):  A" in r.stdout
+
+    def test_yaml_config_is_listed(self, flat_plot_dir, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(
+            f"template: '{flat_plot_dir.as_posix()}/{{sensor}}_{{date}}.png'\n"
+            "axes:\n  sensor: [A, B]\n  date: [d1, d2]\n"
+        )
+        r = self._run(str(cfg), "--list-axes")
+        assert r.returncode == 0, r.stderr
+        assert "sensor (2):  A  B" in r.stdout
+
+    def test_needs_a_path(self):
+        r = self._run("--list-axes")
+        assert r.returncode == 1
+        assert "needs a PATH" in r.stderr
+        assert r.stdout == ""
+
+    def test_bad_path_errors_on_stderr(self, tmp_path):
+        r = self._run(str(tmp_path / "nope"), "--list-axes")
+        assert r.returncode == 1
+        assert r.stderr.startswith("Error:")
+        assert r.stdout == ""
+
+    def test_empty_directory_errors_on_stderr(self, tmp_path):
+        r = self._run(str(tmp_path), "--list-axes")
+        assert r.returncode == 1
+        assert "No image files found" in r.stderr

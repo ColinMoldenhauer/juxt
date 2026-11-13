@@ -186,6 +186,8 @@ def _print_help() -> None:
   -V, --version               print the juxt version and exit
       --max-depth N           max subdirectory search depth
       --save PATH             save resolved config to PATH after detection
+      --list-axes             run axis discovery, print each axis with all its
+                              values, and exit; no window, no naming prompt
       --NAME VALUE [...]      pin a {placeholder}'s values instead of
                               globbing for them (template/wildcard PATH
                               only, must come after PATH); repeatable per
@@ -292,6 +294,7 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     p.add_argument("--squeeze", action="store_true", default=False)
     p.add_argument("--name", metavar="NAME", default=None)
     p.add_argument("--full-path", action="store_true", default=False)
+    p.add_argument("--list-axes", action="store_true", default=False)
     # Initial panel visibility; both are still toggleable at runtime.
     # These are declared here so parse_known_args recognises them; an
     # unrecognised --flag after PATH is read as an axis pin instead.
@@ -319,6 +322,106 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     return args, _parse_axis_pins(unknown)
 
 
+def _resolve_config(
+    args: argparse.Namespace,
+    pins: dict[str, list[str]],
+    ask_password,
+    *,
+    rename: bool = True,
+) -> Config:
+    """Turn PATH (directory, template, wildcard, remote or YAML) into a Config.
+
+    *rename* allows the interactive axis-naming prompt for a plain directory
+    scan; it is still skipped under `--auto`. Raises on any failure, leaving
+    the reporting to the caller.
+    """
+    raw = expand_home(normalize_template(args.path))  # anonymous {} → {axis_1}, …; ~ → home
+    prompt = rename and not args.auto
+    if _is_remote_pattern(raw):
+        remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
+        if '{' in remote_tmpl:
+            axes = _axes_from_remote_template(remote_tmpl, remote_cfg, ask_password, pinned=pins)
+            return Config(template=remote_tmpl, axes=axes,
+                          keys=_auto_keys(axes), remote=remote_cfg)
+        if pins:
+            raise ValueError(
+                "--<axis> VALUE pinning requires a {placeholder} template, "
+                "not a plain remote directory"
+            )
+        config, sep, n_remote = detect_config_remote(
+            remote_tmpl, remote_cfg, args.separator, ask_password)
+        return prompt_rename(config, n_remote, sep) if prompt else config
+    if Path(raw).is_dir():
+        if pins:
+            raise ValueError(
+                "--<axis> VALUE pinning requires a {placeholder} template, not a directory"
+            )
+        p = Path(raw)
+        files = _iter_images(p, args.max_depth)
+        config, sep = detect_config(p, args.separator, args.max_depth)
+        return prompt_rename(config, len(files), sep, p, args.max_depth) if prompt else config
+    if raw.lower().endswith((".yaml", ".yml")):
+        if pins:
+            raise ValueError(
+                "--<axis> VALUE pinning requires a {placeholder} template, not a YAML config"
+            )
+        return load_config(raw)
+    if has_bare_wildcard(raw):
+        template, axes = resolve_wildcard_template(raw, pinned=pins)
+        return Config(template=template, axes=axes, keys=_auto_keys(axes))
+    if '{' in raw:
+        template, axes = _axes_from_local_template(raw, pinned=pins, full_path=args.full_path)
+        return Config(template=template, axes=axes, keys=_auto_keys(axes))
+    raise ValueError(
+        f"{raw!r} is not a directory, YAML config, template pattern, or remote path"
+    )
+
+
+def _format_axes(config: Config) -> str:
+    """The resolved template followed by one line per axis, listing every value."""
+    labels = [f"{name} ({len(values)}):" for name, values in config.axes.items()]
+    width = max(map(len, labels), default=0)
+    lines = [f"template: {config.template}"]
+    if config.axes:
+        lines.append("")
+        lines += [
+            f"{label.ljust(width)}  {'  '.join(values)}"
+            for label, values in zip(labels, config.axes.values())
+        ]
+    return "\n".join(lines)
+
+
+def _ask_password_tty(label: str) -> str | None:
+    """Terminal counterpart of the Qt password dialog, for the headless modes."""
+    import getpass
+    try:
+        return getpass.getpass(f"Password for {label}: ")
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
+def _list_axes(args: argparse.Namespace, pins: dict[str, list[str]]) -> int:
+    """`--list-axes`: run discovery, print the axes and their values, no GUI.
+
+    Output goes to stdout; errors and the SSH password prompt stay off it.
+    Never asks for axis names, whether or not `--auto` was given.
+    """
+    if args.path is None:
+        print("Error: --list-axes needs a PATH to scan", file=sys.stderr)
+        return 1
+    try:
+        config = _resolve_config(args, pins, _ask_password_tty, rename=False)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+    print(_format_axes(config))
+    return 0
+
+
 def main():
     args, pins = _parse_args()
     import os
@@ -332,6 +435,9 @@ def main():
     import juxt.detect as _detect
     _detect._MAX_VALS = settings.max_vals
     _detect._MAX_VALS_DISPLAY = settings.max_vals_display
+
+    if args.list_axes:
+        sys.exit(_list_axes(args, pins))
 
     if sys.platform == "win32" and Path(sys.executable).stem.lower() in ("python", "pythonw"):
         import ctypes
@@ -383,52 +489,7 @@ def main():
         args.path = chosen
 
     try:
-        raw = expand_home(normalize_template(args.path))  # anonymous {} → {axis_1}, …; ~ → home
-        if _is_remote_pattern(raw):
-            remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
-            if '{' in remote_tmpl:
-                axes = _axes_from_remote_template(remote_tmpl, remote_cfg, _ask_password, pinned=pins)
-                config = Config(template=remote_tmpl, axes=axes,
-                                keys=_auto_keys(axes), remote=remote_cfg)
-            else:
-                if pins:
-                    raise ValueError(
-                        "--<axis> VALUE pinning requires a {placeholder} template, "
-                        "not a plain remote directory"
-                    )
-                config, sep, n_remote = detect_config_remote(
-                    remote_tmpl, remote_cfg, args.separator, _ask_password)
-                if not args.auto:
-                    config = prompt_rename(config, n_remote, sep)
-        elif Path(raw).is_dir():
-            if pins:
-                raise ValueError(
-                    "--<axis> VALUE pinning requires a {placeholder} template, not a directory"
-                )
-            p = Path(raw)
-            files = _iter_images(p, args.max_depth)
-            config, sep = detect_config(p, args.separator, args.max_depth)
-            if not args.auto:
-                config = prompt_rename(config, len(files), sep, p, args.max_depth)
-        elif raw.lower().endswith((".yaml", ".yml")):
-            if pins:
-                raise ValueError(
-                    "--<axis> VALUE pinning requires a {placeholder} template, not a YAML config"
-                )
-            config = load_config(raw)
-        elif has_bare_wildcard(raw):
-            template, axes = resolve_wildcard_template(raw, pinned=pins)
-            config = Config(template=template, axes=axes, keys=_auto_keys(axes))
-        elif '{' in raw:
-            template, axes = _axes_from_local_template(raw, pinned=pins, full_path=args.full_path)
-            config = Config(template=template, axes=axes, keys=_auto_keys(axes))
-        else:
-            print(
-                f"Error: {raw!r} is not a directory, YAML config, "
-                "template pattern, or remote path",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        config = _resolve_config(args, pins, _ask_password)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

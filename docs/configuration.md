@@ -25,8 +25,25 @@ PATH                        directory to scan or YAML config file
                             PATH only, must come after PATH); see below
     --full-path             show a {**name} axis's full matched path
                             instead of pruning the shared leading part
+    --list-axes             run axis discovery, print every axis with all
+                            its values, and exit (no window); see below
 -h, --help                  show usage and exit
 ```
+
+### Listing axes without opening a window
+
+`--list-axes` runs the same discovery as a normal launch but only prints the result: the resolved template, then one line per axis with its value count and every value. It works with any `PATH` form (directory, template, wildcard, remote, YAML) and with `--NAME VALUE` pins, never asks for axis names, and needs no display.
+
+```bash
+$ juxt "plots/{overpass}/{sensor}_{date}.png" --list-axes
+template: plots/{overpass}/{sensor}_{date}.png
+
+overpass (2):  AM  PM
+sensor (3):    ASCAT  SMAP  SMOS
+date (2):      2024-03-15  2024-03-16
+```
+
+Only the listing goes to stdout; errors and the SSH password prompt go elsewhere, so the output is safe to pipe. Axes with a single value are listed too (`--squeeze` does not apply).
 
 ---
 

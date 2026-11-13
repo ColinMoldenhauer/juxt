@@ -497,6 +497,7 @@ CLI_OPTIONS = [
     "--grid", "--grid-layout", "--grid-values",
     "--info", "--no-info",
     "--keys", "--no-keys",
+    "--list-axes",
     "--max-depth",
     "--name",
     "--no-sharex", "--no-sharey", "--no-watch",
