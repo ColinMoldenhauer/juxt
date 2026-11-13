@@ -2512,3 +2512,134 @@ class TestMissingCommandsAndDimming:
         view._dim_missing = False
         panel.refresh(view)
         assert "#555555" not in panel.toHtml().lower()
+
+
+# ---------------------------------------------------------------------------
+# :subset -- edit the values of one axis
+# ---------------------------------------------------------------------------
+
+class TestSubsetCommand:
+    @pytest.fixture
+    def view(self, flat_config, flat_plot_dir, qtbot):
+        """Viewer over real files: sensor A,B x date d1,d2, plus C on disk."""
+        from conftest import make_png
+        from juxt.loader import preload
+
+        for date in ("d1", "d2"):
+            (flat_plot_dir / f"C_{date}.png").write_bytes(make_png())
+        pixmaps = preload(flat_config.template, flat_config.axes)
+        v = ImageView(flat_config, pixmaps)
+        qtbot.addWidget(v)
+        v.show()
+        return v
+
+    def _type(self, v, qtbot, text):
+        for ch in text:
+            qtbot.keyClick(v, Qt.Key_Space if ch == " " else getattr(Qt, f"Key_{ch.upper()}"))
+
+    def test_format_and_parse_round_trip(self):
+        from juxt.viewer import format_values, parse_values
+        vals = ["A", "two words", "d-1"]
+        assert format_values(vals) == 'A "two words" d-1'
+        assert parse_values(format_values(vals)) == vals
+
+    def test_delete(self, view):
+        keep = view.pixmaps[(1, 0)]
+        view._cmd_execute("subset sensor B")
+        assert view.axis_values[0] == ["B"]
+        assert view.pixmaps[(0, 0)] is keep
+        assert len(view.pixmaps) == 2
+
+    def test_reorder_carries_images(self, view):
+        a, b = view.pixmaps[(0, 0)], view.pixmaps[(1, 0)]
+        view._cmd_execute("subset sensor B A")
+        assert view.axis_values[0] == ["B", "A"]
+        assert view.pixmaps[(0, 0)] is b
+        assert view.pixmaps[(1, 0)] is a
+
+    def test_add_loads_new_value_from_disk(self, view):
+        from juxt.loader import MissingPixmap
+        view._cmd_execute("subset sensor A B C")
+        assert view.axis_values[0] == ["A", "B", "C"]
+        assert len(view.pixmaps) == 6
+        assert not isinstance(view.pixmaps[(2, 1)], MissingPixmap)
+
+    def test_modify_replaces_value(self, view):
+        from juxt.loader import MissingPixmap
+        view._cmd_execute("subset sensor A C")
+        assert view.axis_values[0] == ["A", "C"]
+        assert not isinstance(view.pixmaps[(1, 0)], MissingPixmap)
+
+    def test_value_without_files_is_refused(self, view):
+        view._cmd_execute("subset sensor A Z")
+        assert view.axis_values[0] == ["A", "B"]
+        assert "no files" in view._flash_msg
+
+    def test_empty_is_refused(self, view, qtbot):
+        view._cmd_execute("subset sensor")
+        view._cmd["query"] = ""
+        qtbot.keyClick(view, Qt.Key_Return)
+        assert view.axis_values[0] == ["A", "B"]
+        assert "at least one" in view._flash_msg
+
+    def test_case_snaps_to_existing_value(self, view):
+        view._cmd_execute("subset sensor b a")
+        assert view.axis_values[0] == ["B", "A"]
+
+    def test_duplicates_are_collapsed(self, view):
+        view._cmd_execute("subset sensor A A B")
+        assert view.axis_values[0] == ["A", "B"]
+
+    def test_current_position_is_kept(self, view):
+        view.pos = [1, 1]                       # sensor B, date d2
+        view._cmd_execute("subset sensor B A")  # B moves to index 0
+        assert view.pos == [0, 1]
+
+    def test_unknown_axis_flashes_usage(self, view):
+        view._cmd_execute("subset nope A")
+        assert "usage" in view._flash_msg
+
+    def test_remote_add_is_refused(self, view):
+        from juxt.config import RemoteConfig
+        view.config.remote = RemoteConfig(host="h")
+        view._cmd_execute("subset sensor A B C")
+        assert view.axis_values[0] == ["A", "B"]
+
+    def test_axis_only_opens_editor_prefilled(self, view):
+        view._cmd_execute("subset sensor")
+        assert view._cmd["axis"] == "sensor"
+        assert view._cmd["query"] == "A B"
+        assert view._cmd["caret"] == 3
+
+    def test_editor_via_keys(self, view, qtbot):
+        qtbot.keyClick(view, Qt.Key_Colon)
+        self._type(view, qtbot, "subset")
+        qtbot.keyClick(view, Qt.Key_Return)         # -> axis picker
+        qtbot.keyClick(view, Qt.Key_Return)         # first axis: sensor
+        assert view._cmd["query"] == "A B"
+        qtbot.keyClick(view, Qt.Key_Backspace)      # "A "
+        qtbot.keyClicks(view, "C")
+        qtbot.keyClick(view, Qt.Key_Return)
+        assert view.axis_values[0] == ["A", "C"]
+        assert view._cmd is None
+
+    def test_tab_completes_from_disk(self, view, qtbot):
+        view._cmd_execute("subset sensor")
+        qtbot.keyClick(view, Qt.Key_Space)
+        qtbot.keyClick(view, Qt.Key_Tab)            # only C is on disk but not in the line
+        assert view._cmd["query"] == "A B C "
+
+    def test_escape_leaves_axis_untouched(self, view, qtbot):
+        view._cmd_execute("subset sensor")
+        qtbot.keyClick(view, Qt.Key_Escape)
+        assert view._cmd is None
+        assert view.axis_values[0] == ["A", "B"]
+
+
+class TestSubsetPrompt:
+    def test_status_bar_shows_axis_and_values(self, keys_window):
+        w = keys_window
+        w.view._cmd_execute("subset sensor")
+        w._update_status()
+        text = w._status_label.text().replace("&nbsp;", " ")
+        assert ":subset sensor  A B" in text

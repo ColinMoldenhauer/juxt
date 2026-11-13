@@ -328,6 +328,7 @@ _COMMANDS = [
     "settings",
     "skip-missing",
     "remove-value",
+    "subset",
     "ungrid",
     "version",
     "watch",
@@ -359,6 +360,7 @@ _CMD_ARGS: dict[str, list[str]] = {
     "remove-axis": [],
     "remove-value": [],
     "skip-missing": ["on", "off"],
+    "subset": [],   # axis name; the values are then edited as free text
     "watch": ["true", "false"],
     "write": [],    # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
@@ -374,6 +376,33 @@ _ARG_FORMATS: dict[str, str] = {
 _FREE_TEXT_ARGS = {"change-key", "pattern", "remove-axis", "remove-value", "write"}
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _is_free_text(cmd: dict | None) -> bool:
+    """Whether the command prompt *cmd* is currently taking free-text input."""
+    return (cmd is not None and cmd.get("phase") == "arg"
+            and (cmd.get("verb") in _FREE_TEXT_ARGS or "axis" in cmd))
+
+
+def format_values(values) -> str:
+    """Join axis *values* into one editable line; a value with blanks is quoted."""
+    return " ".join(f'"{v}"' if _re.search(r"\s", v) else v for v in values)
+
+
+def _common_prefix(words: list[str]) -> str:
+    """Longest common prefix of *words*, ignoring case in the comparison."""
+    first = words[0]
+    n = len(first)
+    for w in words[1:]:
+        n = min(n, len(w))
+        while n and first[:n].lower() != w[:n].lower():
+            n -= 1
+    return first[:n]
+
+
+def parse_values(text: str) -> list[str]:
+    """Inverse of `format_values`: split on blanks, honouring double quotes."""
+    return [q or w for q, w in _re.findall(r'"([^"]*)"|(\S+)', text)]
 
 _COMMAND_HELP: dict[str, str] = {
     "axis-auto":    "restore dynamic axis-to-arrow assignment",
@@ -403,6 +432,7 @@ _COMMAND_HELP: dict[str, str] = {
     "settings":     "open ~/.juxt/settings.yaml in the default editor",
     "remove-axis":  "remove an axis (collapses to its current value)",
     "remove-value": "remove a value from an axis  (e.g. remove-value sensor SMAP)",
+    "subset":       "edit the values of an axis: delete, reorder, rename, add  (e.g. subset sensor)",
     "ungrid":       "return to single-image view",
     "version":      "show the juxt version",
     "write":        "write current config to a YAML file",
@@ -1382,7 +1412,9 @@ class ImageView(QGraphicsView):
             pool = _COMMANDS
         else:
             verb = self._cmd["verb"]
-            if verb in ("axis-h", "axis-v", "remove-axis"):
+            if "axis" in self._cmd:     # editing the values of one axis
+                return []
+            if verb in ("axis-h", "axis-v", "remove-axis", "subset"):
                 pool = list(self.axis_names)
             elif verb == "grid":
                 return self._grid_cmd_candidates(self._cmd["query"])
@@ -1408,8 +1440,7 @@ class ImageView(QGraphicsView):
     def _cmd_handle_key(self, event: QKeyEvent) -> bool:
         """Handle input while command mode is active. Returns True if consumed."""
         k = event.key()
-        is_free = (self._cmd.get("phase") == "arg"
-                   and self._cmd.get("verb") in _FREE_TEXT_ARGS)
+        is_free = _is_free_text(self._cmd)
 
         if k == Qt.Key_Escape:
             self._cmd = None
@@ -1454,7 +1485,9 @@ class ImageView(QGraphicsView):
 
         if k == Qt.Key_Tab:
             log.debug("_cmd_handle_key: Tab  is_free=%s cmd=%s", is_free, self._cmd)
-            if is_free:
+            if "axis" in self._cmd:
+                self._complete_subset()
+            elif is_free:
                 self._complete_path()
             elif self._cmd.get("phase") == "arg" and self._cmd.get("verb") == "grid":
                 q = self._cmd["query"]
@@ -1515,6 +1548,14 @@ class ImageView(QGraphicsView):
         if k in (Qt.Key_Return, Qt.Key_Enter):
             if self._cmd["phase"] == "verb" and self._cmd["cursor"] < 0:
                 self._cmd = None
+                self.state_changed.emit()
+                return True
+            if "axis" in self._cmd:
+                axis_idx = self.axis_names.index(self._cmd["axis"])
+                text = self._cmd["query"]
+                self._cmd = None
+                self._tab_matches = []
+                self._do_subset(axis_idx, parse_values(text))
                 self.state_changed.emit()
                 return True
             candidates = self._cmd_candidates()
@@ -1835,6 +1876,19 @@ class ImageView(QGraphicsView):
                 self._flash("cannot remove the only value in an axis")
             else:
                 self._do_remove_value(axis_idx, vals.index(val_str))
+        elif verb == "subset":
+            raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            axis_name = next((n for n in self.axis_names
+                              if raw == n or raw.startswith(n + " ")), None)
+            if axis_name is None:
+                self._flash("usage: subset AXIS [VALUES...]")
+                return
+            rest = raw[len(axis_name):].strip()
+            axis_idx = self.axis_names.index(axis_name)
+            if rest:
+                self._do_subset(axis_idx, parse_values(rest))
+            else:
+                self._cmd_open_subset(axis_idx)
         elif verb == "change-key":
             raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
             tokens = raw.rsplit(None, 1)
@@ -1854,6 +1908,58 @@ class ImageView(QGraphicsView):
                     self._do_change_key(axis_name, None)
             else:
                 self._flash("usage: change-key AXIS LETTER")
+
+    # ── subset editing ───────────────────────────────────────────────────────
+
+    def _cmd_open_subset(self, axis_idx: int):
+        """Open the value editor of an axis, prefilled with its current values."""
+        initial = format_values(self.axis_values[axis_idx])
+        self._cmd = {"phase": "arg", "verb": "subset", "axis": self.axis_names[axis_idx],
+                     "query": initial, "cursor": 0, "caret": len(initial)}
+        self._tab_matches = []
+        self.state_changed.emit()
+
+    def _subset_available(self) -> list[str]:
+        """Values of the editing axis that exist on disk (found once per edit)."""
+        cmd = self._cmd
+        if "avail" not in cmd:
+            avail: list[str] = []
+            if self.config.remote is None:
+                try:
+                    from .detect import _axes_from_local_template
+                    _, found = _axes_from_local_template(self.config.template)
+                    avail = list(found.get(cmd["axis"], []))
+                except Exception:
+                    log.debug("subset: listing values failed", exc_info=True)
+            cmd["avail"] = avail
+        return cmd["avail"]
+
+    def _complete_subset(self):
+        """Tab-complete the value under the caret against the values on disk."""
+        query = self._cmd["query"]
+        caret = self._cmd.get("caret", len(query))
+        start = max(query.rfind(" ", 0, caret) + 1, 0)
+        partial = query[start:caret].lstrip('"')
+        others = set(parse_values(query[:start] + query[caret:]))
+        matches = [v for v in self._subset_available()
+                   if v.lower().startswith(partial.lower()) and v not in others]
+        if not matches:
+            self._tab_matches = []
+            return
+        if len(matches) == 1:
+            word = format_values(matches)
+            tail = "" if query[caret:].startswith(" ") else " "
+            self._tab_matches = []
+        else:
+            word = format_values([_common_prefix(matches)])
+            tail = ""
+            self._tab_matches = matches
+        # Replace the whole token the caret sits in
+        end = query.find(" ", caret)
+        end = len(query) if end < 0 else end
+        self._cmd["query"] = query[:start] + word + tail + query[end:]
+        self._cmd["caret"] = start + len(word) + len(tail)
+        self.state_changed.emit()
 
     # ── key assignment ───────────────────────────────────────────────────────
 
@@ -2313,6 +2419,89 @@ class ImageView(QGraphicsView):
         )
         self._apply_axes_change(new_config, new_pixmaps)
         self._flash(f"removed {axis_name}={removed_val}")
+
+    def _do_subset(self, axis_idx: int, wanted: list[str]):
+        """Make *wanted* the values of an axis, in that order.
+
+        Kept values carry their images along, values not in the axis yet are
+        loaded from the template, and the rest are dropped.
+        """
+        j = axis_idx
+        axis_name = self.axis_names[j]
+        old_vals = self.axis_values[j]
+
+        # A value that differs from an existing one only in case is that value
+        lowered: dict[str, list[str]] = {}
+        for v in old_vals:
+            lowered.setdefault(v.lower(), []).append(v)
+        new_vals: list[str] = []
+        for w in wanted:
+            if w not in old_vals and len(lowered.get(w.lower(), [])) == 1:
+                w = lowered[w.lower()][0]
+            if w not in new_vals:
+                new_vals.append(w)
+        if not new_vals:
+            self._flash("an axis needs at least one value")
+            return
+
+        added = [v for v in new_vals if v not in old_vals]
+        if added and self.config.remote is not None:
+            self._flash("adding values to a remote session is not supported yet; use :pattern")
+            return
+
+        # Images of the values that stay, re-indexed
+        new_idx = {v: i for i, v in enumerate(new_vals)}
+        remap = {i: new_idx[v] for i, v in enumerate(old_vals) if v in new_idx}
+        new_pixmaps: dict[tuple, QPixmap] = {}
+        for key, pm in self.pixmaps.items():
+            if key[j] in remap:
+                new_pixmaps[key[:j] + (remap[key[j]],) + key[j + 1:]] = pm
+
+        # Images of the values that are new: every combination of the other axes
+        if added:
+            from itertools import product
+            from .loader import _error_pixmap
+            others = [range(len(vals)) for vals in self.axis_values]
+            others[j] = range(1)
+            loaded: dict[tuple, QPixmap] = {}
+            for val in added:
+                found = False
+                for combo in product(*others):
+                    mapping = {n: self.axis_values[i][combo[i]]
+                               for i, n in enumerate(self.axis_names)}
+                    mapping[axis_name] = val
+                    path = self.config.template.format(**mapping)
+                    pm = QPixmap(path)
+                    found = found or not pm.isNull()
+                    key = combo[:j] + (new_idx[val],) + combo[j + 1:]
+                    loaded[key] = pm if not pm.isNull() else _error_pixmap(path)
+                if not found:
+                    self._flash(f"no files for {axis_name}={val}")
+                    return
+            new_pixmaps.update(loaded)
+
+        if self.config.remote is not None and self._remote_mtimes:
+            moved = {}
+            for key, mtime in self._remote_mtimes.items():
+                if key[j] in remap:
+                    moved[key[:j] + (remap[key[j]],) + key[j + 1:]] = mtime
+            self._remote_mtimes.clear()
+            self._remote_mtimes.update(moved)
+
+        new_axes = dict(self.config.axes)
+        new_axes[axis_name] = new_vals
+        from .config import Config
+        new_config = Config(
+            template=self.config.template,
+            axes=new_axes,
+            keys=self.config.keys,
+            mode=self.config.mode,
+            remote=self.config.remote,
+        )
+        self._apply_axes_change(new_config, new_pixmaps)
+        dropped = len(old_vals) - len(remap)
+        self._flash(f"{axis_name}: {len(new_vals)} values"
+                    f" ({len(added)} added, {dropped} removed)")
 
     def _do_change_key(self, axis_name: str, letter: str | None):
         new_keys = {k: n for k, n in self.config.keys.items()
@@ -3672,7 +3861,10 @@ class MainWindow(QMainWindow):
                 desc = _COMMAND_HELP.get(hlit, "") if hlit else ""
             else:
                 verb = v._cmd["verb"]
-                if verb in _FREE_TEXT_ARGS:
+                if "axis" in v._cmd:
+                    shown = _cmd_query_display(query, v._cmd.get("caret", len(query)))
+                    prompt = f":{verb} {v._cmd['axis']}  {shown}"
+                elif verb in _FREE_TEXT_ARGS:
                     caret = v._cmd.get("caret", len(query))
                     shown = _cmd_query_display(query, caret)
                     prompt = f":{verb} {shown}"
