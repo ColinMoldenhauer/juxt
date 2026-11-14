@@ -11,7 +11,7 @@ Try juxt's navigation right here — no install needed. The demo is a small Java
 
 | Scenario | Axes | What it shows |
 |---|---|---|
-| **Cities in block art** | city × season × time (4×4×2) | New York, London, Paris and Berlin as pixel art, in every season, by day and by night. The skyline of a city never changes — only the weather and the light do — so flipping with `Space` shows you exactly what differs. |
+| **Cities** | city × season × time (4×4×2) | New York, London, Paris and Berlin as pixel art, in every season, by day and by night. The skyline of a city never changes — only the weather and the light do — so flipping with `Space` shows you exactly what differs. |
 | **Sentinel-2 satellite imagery** | city × season × layer (4×4×4) | Real [Copernicus Sentinel-2](https://sentinels.copernicus.eu/copernicus/sentinel-2) scenes of the same four cities, the least cloudy of each season in 2024, each in four band combinations: true colour, false colour (vegetation in red), NDVI and SWIR. |
 | **Reaction–diffusion** | feed × kill × step (4×4×3) | A Gray–Scott simulation computed in your browser when you open it (a few seconds). Every run starts from the same seed, so the images differ only in the parameters — spots, worms, mazes and dead states from one set of equations. |
 | **Random data** | sensor × date × overpass × source (3×2×2×2) | The sample dataset from the repo (`examples/sample_config.yaml`): coloured tiles that differ subtly along every axis. A sandbox for learning the keys. |

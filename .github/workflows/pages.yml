@@ -41,6 +41,15 @@ jobs:
             test -f "$f" || { echo "missing: $f"; exit 1; }
           done
 
+      # Pages serves files with a 10 minute cache, so a fresh index.html could otherwise pull in an
+      # older app.js.  Stamping the asset URLs with the commit id makes every deploy self-consistent.
+      - name: Version the asset URLs
+        run: |
+          cd docs/demo-app
+          v="${GITHUB_SHA::8}"
+          sed -i -E "s#((src|href)=\"[^\"]+\.(js|png))\"#\1?v=${v}\"#g; s#JUXT_V = \"dev\"#JUXT_V = \"${v}\"#" index.html
+          grep -c "?v=${v}" index.html
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/demo-app
