@@ -12,14 +12,15 @@ Try juxt's navigation right here — no install needed. The demo is a small Java
 | Scenario | Axes | What it shows |
 |---|---|---|
 | **Cities in block art** | city × season × time (4×4×2) | New York, London, Paris and Berlin as pixel art, in every season, by day and by night. The skyline of a city never changes — only the weather and the light do — so flipping with `Space` shows you exactly what differs. |
+| **Earth by day and night** | city × season × time (4×4×2) | The same four cities from orbit: Sentinel-2 true colour by day and [NASA Black Marble](https://blackmarble.gsfc.nasa.gov/) (VIIRS) by night, cut to the same 32 km grid so they line up. Black Marble is a coarse ~1 km product, so the night view is a soft glow. |
 | **Sentinel-2 satellite imagery** | city × season × layer (4×4×4) | Real [Copernicus Sentinel-2](https://sentinels.copernicus.eu/copernicus/sentinel-2) scenes of the same four cities, the least cloudy of each season in 2024, each in four band combinations: true colour, false colour (vegetation in red), NDVI and SWIR. |
 | **Reaction–diffusion** | feed × kill × step (4×4×3) | A Gray–Scott simulation computed in your browser when you open it (a few seconds). Every run starts from the same seed, so the images differ only in the parameters — spots, worms, mazes and dead states from one set of equations. |
 | **Random data** | sensor × date × overpass × source (3×2×2×2) | The sample dataset from the repo (`examples/sample_config.yaml`): coloured tiles that differ subtly along every axis. A sandbox for learning the keys. |
 
 Switch with the *scenario* button in the title bar or with `:scenario NAME` in command mode (`:scenario` alone opens the picker).
 
-!!! note "Why no night in the satellite scenario?"
-    Sentinel-2 is an optical sensor that passes at about 10:30 local time, so there are no night scenes. Its third axis is the image layer instead.
+!!! note "Why does the Sentinel-2 scenario have no night?"
+    Sentinel-2 is an optical sensor that passes at about 10:30 local time, so it has no night scenes (ESA ran a small experimental night campaign in December 2025, but it covers few cities). The Sentinel-2 scenario's third axis is therefore the image layer, and the *Earth by day and night* scenario takes its night half from NASA Black Marble.
 
 ## What's in the demo
 
@@ -37,6 +38,6 @@ Some browsers claim `Ctrl+Shift+I`/`K` for developer tools; use `:info` and `:ke
 
 ## Adding a scenario
 
-Each scenario is one file in `docs/demo-app/scenarios/` that registers itself with `JUXT_SCENARIOS.push({...})`: an id, a title, the axes (name, key letter, values), the image size, and two functions — `load(progress)` to preload every image and `get(coords)` to return the image for one coordinate. Add a `<script>` tag for it in `docs/demo-app/index.html` and it shows up in the picker. The Sentinel-2 images are rebuilt with `scripts/make_s2_demo.py`.
+Each scenario is one file in `docs/demo-app/scenarios/` that registers itself with `JUXT_SCENARIOS.push({...})`: an id, a title, the axes (name, key letter, values), the image size, and two functions — `load(progress)` to preload every image and `get(coords)` to return the image for one coordinate. Add a `<script>` tag for it in `docs/demo-app/index.html` and it shows up in the picker. The satellite images are rebuilt with `scripts/make_s2_demo.py` and `scripts/make_daynight_demo.py`; they are committed to the repo, so the demo itself never contacts any external service.
 
-Sentinel-2 imagery: contains modified Copernicus Sentinel data 2024, via Element 84 / AWS Open Data.
+Sentinel-2 imagery: contains modified Copernicus Sentinel data 2024, via Element 84 / AWS Open Data. Night imagery: NASA Black Marble (VIIRS), via NASA GIBS / EOSDIS.

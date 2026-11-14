@@ -14,15 +14,96 @@
   ];
   const SIZE = 640;
   // [Sentinel-2 acquisition date, cloud cover over the window in %, Black Marble date]
-  const META = @@META@@;
+  const META = {
+ "newyork/winter": [
+  "2024-01-02",
+  0.0,
+  "2024-01-02"
+ ],
+ "newyork/spring": [
+  "2024-05-24",
+  0.0,
+  "2024-05-24"
+ ],
+ "newyork/summer": [
+  "2024-08-27",
+  1.7,
+  "2024-08-27"
+ ],
+ "newyork/autumn": [
+  "2024-10-23",
+  0.0,
+  "2024-10-23"
+ ],
+ "london/winter": [
+  "2024-01-26",
+  0.0,
+  "2024-01-26"
+ ],
+ "london/spring": [
+  "2024-05-20",
+  0.0,
+  "2024-05-20"
+ ],
+ "london/summer": [
+  "2024-07-29",
+  0.1,
+  "2024-07-30"
+ ],
+ "london/autumn": [
+  "2024-11-26",
+  0.0,
+  "2024-11-26"
+ ],
+ "paris/winter": [
+  "2024-01-05",
+  32.4,
+  "2024-01-05"
+ ],
+ "paris/spring": [
+  "2024-05-09",
+  17.1,
+  "2024-05-09"
+ ],
+ "paris/summer": [
+  "2024-08-12",
+  0.0,
+  "2024-08-12"
+ ],
+ "paris/autumn": [
+  "2024-11-28",
+  0.0,
+  "2024-11-28"
+ ],
+ "berlin/winter": [
+  "2024-01-08",
+  0.0,
+  "2024-01-08"
+ ],
+ "berlin/spring": [
+  "2024-05-15",
+  0.0,
+  "2024-05-15"
+ ],
+ "berlin/summer": [
+  "2024-07-21",
+  0.0,
+  "2024-07-21"
+ ],
+ "berlin/autumn": [
+  "2024-10-24",
+  0.0,
+  "2024-10-24"
+ ]
+};
   const imgs = new Map();
   const load = url => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("missing " + url)); i.src = url; });
 
   JUXT_SCENARIOS.push({
     id: "daynight", title: "Earth by day and night", axes, size: [SIZE, SIZE],
     template: "earth/{city}_{season}_{time}.jpg",
-    blurb: "New York, London, Paris and Berlin from orbit: Sentinel-2 by day, NASA Black Marble by night, on the same grid. Flip with Space and watch the dark parks and rivers swallow the lights.",
-    hint: `Tap <kbd>t</kbd> for day ↔ night — parks, rivers and airports change character. <kbd>s</kbd> steps the season (the night image brightens when there is snow on the ground), <kbd>c</kbd> the city.`,
+    blurb: "New York, London, Paris and Berlin from orbit: Sentinel-2 true colour by day, NASA Black Marble by night, on the same 32 km grid. Black Marble is a coarse (~1 km) product, so the night view is a soft glow: flip with Space to see where each city is lit and where the fields, forests and water begin.",
+    hint: `Tap <kbd>t</kbd> for day ↔ night. The night data is coarse and clips the brightest cores, so watch the <em>edges</em> of each city. <kbd>s</kbd> steps the season, <kbd>c</kbd> the city.`,
     credit: "Day: contains modified Copernicus Sentinel data 2024 (Sentinel-2 L2A, Element 84 / AWS Open Data). Night: NASA Black Marble, VIIRS daily gap-filled radiance, via NASA GIBS / Worldview (EOSDIS), shown with a colour stretch. 32 km window.",
     async load(progress) {
       if (imgs.size) return;

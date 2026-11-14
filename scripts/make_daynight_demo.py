@@ -60,7 +60,7 @@ def fetch_gibs(bbox, date: dt.date):
     """Greyscale GIBS render of the bbox, as (array, transform).  Tries nearby dates if one is missing."""
     w, s, e, n = bbox
     width, height = int(np.ceil((e - w) / GIBS_PX)), int(np.ceil((n - s) / GIBS_PX))
-    for off in (0, 1, -1, 2, -2, 3, -3):
+    for off in [0] + [k for n in range(1, 15) for k in (n, -n)]:      # nearest date first, up to two weeks away
         d = date + dt.timedelta(days=off)
         url = (f"{GIBS}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS={LAYER}&SRS=EPSG:4326"
                f"&BBOX={w},{s},{e},{n}&WIDTH={width}&HEIGHT={height}&FORMAT=image/tiff&TIME={d.isoformat()}")
@@ -69,8 +69,11 @@ def fetch_gibs(bbox, date: dt.date):
         if "tiff" not in ctype:
             continue
         with rasterio.MemoryFile(body) as mf, mf.open() as ds:
-            return ds.read(1).astype("float32"), ds.transform, d
-    raise RuntimeError(f"no Black Marble within 3 days of {date}")
+            arr = ds.read(1).astype("float32")
+            if (arr > 25).mean() < 0.02:     # all dark: no valid night data (e.g. mid-summer at ~52 N)
+                continue
+            return arr, ds.transform, d
+    raise RuntimeError(f"no Black Marble with data within 14 days of {date}")
 
 
 def day_image(tile, scene, lon, lat):
