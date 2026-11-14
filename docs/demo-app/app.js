@@ -301,6 +301,11 @@ view.addEventListener("wheel", e => {
 view.addEventListener("contextmenu", e => e.preventDefault());
 
 $("b-scn").onclick = () => { if (S.tour) closeTour(false); openPicker(); };
+$("b-home").onclick = () => {
+  if (S.tour) closeTour(false);
+  try { history.replaceState(null, "", location.pathname + location.search); } catch (_) { /* sandboxed iframe */ }
+  openPicker();
+};
 $("b-tour").onclick = () => startTour();
 $("b-theme").onclick = () => toggleTheme();
 $("b-keys").onclick = () => { toggle("keys"); $("app").focus(); };
@@ -399,8 +404,10 @@ function buildPicker() {
     <button class="card" data-id="${s.id}" title="${esc(s.blurb || "")}">
       <span class="num">${i + 1}</span>
       <span class="slider">
-        <img class="ib" src="thumbs/${s.id}_b.jpg" alt=""><img class="ia" src="thumbs/${s.id}_a.jpg" alt="">
-        <i class="handle"></i><span class="lbl la">${esc(la)}</span><span class="lbl lb">${esc(lb)}</span>
+        <img src="thumbs/${s.id}_b.jpg" alt="">
+        <span class="clip"><img src="thumbs/${s.id}_a.jpg" alt=""></span>
+        <span class="track"><i class="handle"></i></span>
+        <span class="lbl la">${esc(la)}</span><span class="lbl lb">${esc(lb)}</span>
       </span>
       <span class="meta">
         <span class="ctitle">${esc(s.title)}</span>
@@ -409,6 +416,8 @@ function buildPicker() {
     </button>`;
   }).join("");
   $("cards").onclick = e => { const c = e.target.closest(".card"); if (c) setScenario(c.dataset.id); };
+  const n = JUXT_SCENARIOS.length, cols = n <= 4 ? 2 : 3;          // the grid always fits the window
+  $("cards").style.cssText = `--n:${n};--cols:${cols};--rows:${Math.ceil(n / cols)}`;
 }
 function openPicker() { S.picker = true; S.cmd = S.sel = null; render(); }
 function closePicker() { S.picker = false; render(); $("app").focus(); }
