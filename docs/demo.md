@@ -16,14 +16,13 @@ Try juxt's navigation right here — no install needed. The demo is a small Java
 | **Reaction–diffusion** | feed × kill × step (4×4×3) | A Gray–Scott simulation computed in your browser when you open it (a few seconds). Every run starts from the same seed, so the images differ only in the parameters — spots, worms, mazes and dead states from one set of equations. |
 | **Random data** | sensor × date × overpass × source (3×2×2×2) | The sample dataset from the repo (`examples/sample_config.yaml`): coloured tiles that differ subtly along every axis. A sandbox for learning the keys. |
 
-Switch with the *scenario* button in the title bar or with `:scenario NAME` in command mode (`:scenario` alone opens the picker).
+Switch with the *scenario* button in the title bar or with `:scenario NAME` (`:scenario` alone opens the picker).
 
 ## What's in the demo
 
-- all three navigation modes — `tap`, `seek`, `pin` — switchable with `:mode`
-- the focus stack and arrow keys, `Space` to flip to the previous position, `Home`/`End`, `1`–`9`
+- letter keys to step along an axis (`Shift` for backwards), the arrow keys, `Space` to flip to the previous position, `Home`/`End`, `1`–`9`
 - `Ctrl`+letter value picker and fuzzy matching, as in the desktop app
-- command mode (`:fit`, `:fit-height`, `:fit-width`, `:fit-off`, `:zoom N`, `:fullscreen`, `:switch-last`, `:info`, `:keys`, …)
+- commands (`:fit`, `:fit-height`, `:fit-width`, `:fit-off`, `:zoom N`, `:fullscreen`, `:switch-last`, `:info`, `:keys`, …)
 - pan (drag), zoom (`Ctrl` + wheel), double-click to fit, and the status bar and info/shortcut sidebars
 
 ## What's not

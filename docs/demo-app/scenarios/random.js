@@ -36,8 +36,8 @@
     thumb: { a: ["ASCAT", "2024-03-15", "AM", "L2"], b: ["SMOS", "2024-03-15", "AM", "L2"], labels: ["ASCAT", "SMOS"] },
     template: "plots/{sensor}_{date}_{overpass}_{source}.png",
     blurb: "The sample dataset from the repo: coloured tiles that differ subtly along every axis. A sandbox for learning the keys.",
-    hint: `Try <kbd>s</kbd> <kbd>d</kbd> <kbd>o</kbd> <kbd>r</kbd> to step axes (<kbd>S</kbd> backwards), <kbd>Space</kbd> to flip back,
-      <kbd>:mode seek</kbd> or <kbd>:mode pin</kbd> to switch modes, <kbd>:info</kbd> / <kbd>:keys</kbd> for the sidebars.`,
+    hint: `Try <kbd>s</kbd> <kbd>d</kbd> <kbd>o</kbd> <kbd>r</kbd> to step axes (hold <kbd>Shift</kbd> to go backwards), <kbd>Space</kbd> to flip back,
+      and <kbd>:info</kbd> / <kbd>:keys</kbd> for the sidebars.`,
     async load(progress) {
       if (plots.size) return;
       const all = JUXT.product(axes); let n = 0;
