@@ -74,6 +74,11 @@ juxt /path/to/plots/ --max-depth 1   # only immediate children
 
 On first run, juxt shows you the detected axes and lets you rename or ignore each one:
 
+<!-- regenerate with scripts/record_demo.sh --scene detect -->
+![Naming the detected axes, then reusing the saved config](assets/demo-cli-detect.gif)
+
+In text form:
+
 ```
 Detected 48 images
 
