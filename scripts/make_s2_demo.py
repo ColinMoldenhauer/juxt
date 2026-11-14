@@ -75,15 +75,21 @@ def href(tile: str, scene: str, asset: str) -> str:
     return f"{BUCKET}/{PREFIX}/{int(zone)}/{band}/{sq}/{y}/{int(m)}/{scene}/{asset}.tif"
 
 
-def aoi_bounds(crs, lon, lat):
+CLAMP = False   # True: slide the window inward instead of failing when it crosses a tile edge
+
+
+def aoi_bounds(crs, lon, lat, within=None):
     (x,), (y,) = warp_transform("EPSG:4326", crs, [lon], [lat])
+    if CLAMP and within is not None:
+        x = min(max(x, within.left + HALF), within.right - HALF)
+        y = min(max(y, within.bottom + HALF), within.top - HALF)
     return x - HALF, y - HALF, x + HALF, y + HALF
 
 
 def read(url: str, lon: float, lat: float, size: int = SIZE, resampling=Resampling.bilinear):
     """The AOI of one band as float32 reflectance (or the raw array for SCL)."""
     with rasterio.open(url) as ds:
-        left, bottom, right, top = aoi_bounds(ds.crs, lon, lat)
+        left, bottom, right, top = aoi_bounds(ds.crs, lon, lat, ds.bounds)
         b = ds.bounds
         if left < b.left or bottom < b.bottom or right > b.right or top > b.top:
             return None

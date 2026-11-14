@@ -1,6 +1,6 @@
 """Build the day/night images for the web demo (docs/demo-app/scenarios/dn/).
 
-For each city and season this cuts the *same* 51.2 km square out of
+For each city and season this cuts the *same* 32 km square out of
 
   day    the least cloudy Sentinel-2 L2A scene of that season (true colour, 80 m/px), and
   night  NASA Black Marble (VIIRS day/night band, daily gap-filled and BRDF-corrected
@@ -39,7 +39,8 @@ from rasterio.windows import from_bounds
 sys.path.insert(0, str(Path(__file__).parent))
 import make_s2_demo as s2                                     # scene search helpers
 
-s2.HALF = 25600                                               # 51.2 km window -> 80 m/px at 640 px
+s2.HALF = 16000                                               # 32 km window -> 50 m/px at 640 px
+s2.CLAMP = True                                               # London is only 8.6 km from a tile edge, so slide the window inward
 SIZE = 640
 GIBS = "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi"
 LAYER = "VIIRS_SNPP_GapFilled_BRDF_Corrected_DayNightBand_Radiance"
@@ -74,7 +75,7 @@ def fetch_gibs(bbox, date: dt.date):
 
 def day_image(tile, scene, lon, lat):
     with rasterio.open(s2.href(tile, scene, "TCI")) as ds:
-        left, bottom, right, top = s2.aoi_bounds(ds.crs, lon, lat)
+        left, bottom, right, top = s2.aoi_bounds(ds.crs, lon, lat, ds.bounds)
         win = from_bounds(left, bottom, right, top, ds.transform)
         rgb = ds.read(window=win, out_shape=(3, SIZE, SIZE), resampling=Resampling.average)
         return np.moveaxis(rgb, 0, -1), ds.crs, (left, bottom, right, top)

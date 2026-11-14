@@ -3,7 +3,7 @@
 //   day    Sentinel-2 true colour, the least cloudy scene of each season in 2024
 //   night  NASA Black Marble (VIIRS day/night band) for the same date
 //
-// Both are cut to the same 51.2 km square on the same grid, so flipping between day and night
+// Both are cut to the same 32 km square on the same grid, so flipping between day and night
 // lines up pixel for pixel. Sentinel-2 is optical and passes at ~10:30 local time, so it has no
 // night scenes of its own; Black Marble supplies them. Rebuild with scripts/make_daynight_demo.py.
 (() => {
@@ -23,7 +23,7 @@
     template: "earth/{city}_{season}_{time}.jpg",
     blurb: "New York, London, Paris and Berlin from orbit: Sentinel-2 by day, NASA Black Marble by night, on the same grid. Flip with Space and watch the dark parks and rivers swallow the lights.",
     hint: `Tap <kbd>t</kbd> for day ↔ night — parks, rivers and airports change character. <kbd>s</kbd> steps the season (the night image brightens when there is snow on the ground), <kbd>c</kbd> the city.`,
-    credit: "Day: contains modified Copernicus Sentinel data 2024 (Sentinel-2 L2A, Element 84 / AWS Open Data). Night: NASA Black Marble, VIIRS daily gap-filled radiance, via NASA GIBS / Worldview (EOSDIS), shown with a colour stretch. 51.2 km window.",
+    credit: "Day: contains modified Copernicus Sentinel data 2024 (Sentinel-2 L2A, Element 84 / AWS Open Data). Night: NASA Black Marble, VIIRS daily gap-filled radiance, via NASA GIBS / Worldview (EOSDIS), shown with a colour stretch. 32 km window.",
     async load(progress) {
       if (imgs.size) return;
       const all = JUXT.product(axes); let n = 0;
