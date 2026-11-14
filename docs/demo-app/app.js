@@ -10,7 +10,6 @@
 //
 // Scenarios register themselves with  JUXT_SCENARIOS.push({...}).
 
-const MODES = ["tap", "seek", "pin"];
 const VERSION = "web demo";
 
 // ───────────────────────────── helpers shared by the scenarios ──────────────
@@ -53,7 +52,7 @@ function fuzzy(query, pool) {
 // ───────────────────────────── state ─────────────────────────────────────────
 let SC = null, AXES = [], KEYS = {}, IW = 900, IH = 620;      // the active scenario
 const S = {
-  pos: [], prev: null, focus: [], mode: 0, active: null, activeTimer: 0,
+  pos: [], prev: null, focus: [], active: null, activeTimer: 0,
   sel: null, cmd: null, flashMsg: null, flashTimer: 0,
   fit: "both", zoom: 1, tx: 0, ty: 0,
   statusBar: true, info: false, keys: false,
@@ -74,13 +73,14 @@ function fitScale() {
   return Math.min(w / IW, h / IH);
 }
 function applyFit() {
-  if (!S.fit || !SC) return;
+  if (!S.fit || !SC || !view.clientWidth) return;
   S.zoom = fitScale();
   S.tx = (view.clientWidth - IW * S.zoom) / 2;
   S.ty = S.fit === "width" ? 0 : (view.clientHeight - IH * S.zoom) / 2;
 }
 function draw() {
   const dpr = window.devicePixelRatio || 1, w = view.clientWidth, h = view.clientHeight;
+  if (!w || !h) return;                              // hidden (start screen is showing)
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
     cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); applyFit();
   }
@@ -109,30 +109,21 @@ function gotoValue(axis, idx) { focusAxis(axis); jump(axis, idx); }
 function swapPrev() { if (S.prev) { [S.pos, S.prev] = [S.prev, [...S.pos]]; render(); } }
 function flash(msg, ms = 2500) { S.flashMsg = msg; clearTimeout(S.flashTimer); S.flashTimer = setTimeout(() => { S.flashMsg = null; render(); }, ms); render(); }
 
-// ───────────────────────────── value picker / seek ───────────────────────────
-const selPool = () => S.sel.phase === "axis" ? AXES.map(a => a.name) : AXES[S.sel.axis].values;
+// ───────────────────────────── value picker ──────────────────────────────────
+const selPool = () => AXES[S.sel.axis].values;
 const selCands = () => fuzzy(S.sel.query, selPool());
 function selTryCommit() {
   const c = selCands();
   if (c.length === 1) selCommit(c[0]);
   else { S.sel.cursor = c.length ? Math.min(S.sel.cursor, c.length - 1) : 0; render(); }
 }
-function selCommit(value) {
-  if (S.sel.phase === "axis") {
-    const a = AXES.findIndex(x => x.name === value); focusAxis(a);
-    S.sel = { phase: "value", query: "", axis: a, cursor: 0 }; selTryCommit();
-  } else {
-    const a = S.sel.axis; S.sel = null; jump(a, AXES[a].values.indexOf(value));
-  }
-}
-function openAxisSel(initial) { S.sel = { phase: "axis", query: initial.toLowerCase(), cursor: 0 }; selTryCommit(); }
+function selCommit(value) { const a = S.sel.axis; S.sel = null; jump(a, AXES[a].values.indexOf(value)); }
 function openValueSel(a) { focusAxis(a); S.sel = { phase: "value", query: "", axis: a, cursor: 0 }; selTryCommit(); }
 function selKey(e) {
   const k = e.key, c = selCands();
   if (k === "Escape") S.sel = null;
   else if (k === "Backspace") {
     if (S.sel.query) { S.sel.query = S.sel.query.slice(0, -1); S.sel.cursor = 0; }
-    else if (S.sel.phase === "value") S.sel = { phase: "axis", query: "", cursor: 0 };
     else S.sel = null;
   }
   else if (k === "ArrowRight" || k === "Tab" && !e.shiftKey) { if (c.length) S.sel.cursor = (S.sel.cursor + 1) % c.length; }
@@ -143,19 +134,19 @@ function selKey(e) {
   render();
 }
 
-// ───────────────────────────── command mode ──────────────────────────────────
+// ───────────────────────────── commands ──────────────────────────────────────
 const COMMANDS = {
   "q": "quit (not in the web demo)", "fit": "fit image to window", "fit-height": "fit image height to viewport",
   "fit-width": "fit image width to viewport", "fit-off": "stop fitting, keep the current zoom",
   "zoom": "set zoom to N% (e.g. :zoom 200)", "fullscreen": "toggle fullscreen",
-  "mode": "switch navigation mode: tap | seek | pin", "switch-last": "toggle between current and previous position",
+  "switch-last": "toggle between current and previous position",
   "info": "toggle the info sidebar", "keys": "toggle the shortcut sidebar", "statusbar": "toggle the status bar",
   "version": "show the juxt version",
   "scenario": "demo only: switch to another example dataset",
   "tour": "demo only: replay the guided tour of the interface",
   "theme": "demo only: dark | light",
 };
-const argCands = verb => verb === "mode" ? MODES : verb === "scenario" ? JUXT_SCENARIOS.map(s => s.id) : verb === "theme" ? ["dark", "light"] : null;
+const argCands = verb => verb === "scenario" ? JUXT_SCENARIOS.map(s => s.id) : verb === "theme" ? ["dark", "light"] : null;
 function cmdCands() {
   const c = S.cmd;
   if (c.phase === "verb") return fuzzy(c.query, Object.keys(COMMANDS));
@@ -218,11 +209,6 @@ function runCmd(verb, arg) {
       if (isFinite(n) && n > 0) { setZoom(n / 100); render(); } else flash("usage: :zoom N   (percent)");
       break;
     }
-    case "mode": {
-      let m = MODES.indexOf(arg); if (m < 0 && /^[012]$/.test(arg)) m = +arg;
-      if (m < 0) flash("usage: :mode tap|seek|pin"); else { S.mode = m; S.sel = null; render(); }
-      break;
-    }
     default: flash(`unknown command: ${verb || "(empty)"}`);
   }
 }
@@ -270,14 +256,10 @@ function onKey(e) {
 
   if (k.length !== 1 || !/[a-z]/i.test(k)) return;
   const lower = k.toLowerCase(), axis = KEYS[lower];
-  const mode = MODES[S.mode];
-  if (mode === "seek") { if (!ctrl) { used(); openAxisSel(lower); } return; }
   if (axis === undefined) return;
-  if (ctrl && !shift) { used(); openValueSel(axis); return; }        // picker (tap & pin)
+  if (ctrl && !shift) { used(); openValueSel(axis); return; }        // Ctrl+letter: value picker
   if (ctrl) return;
-  used();
-  if (mode === "pin") { if (!shift) { focusAxis(axis); markActive(axis); render(); } return; }
-  focusAxis(axis); navigate(axis, shift ? -1 : 1);                   // tap
+  used(); focusAxis(axis); navigate(axis, shift ? -1 : 1);           // letter: +1, Shift+letter: -1
 }
 $("app").addEventListener("keydown", onKey, true);
 
@@ -328,7 +310,6 @@ function renderStatus() {
   if (S.loading) { st.textContent = `loading ${S.loading.label}…  ${S.loading.done}/${S.loading.total}`; return; }
   if (S.flashMsg) { st.textContent = S.flashMsg; return; }
   if (!SC) { st.textContent = ""; return; }
-  const mode = MODES[S.mode], modeStr = `[${mode}]`;
   if (S.cmd) {
     const c = S.cmd, cands = cmdCands(), cur = c.cursor < 0 ? -1 : Math.min(c.cursor, cands.length - 1);
     const prompt = c.phase === "verb" ? `:${c.query}▌` : `:${c.verb} ${c.query}▌`;
@@ -342,8 +323,8 @@ function renderStatus() {
   }
   if (S.sel) {
     const c = selCands(), q = S.sel.query;
-    const prompt = S.sel.phase === "axis" ? `axis? ${q}▌` : `${AXES[S.sel.axis].name}? ${q}▌`;
-    st.innerHTML = `${esc(modeStr)}  |  ${esc(prompt)}  →  ${c.length ? candHtml(c, S.sel.cursor) : "(no match)"}`;
+    const prompt = `${AXES[S.sel.axis].name}? ${q}▌`;
+    st.innerHTML = `${esc(prompt)}  →  ${c.length ? candHtml(c, S.sel.cursor) : "(no match)"}`;
     return;
   }
   const coords = AXES.map((a, i) => {
@@ -353,10 +334,8 @@ function renderStatus() {
   }).join("  ");
   const h = AXES[hAxis()].name, v = vAxis() === null ? "—" : AXES[vAxis()].name;
   const bind = `→/← ${h}  ↑/↓ ${v}`;
-  let hints;
-  if (mode === "seek") hints = AXES.map(a => a.name).join("  ");
-  else hints = esc(Object.entries(KEYS).sort().map(([ch, i]) => `[${ch}] ${AXES[i].name}`).join("  "));
-  st.innerHTML = [esc(modeStr), coords, esc(bind), hints].join("  |  ");
+  const hints = esc(Object.entries(KEYS).sort().map(([ch, i]) => `[${ch}] ${AXES[i].name}`).join("  "));
+  st.innerHTML = [coords, esc(bind), hints].join("  |  ");
 }
 function renderInfo() {
   let h = `<h4>path</h4><div class="path">${esc(curPath())}</div>`;
@@ -369,16 +348,13 @@ function renderInfo() {
 }
 function renderKeys() {
   const row = (k, d) => `<div class="row"><kbd>${esc(k)}</kbd><span>${esc(d)}</span></div>`;
-  const mode = MODES[S.mode], letters = Object.keys(KEYS).sort();
+  const letters = Object.keys(KEYS).sort();
   let h = `<h4>arrows</h4>` + row("← →", AXES[hAxis()].name) + row("↑ ↓", vAxis() === null ? "—" : AXES[vAxis()].name);
-  h += `<h4>letters (${mode})</h4>`;
-  if (mode === "tap") h += row(letters.join(" "), "step +1 on that axis") + row(letters.join(" ").toUpperCase(), "step −1") + row("Ctrl+" + letters[0] + "…", "value picker");
-  else if (mode === "pin") h += row(letters.join(" "), "focus axis → arrows") + row("Ctrl+" + letters[0] + "…", "value picker");
-  else h += row("any letter", "fuzzy-search axis, then value") + row("Enter", "confirm first match") + row("Backspace", "step back");
+  h += `<h4>letters</h4>` + row(letters.join(" "), "step +1 on that axis") + row(letters.join(" ").toUpperCase(), "step −1") + row("Ctrl+" + letters[0] + "…", "value picker");
   h += `<h4>axis keys</h4>` + letters.map(c => row(c, AXES[KEYS[c]].name)).join("");
   h += `<h4>always</h4>` + row("Space", "flip to previous") + row("Home / End", "first / last") + row("1–9", "Nth value")
      + row("0", "zoom 100%") + row("dbl-click", "fit") + row("wheel", "step axis") + row("Ctrl+wheel", "zoom") + row("drag", "pan")
-     + row(":", "command mode") + row("Enter", "fullscreen") + row("Ctrl+Shift+H", "status bar") + row("Ctrl+Shift+I", "info") + row("Ctrl+Shift+K", "this panel");
+     + row(":", "commands") + row("Enter", "fullscreen") + row("Ctrl+Shift+H", "status bar") + row("Ctrl+Shift+I", "info") + row("Ctrl+Shift+K", "this panel");
   $("keys").innerHTML = h;
 }
 function render() {
@@ -386,7 +362,7 @@ function render() {
   $("statusbar").classList.toggle("hidden", !SC || (!S.statusBar && !S.cmd && !S.sel));
   $("info").hidden = !S.info || !SC; $("keys").hidden = !S.keys || !SC;
   $("b-info").classList.toggle("on", S.info); $("b-keys").classList.toggle("on", S.keys); $("b-bar").classList.toggle("on", S.statusBar);
-  $("picker").hidden = !S.picker;
+  $("picker").hidden = !S.picker; document.documentElement.classList.toggle("home", S.picker);
   $("loading").hidden = !S.loading;
   if (S.loading) {
     $("loading-text").textContent = `${S.loading.label} — ${S.loading.done}/${S.loading.total}`;
@@ -422,7 +398,7 @@ function buildPicker() {
   }).join("");
   $("cards").onclick = e => { const c = e.target.closest(".card"); if (c) setScenario(c.dataset.id); };
 }
-function openPicker() { S.picker = true; S.cmd = S.sel = null; render(); }
+function openPicker() { S.picker = true; S.cmd = S.sel = null; render(); scrollTo(0, 0); }
 function closePicker() { S.picker = false; render(); $("app").focus(); }
 
 let loadToken = 0;
@@ -465,15 +441,15 @@ const TOUR = [
   { sel: "#view", title: "Your plots",
     text: "Every scenario is a grid of <b>congruent images</b>. <b>Drag</b> to pan, <kbd>Ctrl</kbd>+wheel to zoom, double-click to fit." },
   { sel: "#statusbar", ensure: "statusBar", title: "Status bar",
-    text: "The current <b>mode</b>, your position on every axis, which axes <kbd>←→</kbd> and <kbd>↑↓</kbd> move, and the <b>letter key</b> of each axis. Try pressing one of those letters." },
+    text: "Your <b>position</b> on every axis, which axes <kbd>←→</kbd> and <kbd>↑↓</kbd> move, and the <b>letter key</b> of each axis. Try pressing one of those letters." },
   { sel: "#info", ensure: "info", title: "Info sidebar",
     text: "Every value on every axis, with the current one highlighted. <b>Click a value</b> to jump straight to it. Toggle it with the <kbd>info</kbd> button or <kbd>Ctrl+Shift+I</kbd>." },
   { sel: "#keys", ensure: "keys", title: "Shortcut sidebar",
-    text: "The live key map for the current mode. Toggle it with the <kbd>keys</kbd> button. <kbd>:mode seek</kbd> and <kbd>:mode pin</kbd> change how the letter keys behave." },
+    text: "The live key map for this dataset. Toggle it with the <kbd>keys</kbd> button." },
   { sel: "#b-scn", title: "More examples",
     text: "Switch dataset here at any time, or type <kbd>:scenario</kbd>. Replay this tour with the <kbd>tour</kbd> button or <kbd>:tour</kbd>." },
   { sel: null, title: "Now flip!",
-    text: "<kbd>Space</kbd> jumps back to the previous image, the best way to spot a difference. <kbd>:</kbd> opens command mode. Have fun." },
+    text: "<kbd>Space</kbd> jumps back to the previous image, the best way to spot a difference. <kbd>:</kbd> opens commands such as <kbd>:fit</kbd> and <kbd>:zoom 200</kbd>. Have fun." },
 ];
 function tourSeen() { try { return localStorage.getItem("juxt-demo-tour") === "1"; } catch (_) { return false; } }
 function tourMark() { try { localStorage.setItem("juxt-demo-tour", "1"); } catch (_) { /* storage unavailable */ } }
