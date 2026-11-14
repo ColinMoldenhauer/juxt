@@ -63,6 +63,7 @@
   const imgs = new Map();
   JUXT_SCENARIOS.push({
     id: "reaction", title: "Reaction–diffusion", axes, size: [SIZE, SIZE],
+    thumb: { a: ["0.030", "0.057", "4000"], b: ["0.046", "0.063", "4000"], labels: ["feed 0.030", "feed 0.046"] },
     template: "gray-scott/F{feed}_k{kill}_step{step}.png",
     blurb: "A Gray–Scott simulation computed in your browser: feed rate × kill rate × time. Spots, worms, mazes and dead states from one set of equations — flip between parameters and watch the pattern change.",
     hint: `Tap <kbd>f</kbd> / <kbd>k</kbd> to move through parameter space, <kbd>t</kbd> to let the pattern evolve. Pin <kbd>f</kbd> then <kbd>k</kbd> (<kbd>:mode pin</kbd>) puts them on the arrow keys.`,

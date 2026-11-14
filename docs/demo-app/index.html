@@ -3,20 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>juxt web demo</title>
+<title>juxt</title>
+<link rel="icon" type="image/png" href="assets/favicon-64.png">
+<script>
+  // choose the theme before first paint: ?theme=… > saved choice > system preference
+  (function () {
+    var t = null;
+    try { t = new URLSearchParams(location.search).get("theme") || localStorage.getItem("juxt-demo-theme"); } catch (e) {}
+    if (t !== "dark" && t !== "light") t = window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
 <style>
   :root {
-    --bg: #111; --panel: #181818; --bar: #1d1d1d; --fg: #ddd; --dim: #888;
-    --accent: #26a69a; --hl: #ffd54f; --err: #cc4444; --line: #2c2c2c;
+    --bg: #111; --panel: #181818; --bar: #1d1d1d; --fg: #ddd; --dim: #8a8a8a;
+    --accent: #26a69a; --hl: #ffd54f; --hl-fg: #000; --kbd: #ffd54f; --err: #cc4444; --line: #2c2c2c;
+    --view: #0b0b0b; --hover: #2a2a2a; --overlay: rgba(10,10,10,.94); --pop: #1d1d1d; --shade: rgba(0,0,0,.66);
     --mono: "Courier New", ui-monospace, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f4f2; --panel: #ffffff; --bar: #ebebe8; --fg: #222; --dim: #66665f;
+    --accent: #00796b; --hl: #ffd54f; --hl-fg: #000; --kbd: #8a5200; --err: #c62828; --line: #d4d4cf;
+    --view: #e4e4e0; --hover: #ededea; --overlay: rgba(244,244,242,.95); --pop: #ffffff; --shade: rgba(20,20,20,.5);
+    color-scheme: light;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
     font: 13px/1.4 var(--mono); overflow: hidden; }
   #app { display: flex; flex-direction: column; height: 100%; outline: none; }
-  #titlebar { display: flex; align-items: center; gap: 10px; padding: 4px 10px;
+  #titlebar { display: flex; align-items: center; gap: 8px; padding: 4px 10px;
     background: var(--bar); border-bottom: 1px solid var(--line); color: var(--dim); }
-  #titlebar b { color: var(--accent); }
+  #titlebar .brand { display: flex; align-items: center; gap: 7px; color: var(--fg); font-weight: bold; }
+  #titlebar .brand img { width: 22px; height: 22px; display: block; }
+  #titlebar .tpl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   #titlebar .sp { flex: 1; }
   #titlebar button { background: none; border: 1px solid var(--line); color: var(--dim);
     font: inherit; padding: 1px 8px; border-radius: 3px; cursor: pointer; }
@@ -29,63 +49,106 @@
   .side h4 { margin: 10px 0 2px; color: var(--accent); font-weight: normal; }
   .side h4:first-child { margin-top: 0; }
   .side .row { display: flex; gap: 8px; }
-  .side .row kbd { flex: none; min-width: 5.5em; color: var(--hl); font: inherit; }
+  .side .row kbd { flex: none; min-width: 5.5em; color: var(--kbd); font: inherit; }
   .side .path { word-break: break-all; margin-bottom: 8px; }
   .side .val { cursor: pointer; padding: 0 3px; border-radius: 2px; display: inline-block; }
-  .side .val:hover { background: #2a2a2a; }
-  .side .val.cur { background: var(--hl); color: #000; font-weight: bold; }
-  #view { flex: 1; position: relative; min-width: 0; overflow: hidden; background: #0b0b0b;
+  .side .val:hover { background: var(--hover); }
+  .side .val.cur { background: var(--hl); color: var(--hl-fg); font-weight: bold; }
+  #view { flex: 1; position: relative; min-width: 0; overflow: hidden; background: var(--view);
     cursor: grab; touch-action: none; }
   #view.drag { cursor: grabbing; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
   #hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
-    background: rgba(0,0,0,.78); border: 1px solid var(--line); border-radius: 6px;
+    background: var(--pop); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 18px rgba(0,0,0,.25);
     padding: 8px 14px; max-width: 92%; text-align: center; color: var(--fg); pointer-events: none;
     transition: opacity .3s; }
-  #hint kbd, .kbd { color: var(--hl); font: inherit; }
+  #hint kbd, .kbd { color: var(--kbd); font: inherit; }
   #hint.hide { opacity: 0; }
   #focusmsg { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
-    background: rgba(0,0,0,.55); color: var(--fg); font-size: 15px; pointer-events: none; }
+    background: var(--shade); color: #fff; font-size: 15px; pointer-events: none; }
   #app:not(:focus-within) #focusmsg { display: flex; }
   #statusbar { padding: 4px 10px; background: var(--bar); border-top: 1px solid var(--line);
     white-space: pre; overflow: hidden; display: flex; gap: 14px; min-height: 26px; }
   #statusbar.hidden { display: none; }
   #status { flex: 1; overflow: hidden; text-overflow: ellipsis; }
   #helpline { color: var(--dim); }
-  .hl { background: var(--hl); color: #000; padding: 0 2px; }
-  .cand-cur { color: var(--hl); }
+  .hl { background: var(--hl); color: var(--hl-fg); padding: 0 2px; }
+  .cand-cur { color: var(--kbd); font-weight: bold; }
   .unbound { color: var(--err); }
   .dim { color: var(--dim); }
 
   #loading, #picker { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
-    background: rgba(10,10,10,.92); }
+    background: var(--overlay); }
   #loading[hidden], #picker[hidden] { display: none; }
-  #loading .bar { width: min(320px, 70vw); height: 6px; background: #2a2a2a; border-radius: 3px; margin-top: 10px; overflow: hidden; }
+  #loading .bar { width: min(320px, 70vw); height: 6px; background: var(--line); border-radius: 3px; margin-top: 10px; overflow: hidden; }
   #loading .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
-  .pwrap { max-width: 860px; width: 100%; max-height: 100%; overflow-y: auto; padding: 18px 22px; }
-  .pwrap h2 { margin: 0 0 4px; color: var(--accent); font-weight: normal; font-size: 18px; }
-  #cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-top: 14px; }
-  .card { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--fg);
-    font: inherit; padding: 10px 12px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; position: relative; }
-  .card:hover, .card:focus-visible { border-color: var(--accent); outline: none; }
-  .card .num { position: absolute; right: 10px; top: 8px; color: var(--hl); }
-  .card .ctitle { color: var(--fg); font-weight: bold; padding-right: 18px; }
-  .card .caxes { color: var(--accent); }
+
+  /* scenario picker: big before/after sliders, almost no text */
+  .pwrap { max-width: 940px; width: 100%; max-height: 100%; overflow-y: auto; padding: 14px 22px 18px; }
+  .phead { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .phead img { width: 40px; height: 40px; }
+  .phead h2 { margin: 0; font-size: 24px; font-weight: bold; letter-spacing: .3px; }
+  .phead .sub { color: var(--dim); font-size: 14px; }
+  #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 14px; }
+  .card { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--fg);
+    font: inherit; padding: 0; cursor: pointer; display: flex; flex-direction: column; overflow: hidden; position: relative;
+    transition: transform .15s, border-color .15s, box-shadow .15s; }
+  .card:hover, .card:focus-visible { border-color: var(--accent); outline: none; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+  .card .num { position: absolute; right: 10px; top: 8px; z-index: 3; background: var(--pop); color: var(--kbd); border-radius: 4px; padding: 0 7px; font-size: 12px; opacity: .9; }
+  .card .meta { padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 2px; }
+  .card .ctitle { font-size: 16px; font-weight: bold; }
+  .card .caxes { color: var(--accent); font-size: 13px; }
   .card .caxes i { color: var(--dim); font-style: normal; }
-  .card .cblurb { color: var(--dim); font-size: 12px; line-height: 1.45; }
+
+  @property --p { syntax: "<percentage>"; inherits: true; initial-value: 50%; }
+  .slider { display: block; position: relative; aspect-ratio: 2 / 1; overflow: hidden; background: var(--view); --p: 50%;
+    animation: sweep 7s ease-in-out infinite; }
+  .slider img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+  .slider .ia { clip-path: inset(0 calc(100% - var(--p)) 0 0); }
+  .slider .handle { position: absolute; top: 0; bottom: 0; left: var(--p); width: 3px; margin-left: -1.5px; background: #fff;
+    box-shadow: 0 0 8px rgba(0,0,0,.6); }
+  .slider .handle::after { content: "\2194"; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 28px; height: 28px;
+    border-radius: 50%; background: #fff; color: #222; display: flex; align-items: center; justify-content: center; font-size: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.5); }
+  .slider .lbl { position: absolute; bottom: 8px; background: rgba(0,0,0,.62); color: #fff; border-radius: 4px; padding: 1px 8px; font-size: 12px; z-index: 2; }
+  .slider .la { left: 8px; } .slider .lb { right: 8px; }
+  @keyframes sweep { 0%, 100% { --p: 6%; } 50% { --p: 94%; } }
+  .card:hover .slider { animation-duration: 3.5s; }
+  @media (prefers-reduced-motion: reduce) { .slider { animation: none; } }
+
+  /* guided tour */
+  #tour { position: fixed; inset: 0; z-index: 30; }
+  #tour[hidden] { display: none; }
+  #tour .spot { position: absolute; border-radius: 8px; border: 2px solid var(--accent); box-shadow: 0 0 0 100vmax var(--shade);
+    transition: all .25s ease; pointer-events: none; }
+  #tour .pop { position: absolute; width: min(340px, calc(100vw - 24px)); background: var(--pop); color: var(--fg); border: 1px solid var(--accent);
+    border-radius: 10px; padding: 14px 16px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.4); transition: all .25s ease; }
+  #tour h3 { margin: 0 0 6px; font-size: 15px; color: var(--accent); }
+  #tour p { margin: 0 0 12px; font-size: 13px; line-height: 1.5; }
+  #tour kbd { color: var(--kbd); font: inherit; font-weight: bold; }
+  #tour .nav { display: flex; align-items: center; gap: 8px; }
+  #tour .dots { flex: 1; display: flex; gap: 5px; }
+  #tour .dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+  #tour .dots i.on { background: var(--accent); }
+  #tour button { font: inherit; border: 1px solid var(--line); background: none; color: var(--fg); border-radius: 5px; padding: 3px 10px; cursor: pointer; }
+  #tour button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #tour button:hover { border-color: var(--accent); }
+  #tour .x { position: absolute; top: 6px; right: 8px; border: none !important; color: var(--dim) !important; font-size: 18px; line-height: 1; padding: 0 4px !important; }
   @media (max-width: 760px) { .side { display: none !important; } #statusbar { font-size: 11px; } }
 </style>
 </head>
 <body>
 <div id="app" tabindex="0">
   <div id="titlebar">
-    <span><b>juxt</b> | <span id="tpl"></span></span>
+    <span class="brand"><img src="assets/logo-96.png" alt="" width="22" height="22">juxt</span>
+    <span class="tpl" id="tpl"></span>
     <span class="sp"></span>
-    <button id="b-scn" title=":scenario">scenario: <span id="scn-name">…</span> ▾</button>
-    <button id="b-keys" title=":keys">keys</button>
-    <button id="b-info" title=":info">info</button>
-    <button id="b-bar" title=":statusbar" class="on">status</button>
-    <button id="b-full" title=":fullscreen">fullscreen</button>
+    <button id="b-scn" title="Switch scenario (:scenario)"><span id="scn-name">scenario</span> ▾</button>
+    <button id="b-tour" title="Show the guided tour (:tour)">tour</button>
+    <button id="b-keys" title="Shortcut sidebar (:keys)">keys</button>
+    <button id="b-info" title="Info sidebar (:info)">info</button>
+    <button id="b-bar" title="Status bar (:statusbar)" class="on">status</button>
+    <button id="b-theme" title="Dark / light (:theme)">☀</button>
+    <button id="b-full" title="Fullscreen (:fullscreen)">⛶</button>
   </div>
   <div id="main">
     <div class="side" id="keys" hidden></div>
@@ -96,8 +159,7 @@
       <div id="loading" hidden><div><div id="loading-text"></div><div class="bar"><i id="loading-bar"></i></div></div></div>
       <div id="picker" hidden>
         <div class="pwrap">
-          <h2>Pick an example</h2>
-          <p class="dim">Each scenario is a hypercube of congruent images — flip through it with the keys, exactly like the desktop app.</p>
+          <div class="phead"><img src="assets/logo-96.png" alt=""><div><h2>juxt</h2><div class="sub">Flip through plots along any axis. Pick a dataset.</div></div></div>
           <div id="cards"></div>
         </div>
       </div>
@@ -105,11 +167,11 @@
     <div class="side" id="info" hidden></div>
   </div>
   <div id="statusbar"><div id="status"></div><div id="helpline"></div></div>
+  <div id="tour" hidden><div class="spot" id="spot"></div><div class="pop" id="pop"></div></div>
 </div>
 
 <script src="app.js"></script>
 <script src="scenarios/cities.js"></script>
-<script src="scenarios/daynight.js"></script>
 <script src="scenarios/sentinel2.js"></script>
 <script src="scenarios/reaction.js"></script>
 <script src="scenarios/random.js"></script>

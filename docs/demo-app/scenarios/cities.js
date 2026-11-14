@@ -242,6 +242,7 @@
   const imgs = new Map();
   JUXT_SCENARIOS.push({
     id: "cities", title: "Cities in block art", axes, size: [W, H], pixelated: true,
+    thumb: { a: ["newyork", "summer", "day"], b: ["newyork", "summer", "night"], labels: ["day", "night"] },
     template: "skylines/{city}_{season}_{time}.png",
     blurb: "New York, London, Paris and Berlin through the seasons, by day and by night. The buildings never move — only the weather and the light do — so Space shows you exactly what changed.",
     hint: `Tap <kbd>t</kbd> for day ↔ night, <kbd>s</kbd> for the season, <kbd>c</kbd> for the city. Then press <kbd>Space</kbd> to flip back — and try <kbd>:mode pin</kbd>.`,
