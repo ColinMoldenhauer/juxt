@@ -301,7 +301,8 @@ view.addEventListener("wheel", e => {
 view.addEventListener("contextmenu", e => e.preventDefault());
 
 $("b-scn").onclick = () => { if (S.tour) closeTour(false); openPicker(); };
-$("b-home").onclick = () => {
+$("b-home").onclick = e => {                      // a real link (href="./"); this just skips the page reload
+  e.preventDefault();
   if (S.tour) closeTour(false);
   try { history.replaceState(null, "", location.pathname + location.search); } catch (_) { /* sandboxed iframe */ }
   openPicker();
@@ -385,7 +386,7 @@ function render() {
   $("statusbar").classList.toggle("hidden", !SC || (!S.statusBar && !S.cmd && !S.sel));
   $("info").hidden = !S.info || !SC; $("keys").hidden = !S.keys || !SC;
   $("b-info").classList.toggle("on", S.info); $("b-keys").classList.toggle("on", S.keys); $("b-bar").classList.toggle("on", S.statusBar);
-  $("picker").hidden = !S.picker;
+  $("picker").hidden = !S.picker; if (S.picker) fitCards();
   $("loading").hidden = !S.loading;
   if (S.loading) {
     $("loading-text").textContent = `${S.loading.label} — ${S.loading.done}/${S.loading.total}`;
@@ -397,27 +398,54 @@ function render() {
 
 // ───────────────────────────── scenarios ─────────────────────────────────────
 const shape = s => s.axes.map(a => a.values.length).join("×");
+const AXIS_COLORS = ["#3d8bfd", "#2ec4a6", "#ff9f1c", "#ef476f"];   // the logo's blue, green, orange and pink
 function buildPicker() {
+  const v = encodeURIComponent(window.JUXT_V || "");
   $("cards").innerHTML = JUXT_SCENARIOS.map((s, i) => {
-    const [la, lb] = s.thumb.labels;
+    const [la, lb] = s.thumb.labels, total = s.axes.reduce((n, a) => n * a.values.length, 1);
+    const chips = s.axes.map((a, k) => `<span class="chip" style="--c:${AXIS_COLORS[k % AXIS_COLORS.length]}">${esc(a.name)}<b>${a.values.length}</b></span>`)
+      .join('<span class="times">×</span>');
     return `
     <button class="card" data-id="${s.id}" title="${esc(s.blurb || "")}">
       <span class="num">${i + 1}</span>
       <span class="slider">
-        <img src="thumbs/${s.id}_b.jpg" alt="">
-        <span class="clip"><img src="thumbs/${s.id}_a.jpg" alt=""></span>
+        <img src="thumbs/${s.id}_b.jpg?v=${v}" alt="">
+        <span class="clip"><img src="thumbs/${s.id}_a.jpg?v=${v}" alt=""></span>
         <span class="track"><i class="handle"></i></span>
         <span class="lbl la">${esc(la)}</span><span class="lbl lb">${esc(lb)}</span>
       </span>
       <span class="meta">
-        <span class="ctitle">${esc(s.title)}</span>
-        <span class="caxes">${esc(s.axes.map(a => a.name).join(" × "))} <i>(${shape(s)})</i></span>
+        <span class="ctitle">${esc(s.title)}<span class="count">${total} plots</span></span>
+        <span class="axes">${chips}</span>
       </span>
     </button>`;
   }).join("");
   $("cards").onclick = e => { const c = e.target.closest(".card"); if (c) setScenario(c.dataset.id); };
-  const n = JUXT_SCENARIOS.length, cols = n <= 4 ? 2 : 3;          // the grid always fits the window
-  $("cards").style.cssText = `--n:${n};--cols:${cols};--rows:${Math.ceil(n / cols)}`;
+  new ResizeObserver(fitCards).observe($("cards"));
+  addEventListener("resize", fitCards);
+}
+// Tiles keep a fixed 16:10 picture and are sized to the window: the widest columns whose rows still fit
+// the available height (found by measuring, because the chip row wraps differently at every width).
+// On phones the tiles stack at full width and the list scrolls.
+function fitCards() {
+  const box = $("cards"), W = box.clientWidth, H = box.clientHeight;
+  if (!W || !H) return;
+  const n = JUXT_SCENARIOS.length, gap = 14, stack = innerWidth <= 620;
+  const cols = stack ? 1 : (n <= 4 ? 2 : 3);
+  const cards = [...box.querySelectorAll(".card")];
+  const setW = cw => { box.style.gridTemplateColumns = `repeat(${cols}, ${cw}px)`; };
+  const height = cw => { setW(cw); const r = cards.map(c => c.getBoundingClientRect()); return Math.max(...r.map(x => x.bottom)) - Math.min(...r.map(x => x.top)); };
+  box.classList.toggle("stack", stack);
+  const maxW = Math.floor((W - gap * (cols - 1)) / cols);
+  if (stack) return setW(maxW);
+  // height is not monotonic in width (very narrow tiles get tall as the chips stack), so scan downwards
+  let best = maxW, bestH = Infinity;
+  for (let cw = maxW; cw >= 140; cw -= 8) {
+    const hgt = height(cw);
+    if (hgt < bestH) { best = cw; bestH = hgt; }
+    if (hgt <= H) { best = cw; break; }
+  }
+  setW(best);
 }
 function openPicker() { S.picker = true; S.cmd = S.sel = null; render(); }
 function closePicker() { S.picker = false; render(); $("app").focus(); }

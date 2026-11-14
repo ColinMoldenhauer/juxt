@@ -34,8 +34,8 @@
   #app { display: flex; flex-direction: column; height: 100%; outline: none; }
   #titlebar { display: flex; align-items: center; gap: 8px; padding: 4px 10px;
     background: var(--bar); border-bottom: 1px solid var(--line); color: var(--dim); }
-  #titlebar button.brand { display: flex; align-items: center; gap: 7px; color: var(--fg); font-weight: bold; border: none; background: none; padding: 1px 4px; border-radius: 5px; cursor: pointer; }
-  #titlebar button.brand:hover { background: var(--hover); color: var(--fg); }
+  #titlebar a.brand { display: flex; align-items: center; gap: 7px; color: var(--fg); font-weight: bold; text-decoration: none; padding: 1px 6px; border-radius: 5px; cursor: pointer; }
+  #titlebar a.brand:hover { background: var(--hover); }
   #titlebar .brand img { width: 22px; height: 22px; display: block; }
   #titlebar .tpl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   #titlebar .sp { flex: 1; }
@@ -91,22 +91,27 @@
   .phead img { width: 40px; height: 40px; }
   .phead h2 { margin: 0; font-size: 24px; font-weight: bold; letter-spacing: .3px; }
   .phead .sub { color: var(--dim); font-size: 14px; }
-  #cards { flex: 1; min-height: 0; display: grid; gap: 14px;
-    grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); grid-template-rows: repeat(var(--rows, 2), minmax(0, 1fr)); }
+  #cards { flex: 1; min-height: 0; display: grid; gap: 14px; justify-content: center; align-content: center; grid-auto-rows: max-content;
+    grid-template-columns: repeat(2, minmax(0, 1fr)); }      /* fitCards() in app.js sets the real column width */
+  #cards.stack { overflow-y: auto; align-content: start; }
   .card { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--fg);
-    font: inherit; padding: 0; cursor: pointer; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0;
+    font: inherit; padding: 0; cursor: pointer; display: flex; flex-direction: column; overflow: hidden; position: relative; container-type: inline-size;
     transition: transform .15s, border-color .15s, box-shadow .15s; }
   .card:hover, .card:focus-visible { border-color: var(--accent); outline: none; transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,.28); }
   .card .num { position: absolute; right: 10px; top: 8px; z-index: 3; background: var(--pop); color: var(--kbd); border-radius: 4px; padding: 0 7px; font-size: 12px; opacity: .9; }
-  .card .meta { flex: none; padding: 9px 14px 11px; display: flex; flex-direction: column; gap: 2px; }
-  .card .ctitle { font-size: clamp(14px, 2vh, 18px); font-weight: bold; }
-  .card .caxes { color: var(--accent); font-size: 13px; }
-  .card .caxes i { color: var(--dim); font-style: normal; }
-  @media (max-width: 620px) { #cards { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(var(--n, 4), minmax(0, 1fr)); } .pwrap { padding: 10px 12px 12px; } }
+  .card .meta { flex: none; padding: 10px 14px 13px; display: flex; flex-direction: column; gap: 8px; }
+  .card .ctitle { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: clamp(16px, 2.3vh, 21px); font-weight: bold; }
+  .card .count { color: var(--dim); font-size: 12px; font-weight: normal; white-space: nowrap; }
+  .card .axes { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 5px; }
+  .card .times { color: var(--dim); font-weight: bold; }
+  .chip { --c: var(--accent); display: inline-flex; align-items: baseline; gap: 6px; padding: 2px 10px 2px 11px; border-radius: 999px;
+    border: 1.5px solid var(--c); background: color-mix(in srgb, var(--c) 17%, transparent); color: var(--fg); font-size: clamp(12px, 3.9cqw, 17px); font-weight: bold; line-height: 1.5; }
+  .chip b { color: color-mix(in srgb, var(--c) 72%, var(--fg)); font-size: .88em; }
+  @media (max-width: 620px) { .pwrap { padding: 10px 12px 12px; } }
 
   /* The slider is animated with transforms only (compositor thread, no layout or paint per frame):
      a clip box slides left, and its image slides right by the same amount so the picture stays put. */
-  .slider { display: block; position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; background: var(--view); contain: paint; }
+  .slider { display: block; position: relative; flex: none; width: 100%; aspect-ratio: 16 / 10; overflow: hidden; background: var(--view); contain: paint; }
   .slider img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
   .slider .clip, .slider .track { position: absolute; inset: 0; will-change: transform; animation: wipe 7s ease-in-out infinite; }
   .slider .clip { overflow: hidden; }
@@ -149,7 +154,7 @@
 <body>
 <div id="app" tabindex="0">
   <div id="titlebar">
-    <button class="brand" id="b-home" title="Back to the start screen"><img src="assets/logo-96.png" alt="" width="22" height="22">juxt</button>
+    <a class="brand" id="b-home" href="./" title="Back to the start screen"><img src="assets/logo-96.png" alt="" width="22" height="22">juxt</a>
     <span class="tpl" id="tpl"></span>
     <span class="sp"></span>
     <button id="b-scn" title="Switch scenario (:scenario)"><span id="scn-name">scenario</span> ▾</button>
@@ -180,6 +185,7 @@
   <div id="tour" hidden><div class="spot" id="spot"></div><div class="pop" id="pop"></div></div>
 </div>
 
+<script>window.JUXT_V = "dev";   // replaced with the commit id by the Pages workflow, so stale caches cannot mix versions</script>
 <script src="app.js"></script>
 <script src="scenarios/cities.js"></script>
 <script src="scenarios/sentinel2.js"></script>
