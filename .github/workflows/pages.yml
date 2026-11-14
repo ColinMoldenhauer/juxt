@@ -1,0 +1,49 @@
+name: Demo (GitHub Pages)
+
+# Publishes the web demo (docs/demo-app/) as a standalone site.
+# One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/demo-app/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deployment at a time; let a running one finish rather than cancel it half-way
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      # The demo is plain static files: no build step.  Fail loudly if a scenario script or
+      # image it needs is missing, instead of publishing a broken picker.
+      - name: Check that every script referenced by the demo exists
+        run: |
+          cd docs/demo-app
+          for f in $(grep -o 'src="[^"]*"' index.html | cut -d'"' -f2); do
+            test -f "$f" || { echo "missing: $f"; exit 1; }
+          done
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/demo-app
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
