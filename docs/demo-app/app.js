@@ -386,7 +386,7 @@ function render() {
   $("statusbar").classList.toggle("hidden", !SC || (!S.statusBar && !S.cmd && !S.sel));
   $("info").hidden = !S.info || !SC; $("keys").hidden = !S.keys || !SC;
   $("b-info").classList.toggle("on", S.info); $("b-keys").classList.toggle("on", S.keys); $("b-bar").classList.toggle("on", S.statusBar);
-  $("picker").hidden = !S.picker; if (S.picker) fitCards();
+  $("picker").hidden = !S.picker;
   $("loading").hidden = !S.loading;
   if (S.loading) {
     $("loading-text").textContent = `${S.loading.label} — ${S.loading.done}/${S.loading.total}`;
@@ -421,31 +421,6 @@ function buildPicker() {
     </button>`;
   }).join("");
   $("cards").onclick = e => { const c = e.target.closest(".card"); if (c) setScenario(c.dataset.id); };
-  new ResizeObserver(fitCards).observe($("cards"));
-  addEventListener("resize", fitCards);
-}
-// Tiles keep a fixed 16:10 picture and are sized to the window: the widest columns whose rows still fit
-// the available height (found by measuring, because the chip row wraps differently at every width).
-// On phones the tiles stack at full width and the list scrolls.
-function fitCards() {
-  const box = $("cards"), W = box.clientWidth, H = box.clientHeight;
-  if (!W || !H) return;
-  const n = JUXT_SCENARIOS.length, gap = 14, stack = innerWidth <= 620;
-  const cols = stack ? 1 : (n <= 4 ? 2 : 3);
-  const cards = [...box.querySelectorAll(".card")];
-  const setW = cw => { box.style.gridTemplateColumns = `repeat(${cols}, ${cw}px)`; };
-  const height = cw => { setW(cw); const r = cards.map(c => c.getBoundingClientRect()); return Math.max(...r.map(x => x.bottom)) - Math.min(...r.map(x => x.top)); };
-  box.classList.toggle("stack", stack);
-  const maxW = Math.floor((W - gap * (cols - 1)) / cols);
-  if (stack) return setW(maxW);
-  // height is not monotonic in width (very narrow tiles get tall as the chips stack), so scan downwards
-  let best = maxW, bestH = Infinity;
-  for (let cw = maxW; cw >= 140; cw -= 8) {
-    const hgt = height(cw);
-    if (hgt < bestH) { best = cw; bestH = hgt; }
-    if (hgt <= H) { best = cw; break; }
-  }
-  setW(best);
 }
 function openPicker() { S.picker = true; S.cmd = S.sel = null; render(); }
 function closePicker() { S.picker = false; render(); $("app").focus(); }
