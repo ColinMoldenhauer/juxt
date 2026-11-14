@@ -57,7 +57,7 @@ const S = {
   sel: null, cmd: null, flashMsg: null, flashTimer: 0,
   fit: "both", zoom: 1, tx: 0, ty: 0,
   statusBar: true, info: false, keys: false,
-  picker: false, loading: null,
+  picker: false, loading: null, tour: null, tourOffered: false,
 };
 const $ = id => document.getElementById(id);
 const cv = $("cv"), ctx = cv.getContext("2d"), view = $("view");
@@ -152,8 +152,10 @@ const COMMANDS = {
   "info": "toggle the info sidebar", "keys": "toggle the shortcut sidebar", "statusbar": "toggle the status bar",
   "version": "show the juxt version",
   "scenario": "demo only: switch to another example dataset",
+  "tour": "demo only: replay the guided tour of the interface",
+  "theme": "demo only: dark | light",
 };
-const argCands = verb => verb === "mode" ? MODES : verb === "scenario" ? JUXT_SCENARIOS.map(s => s.id) : null;
+const argCands = verb => verb === "mode" ? MODES : verb === "scenario" ? JUXT_SCENARIOS.map(s => s.id) : verb === "theme" ? ["dark", "light"] : null;
 function cmdCands() {
   const c = S.cmd;
   if (c.phase === "verb") return fuzzy(c.query, Object.keys(COMMANDS));
@@ -209,6 +211,8 @@ function runCmd(verb, arg) {
       if (!arg) { openPicker(); break; }
       if (JUXT_SCENARIOS.some(s => s.id === arg)) setScenario(arg); else flash(`unknown scenario: ${arg}`);
       break;
+    case "tour": startTour(); break;
+    case "theme": if (arg === "dark" || arg === "light") applyTheme(arg); else toggleTheme(); render(); break;
     case "zoom": {
       const n = parseFloat(arg);
       if (isFinite(n) && n > 0) { setZoom(n / 100); render(); } else flash("usage: :zoom N   (percent)");
@@ -235,6 +239,7 @@ function onKey(e) {
   const k = e.key, ctrl = e.ctrlKey, shift = e.shiftKey;
   const used = () => { e.preventDefault(); e.stopPropagation(); };
 
+  if (S.tour) { used(); tourKey(e); return; }
   if (S.picker) {                                    // scenario picker is modal
     if (k === "Escape" && SC) { used(); closePicker(); }
     else if (/^[1-9]$/.test(k) && +k <= JUXT_SCENARIOS.length) { used(); setScenario(JUXT_SCENARIOS[+k - 1].id); }
@@ -295,7 +300,9 @@ view.addEventListener("wheel", e => {
 }, { passive: false });
 view.addEventListener("contextmenu", e => e.preventDefault());
 
-$("b-scn").onclick = () => openPicker();
+$("b-scn").onclick = () => { if (S.tour) closeTour(false); openPicker(); };
+$("b-tour").onclick = () => startTour();
+$("b-theme").onclick = () => toggleTheme();
 $("b-keys").onclick = () => { toggle("keys"); $("app").focus(); };
 $("b-info").onclick = () => { toggle("info"); $("app").focus(); };
 $("b-bar").onclick = () => { toggle("statusBar"); $("app").focus(); };
@@ -370,7 +377,7 @@ function renderKeys() {
 }
 function render() {
   draw(); renderStatus();
-  $("statusbar").classList.toggle("hidden", !S.statusBar && !S.cmd && !S.sel);
+  $("statusbar").classList.toggle("hidden", !SC || (!S.statusBar && !S.cmd && !S.sel));
   $("info").hidden = !S.info || !SC; $("keys").hidden = !S.keys || !SC;
   $("b-info").classList.toggle("on", S.info); $("b-keys").classList.toggle("on", S.keys); $("b-bar").classList.toggle("on", S.statusBar);
   $("picker").hidden = !S.picker;
@@ -380,18 +387,27 @@ function render() {
     $("loading-bar").style.width = `${100 * S.loading.done / Math.max(1, S.loading.total)}%`;
   }
   if (SC && S.info) renderInfo(); if (SC && S.keys) renderKeys();
+  tourLayout();
 }
 
 // ───────────────────────────── scenarios ─────────────────────────────────────
 const shape = s => s.axes.map(a => a.values.length).join("×");
 function buildPicker() {
-  $("cards").innerHTML = JUXT_SCENARIOS.map((s, i) => `
-    <button class="card" data-id="${s.id}">
+  $("cards").innerHTML = JUXT_SCENARIOS.map((s, i) => {
+    const [la, lb] = s.thumb.labels;
+    return `
+    <button class="card" data-id="${s.id}" title="${esc(s.blurb || "")}">
       <span class="num">${i + 1}</span>
-      <span class="ctitle">${esc(s.title)}</span>
-      <span class="caxes">${esc(s.axes.map(a => a.name).join(" × "))} <i>(${shape(s)})</i></span>
-      <span class="cblurb">${esc(s.blurb)}</span>
-    </button>`).join("");
+      <span class="slider">
+        <img class="ib" src="thumbs/${s.id}_b.jpg" alt=""><img class="ia" src="thumbs/${s.id}_a.jpg" alt="">
+        <i class="handle"></i><span class="lbl la">${esc(la)}</span><span class="lbl lb">${esc(lb)}</span>
+      </span>
+      <span class="meta">
+        <span class="ctitle">${esc(s.title)}</span>
+        <span class="caxes">${esc(s.axes.map(a => a.name).join(" × "))} <i>(${shape(s)})</i></span>
+      </span>
+    </button>`;
+  }).join("");
   $("cards").onclick = e => { const c = e.target.closest(".card"); if (c) setScenario(c.dataset.id); };
 }
 function openPicker() { S.picker = true; S.cmd = S.sel = null; render(); }
@@ -416,10 +432,94 @@ async function setScenario(id) {
   KEYS = {}; AXES.forEach((a, i) => { KEYS[a.key] = i; });
   S.pos = AXES.map(() => 0); S.prev = null; S.focus = AXES.map((_, i) => i); S.active = null;
   S.fit = "both"; S.loading = null;
-  $("tpl").textContent = SC.template; $("scn-name").textContent = SC.title; document.title = `juxt web demo — ${SC.title}`;
+  $("tpl").textContent = SC.template; $("scn-name").textContent = SC.title; document.title = `${SC.title} · juxt`;
   try { history.replaceState(null, "", `#${SC.id}`); } catch (_) { /* sandboxed iframe */ }
   showHint(SC.hint);
   applyFit(); render(); $("app").focus();
+  if (!S.tourOffered) { S.tourOffered = true; if (!tourSeen()) setTimeout(() => { if (SC && !S.picker && !S.loading) startTour(); }, 400); }
+}
+
+// ───────────────────────────── theme ─────────────────────────────────────────
+const curTheme = () => document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  try { localStorage.setItem("juxt-demo-theme", t); } catch (_) { /* storage unavailable */ }
+  $("b-theme").textContent = t === "dark" ? "☀" : "☾";
+}
+const toggleTheme = () => applyTheme(curTheme() === "dark" ? "light" : "dark");
+
+// ───────────────────────────── guided tour ───────────────────────────────────
+const TOUR = [
+  { sel: "#view", title: "Your plots",
+    text: "Every scenario is a grid of <b>congruent images</b>. <b>Drag</b> to pan, <kbd>Ctrl</kbd>+wheel to zoom, double-click to fit." },
+  { sel: "#statusbar", ensure: "statusBar", title: "Status bar",
+    text: "The current <b>mode</b>, your position on every axis, which axes <kbd>←→</kbd> and <kbd>↑↓</kbd> move, and the <b>letter key</b> of each axis. Try pressing one of those letters." },
+  { sel: "#info", ensure: "info", title: "Info sidebar",
+    text: "Every value on every axis, with the current one highlighted. <b>Click a value</b> to jump straight to it. Toggle it with the <kbd>info</kbd> button or <kbd>Ctrl+Shift+I</kbd>." },
+  { sel: "#keys", ensure: "keys", title: "Shortcut sidebar",
+    text: "The live key map for the current mode. Toggle it with the <kbd>keys</kbd> button. <kbd>:mode seek</kbd> and <kbd>:mode pin</kbd> change how the letter keys behave." },
+  { sel: "#b-scn", title: "More examples",
+    text: "Switch dataset here at any time, or type <kbd>:scenario</kbd>. Replay this tour with the <kbd>tour</kbd> button or <kbd>:tour</kbd>." },
+  { sel: null, title: "Now flip!",
+    text: "<kbd>Space</kbd> jumps back to the previous image, the best way to spot a difference. <kbd>:</kbd> opens command mode. Have fun." },
+];
+function tourSeen() { try { return localStorage.getItem("juxt-demo-tour") === "1"; } catch (_) { return false; } }
+function tourMark() { try { localStorage.setItem("juxt-demo-tour", "1"); } catch (_) { /* storage unavailable */ } }
+const tourVisible = st => !st.sel || (document.querySelector(st.sel)?.offsetParent != null);
+
+function startTour() {
+  if (!SC || S.loading) return;
+  S.picker = false; S.cmd = S.sel = null; hideHint();
+  S.tour = { i: 0, saved: { info: S.info, keys: S.keys, statusBar: S.statusBar } };
+  tourGo(0, 1);
+}
+function tourGo(i, dir) {
+  const t = S.tour; if (!t) return;
+  while (i >= 0 && i < TOUR.length) {                      // skip steps that are not on screen (small windows)
+    const st = TOUR[i]; if (st.ensure) S[st.ensure] = true;
+    render();                                              // makes sidebars appear before measuring them
+    if (tourVisible(st)) break;
+    i += dir;
+  }
+  if (i < 0) i = 0;
+  if (i >= TOUR.length) return closeTour(true);
+  t.i = i; render();
+}
+function closeTour(done) {
+  const t = S.tour; if (!t) return;
+  Object.assign(S, t.saved); S.tour = null; tourMark(); render(); $("app").focus();
+}
+function tourKey(e) {
+  if (e.key === "Escape") closeTour(false);
+  else if (e.key === "ArrowRight" || e.key === "Enter" || e.key === " ") tourGo(S.tour.i + 1, 1);
+  else if (e.key === "ArrowLeft") tourGo(S.tour.i - 1, -1);
+}
+function tourLayout() {
+  const tour = $("tour"); tour.hidden = !S.tour; if (!S.tour) return;
+  const st = TOUR[S.tour.i], pop = $("pop"), spot = $("spot");
+  const dots = TOUR.map((_, k) => `<i class="${k === S.tour.i ? "on" : ""}"></i>`).join("");
+  const last = S.tour.i === TOUR.length - 1;
+  pop.innerHTML = `<button class="x" id="t-x" title="Close (Esc)">×</button><h3>${st.title}</h3><p>${st.text}</p>
+    <div class="nav"><span class="dots">${dots}</span>
+    ${S.tour.i ? '<button id="t-back">Back</button>' : ""}<button class="primary" id="t-next">${last ? "Start" : "Next"}</button></div>`;
+  $("t-x").onclick = () => closeTour(false);
+  $("t-next").onclick = () => tourGo(S.tour.i + 1, 1);
+  if ($("t-back")) $("t-back").onclick = () => tourGo(S.tour.i - 1, -1);
+  const vw = innerWidth, vh = innerHeight, pw = pop.offsetWidth, ph = pop.offsetHeight, gap = 14;
+  const el = st.sel && document.querySelector(st.sel);
+  let x, y;
+  if (!el) { spot.style.cssText = `left:${vw / 2}px;top:${vh / 2}px;width:0;height:0;border-color:transparent`; x = (vw - pw) / 2; y = (vh - ph) / 2; }
+  else {
+    const r = el.getBoundingClientRect(), pad = 4;
+    spot.style.cssText = `left:${r.left - pad}px;top:${r.top - pad}px;width:${r.width + 2 * pad}px;height:${r.height + 2 * pad}px`;
+    if (st.sel === "#view") { x = r.left + (r.width - pw) / 2; y = r.top + (r.height - ph) / 2; }
+    else if (r.left > vw * 0.55 && r.width < vw * 0.5) { x = r.left - pw - gap; y = r.top + 20; }              // right sidebar
+    else if (r.right < vw * 0.45 && r.width < vw * 0.5) { x = r.right + gap; y = r.top + 20; }                 // left sidebar
+    else if (r.top > vh * 0.6) { x = r.left + 20; y = r.top - ph - gap; }                                      // bottom bar
+    else { x = r.left; y = r.bottom + gap; }                                                                   // title bar
+  }
+  pop.style.left = Math.max(12, Math.min(x, vw - pw - 12)) + "px";
+  pop.style.top = Math.max(12, Math.min(y, vh - ph - 12)) + "px";
 }
 
 // ───────────────────────────── onboarding hint ───────────────────────────────
@@ -432,6 +532,7 @@ function showHint(html) {
 
 window.addEventListener("hashchange", () => { const id = location.hash.slice(1); if (id && SC && id !== SC.id) setScenario(id); });
 window.addEventListener("DOMContentLoaded", () => {
+  $("b-theme").textContent = curTheme() === "dark" ? "☀" : "☾";
   buildPicker();
   const id = location.hash.slice(1);
   if (JUXT_SCENARIOS.some(s => s.id === id)) setScenario(id); else openPicker();

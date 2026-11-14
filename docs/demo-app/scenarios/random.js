@@ -33,6 +33,7 @@
 
   JUXT_SCENARIOS.push({
     id: "random", title: "Random data", axes, size: [W, H],
+    thumb: { a: ["ASCAT", "2024-03-15", "AM", "L2"], b: ["SMOS", "2024-03-15", "AM", "L2"], labels: ["ASCAT", "SMOS"] },
     template: "plots/{sensor}_{date}_{overpass}_{source}.png",
     blurb: "The sample dataset from the repo: coloured tiles that differ subtly along every axis. A sandbox for learning the keys.",
     hint: `Try <kbd>s</kbd> <kbd>d</kbd> <kbd>o</kbd> <kbd>r</kbd> to step axes (<kbd>S</kbd> backwards), <kbd>Space</kbd> to flip back,

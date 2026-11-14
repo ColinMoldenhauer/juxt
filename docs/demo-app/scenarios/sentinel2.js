@@ -104,6 +104,7 @@
 
   JUXT_SCENARIOS.push({
     id: "sentinel2", title: "Sentinel-2 satellite imagery", axes, size: [SIZE, SIZE],
+    thumb: { a: ["paris", "summer", "true-color"], b: ["paris", "summer", "ndvi"], labels: ["true colour", "NDVI"] },
     template: "s2/{city}_{season}_{layer}.jpg",
     blurb: "Real Copernicus Sentinel-2 scenes of New York, London, Paris and Berlin in every season, each in four band combinations. Flip layers to see vegetation, water and built-up area separate; flip seasons to watch the green-up.",
     hint: `Tap <kbd>l</kbd> to cycle the layers, <kbd>s</kbd> for the season, <kbd>c</kbd> for the city. Zoom with <kbd>Ctrl</kbd>+wheel and drag — the pan survives flipping, which is what juxt is for.`,
