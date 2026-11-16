@@ -20,6 +20,11 @@ pointing there too, so personal settings and history never leak into a recording
 The viewer window that `detect` launches runs on Qt's offscreen platform and is
 closed with Ctrl+C once the config is saved.
 
+Key presses that print nothing themselves (Tab, Enter, Ctrl+C, ...) flash as a
+badge in an extra row below the shell, so a viewer can tell a completion from
+typing. That row lies outside the scroll region the shell gets, so the
+recording is `--rows` + 1 high; `--no-keys` drops it.
+
 Setup (Linux/macOS; on Windows use WSL)
 ---------------------------------------
     sudo apt install -y asciinema            # or: brew install asciinema
@@ -30,7 +35,7 @@ Setup (Linux/macOS; on Windows use WSL)
 Manual recording (what record_demo.sh does)
 -------------------------------------------
     asciinema rec demo.cast --overwrite -c "python scripts/demo_cli.py --scene detect"
-    # asciinema 2.x stores the outer terminal size; set it to --cols/--rows
+    # asciinema 2.x stores the outer terminal size; set it to --cols x (--rows + 1)
     # in the first line of demo.cast (record_demo.sh does that for you)
     agg --font-size 16 demo.cast docs/assets/demo-cli-detect.gif
 """
@@ -55,7 +60,14 @@ REPO = Path(__file__).resolve().parent.parent
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][0-9A-B]|\x1b[=>]|\r")
 
 TAB, ENTER, CTRL_C, CTRL_L, BACKSPACE = "\t", "\r", "\x03", "\x0c", "\x7f"
-HOME, END, RIGHT = "\x01", "\x05", "\x1b[C"  # Ctrl+A / Ctrl+E: readline's start / end of line
+
+# Badge text for keys that leave no visible trace of their own
+KEY_LABELS = {
+    TAB: "Tab", ENTER: "Enter", CTRL_C: "Ctrl+C", CTRL_L: "Ctrl+L",
+    BACKSPACE: "Backspace",
+}
+BADGE_STYLE = "\x1b[1;30;43m"  # bold black on yellow, like a key cap
+BADGE_SECONDS = 0.9             # how long a badge stays up after the last press
 
 RCFILE = r"""
 PS1='\[\e[1;32m\]$\[\e[0m\] '
@@ -75,10 +87,18 @@ eval "$(juxt --bash-completion)"
 class Session:
     """An interactive bash in a pty whose output is mirrored to our stdout."""
 
-    def __init__(self, stage: Path, cols: int, rows: int, speed: float, seed: int = 7):
+    def __init__(self, stage: Path, cols: int, rows: int, speed: float,
+                 show_keys: bool = True, seed: int = 7):
         self.speed = speed
         self.rng = random.Random(seed)
         self.buf = ""  # ANSI-stripped output not yet consumed by expect()
+        self.cols, self.rows = cols, rows
+        self.show_keys = show_keys
+        self.badge: tuple[str, int] | None = None  # (label, repeat count) on screen
+        self.badge_until = 0.0
+        if show_keys:
+            # Confine the shell to rows 1..rows so the badge row below never scrolls
+            self.write(f"\x1b[1;{rows}r")
         rc = stage / ".demo_bashrc"
         rc.write_text(RCFILE)
         (stage / ".sudo_as_admin_successful").touch()  # silence Ubuntu's sudo hint
@@ -98,24 +118,47 @@ class Session:
             os.execvpe("bash", ["bash", "--noprofile", "--rcfile", str(rc), "-i"], env)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         self.expect_prompt(timeout=20)
-        self.clear()  # wipe whatever the system bashrc printed
+        self.send(CTRL_L, badge=False)  # wipe whatever the system bashrc printed
+        self.expect_prompt()
 
     # -- output ------------------------------------------------------------
+    @staticmethod
+    def write(text: str | bytes) -> None:
+        sys.stdout.buffer.write(text.encode() if isinstance(text, str) else text)
+        sys.stdout.buffer.flush()
+
+    def draw_badge(self) -> None:
+        """Paint the badge row: right-aligned key cap, or blank. The cursor
+        (and its attributes) is saved and restored around it, so the shell
+        never notices."""
+        row = self.rows + 1
+        out = f"\x1b7\x1b[{row};1H\x1b[0m\x1b[2K"
+        if self.badge:
+            label, n = self.badge
+            text = f" {label} " + (f"\u00d7{n} " if n > 1 else "")
+            out += f"\x1b[{row};{max(1, self.cols - len(text))}H{BADGE_STYLE}{text}\x1b[0m"
+        self.write(out + "\x1b8")
+
     def pump(self, timeout: float) -> None:
         """Forward whatever bash prints within *timeout* seconds."""
         end = time.monotonic() + timeout
         while (left := end - time.monotonic()) > 0:
+            if self.badge:
+                if (expires := self.badge_until - time.monotonic()) <= 0:
+                    self.badge = None
+                    self.draw_badge()
+                else:
+                    left = min(left, expires)
             ready, _, _ = select.select([self.fd], [], [], left)
             if not ready:
-                return
+                continue  # timed out: either the badge expired or we are done
             try:
                 data = os.read(self.fd, 65536)
             except OSError:
                 return
             if not data:
                 return
-            sys.stdout.buffer.write(data)
-            sys.stdout.buffer.flush()
+            self.write(data)
             self.buf += ANSI_RE.sub("", data.decode("utf-8", "replace"))
 
     def expect(self, pattern: str, timeout: float = 30) -> None:
@@ -135,7 +178,12 @@ class Session:
         self.pump(seconds / self.speed)
 
     # -- input -------------------------------------------------------------
-    def send(self, keys: str) -> None:
+    def send(self, keys: str, badge: bool = True) -> None:
+        if badge and self.show_keys and (label := KEY_LABELS.get(keys)):
+            same = self.badge and self.badge[0] == label
+            self.badge = (label, self.badge[1] + 1 if same else 1)
+            self.badge_until = time.monotonic() + BADGE_SECONDS / self.speed
+            self.draw_badge()
         os.write(self.fd, keys.encode())
 
     def type(self, text: str, wpm_delay: float = 0.07) -> None:
@@ -164,6 +212,10 @@ class Session:
         self.expect_prompt()
 
     def close(self) -> None:
+        if self.show_keys:
+            self.badge = None
+            self.draw_badge()
+            self.write("\x1b7\x1b[r\x1b8")  # give the whole terminal back
         try:
             os.kill(self.pid, signal.SIGHUP)
             os.waitpid(self.pid, 0)
@@ -176,9 +228,13 @@ class Session:
 # Scenes
 # --------------------------------------------------------------------------
 def scene_completion(s: Session) -> None:
-    """Build a template top-down with Tab, then pin axis values."""
+    """Build a template top-down with Tab, then pin axis values.
+
+    The template is quoted: on bash 5.1 the --NAME pins after an unquoted word
+    holding two {...} groups do not complete at all.
+    """
     s.pause(0.8)
-    s.type("juxt results/")
+    s.type('juxt "results/')
     s.tab()                                  # ASCAT/ SMAP/ SMOS/
     s.type("{sensor}/")
     s.tab()                                  # what every sensor dir holds: AM/ PM/
@@ -186,22 +242,8 @@ def scene_completion(s: Session) -> None:
     s.tab(settle=1.6)                        # the four files, common prefix inserted
     s.pause(0.4)
     s.backspace(len("2024-03-1"))
-    s.type("{date}_{source}.png")
+    s.type('{date}_{source}.png"')
     s.pause(0.6)
-    # Quote the finished template. Two workarounds in one: bash 5.1 skips
-    # programmable completion for every word after an unquoted word holding
-    # two {...} groups, and juxt does not yet complete paths inside an open
-    # quote (else the scene would simply start with `juxt "results/`).
-    s.send(HOME)
-    s.pause(0.3)
-    for _ in range(len("juxt ")):
-        s.send(RIGHT)
-        s.pause(0.05)
-    s.type('"')
-    s.send(END)
-    s.pause(0.3)
-    s.type('"')
-    s.pause(0.4)
     s.type(" --sen")
     s.tab(settle=0.5)                        # --sensor
     s.tab(settle=1.2)                        # ASCAT SMAP SMOS
@@ -254,6 +296,8 @@ def main() -> None:
     ap.add_argument("--cols", type=int, default=92, help="terminal width of the recording")
     ap.add_argument("--rows", type=int, default=26, help="terminal height of the recording")
     ap.add_argument("--speed", type=float, default=1.0, help="playback speed factor (2 = twice as fast)")
+    ap.add_argument("--no-keys", action="store_true",
+                    help="no key-press badges (and no extra row for them)")
     a = ap.parse_args()
 
     if shutil.which("juxt", path=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")) is None:
@@ -269,7 +313,7 @@ def main() -> None:
         try:
             if raw:
                 tty.setraw(sys.stdin)  # pass bash's bytes through untouched
-            s = Session(stage, a.cols, a.rows, a.speed)
+            s = Session(stage, a.cols, a.rows, a.speed, show_keys=not a.no_keys)
             for i, name in enumerate(scenes):
                 if i:
                     s.pause(1.0)

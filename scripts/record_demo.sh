@@ -5,6 +5,7 @@
 #   scripts/record_demo.sh                    # every scene -> docs/assets/demo-cli-<scene>.gif
 #   scripts/record_demo.sh --scene detect     # one scene only (completion | detect | all)
 #   scripts/record_demo.sh --keep-cast        # also keep the .cast next to the GIF (e.g. for asciinema.org)
+#   scripts/record_demo.sh --no-keys          # without the key-press badges (Tab, Enter, ...) below the shell
 #
 # Options: --out-dir DIR (default docs/assets)  --cols N  --rows N  --font-size N
 #          --speed F (typing/pause speed factor, default 1)  --theme NAME (agg theme, default monokai)
@@ -14,7 +15,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out_dir="$repo/docs/assets"
 scenes=(completion detect)
-cols="" rows="" font_size=16 speed=1 theme=monokai idle_limit=2 keep_cast=0
+cols="" rows="" font_size=16 speed=1 theme=monokai idle_limit=2 keep_cast=0 keys_flag=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -27,7 +28,8 @@ while [[ $# -gt 0 ]]; do
     --theme)      theme="$2"; shift ;;
     --idle-limit) idle_limit="$2"; shift ;;
     --keep-cast)  keep_cast=1 ;;
-    -h|--help)    sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --no-keys)    keys_flag=--no-keys ;;
+    -h|--help)    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
   shift
@@ -56,10 +58,12 @@ record() {  # record SCENE -> $out_dir/demo-cli-SCENE.gif
   read -r c r < <(size_of "$scene")
   c="${cols:-$c}" r="${rows:-$r}"
   asciinema rec "$cast" --overwrite --quiet --idle-time-limit "$idle_limit" \
-    -c "python $repo/scripts/demo_cli.py --scene $scene --cols $c --rows $r --speed $speed"
+    -c "python $repo/scripts/demo_cli.py --scene $scene --cols $c --rows $r --speed $speed $keys_flag"
   echo  # the recorded session ends mid-line
   # asciinema 2.x records the size of the terminal it runs in, not the size the demo's
-  # shell was given; fix the header so agg renders exactly --cols x --rows.
+  # shell was given; fix the header so agg renders exactly --cols x --rows
+  # (plus the badge row below the shell unless --no-keys).
+  [[ -z $keys_flag ]] && r=$((r + 1))
   python - "$cast" "$c" "$r" <<'EOF'
 import json, sys
 path, cols, rows = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
