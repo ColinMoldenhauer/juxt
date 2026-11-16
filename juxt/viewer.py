@@ -89,6 +89,7 @@ _VALUE_HREF = "juxt:value/{axis}/{value}"
 _VALUE_HREF_RE = _re.compile(r"^juxt:value/(\d+)/(\d+)$")
 _AXIS_HREF = "juxt:axis/{axis}"
 _AXIS_HREF_RE = _re.compile(r"^juxt:axis/(\d+)$")
+_PATH_HREF = "juxt:path"
 
 # Width of the info sidebar's viewport that its text cannot use: the 8px body
 # margin and 4px document margin on each side, plus generous slack (measured,
@@ -1625,6 +1626,12 @@ class ImageView(QGraphicsView):
                      "cursor": 0, "caret": len(initial)}
         self.state_changed.emit()
 
+    def copy_path(self) -> None:
+        """Copy the current image's file path to the clipboard."""
+        path = self._key_to_path(self._key())
+        QApplication.clipboard().setText(path)
+        self._flash(f"copied: {path}")
+
     def _cmd_execute(self, cmd: str):
         parts = cmd.strip().split()
         if not parts:
@@ -1635,9 +1642,7 @@ class ImageView(QGraphicsView):
         if verb == "quit":
             QApplication.instance().quit()
         elif verb == "copy-path":
-            path = self._key_to_path(self._key())
-            QApplication.clipboard().setText(path)
-            self._flash(f"copied: {path}")
+            self.copy_path()
         elif verb == "copy-image":
             pm = self.pixmaps.get(self._key())
             if pm and not pm.isNull():
@@ -3163,6 +3168,7 @@ class InfoPanel(QTextEdit):
     """Read-only sidebar listing every axis; values are clickable links."""
 
     value_clicked = Signal(int, int)  # axis index, value index
+    path_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3191,6 +3197,7 @@ class InfoPanel(QTextEdit):
         # a reload that reorders the axes.
         self._expanded: dict[str, bool] = {}
         self._press_axis: int | None = None
+        self._press_path = False
         # href → full text, for every value the last layout had to elide.
         self._elided: dict[str, str] = {}
 
@@ -3210,31 +3217,39 @@ class InfoPanel(QTextEdit):
         if hasattr(w, "view"):
             w.view.setFocus()
         self._press_axis = None
+        self._press_path = False
         if event.button() != Qt.MouseButton.LeftButton:
             return
         target = _parse_value_href(href)
         if target is not None:
             self.value_clicked.emit(*target)
+        elif href == _PATH_HREF:
+            self._press_path = True
         else:
             self._press_axis = _parse_axis_href(href)
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
-        # A header toggles on release, and only for a plain click, so that
-        # dragging across one to select its text does not rebuild the
-        # document under the selection.
+        # A header toggles (and the path copies) on release, and only for a
+        # plain click, so that dragging across one to select its text does
+        # not rebuild the document under the selection.
         axis, self._press_axis = self._press_axis, None
-        if (axis is not None
-                and event.button() == Qt.MouseButton.LeftButton
-                and _parse_axis_href(self.anchorAt(event.position().toPoint())) == axis
-                and not self.textCursor().hasSelection()):
+        on_path, self._press_path = self._press_path, False
+        if (event.button() != Qt.MouseButton.LeftButton
+                or self.textCursor().hasSelection()):
+            return
+        href = self.anchorAt(event.position().toPoint())
+        if axis is not None and _parse_axis_href(href) == axis:
             self.toggle_axis(axis)
+        elif on_path and href == _PATH_HREF:
+            self.path_clicked.emit()
 
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
         href = self.anchorAt(event.position().toPoint())
         over_link = (_parse_value_href(href) is not None
-                     or _parse_axis_href(href) is not None)
+                     or _parse_axis_href(href) is not None
+                     or href == _PATH_HREF)
         self.viewport().setCursor(
             Qt.CursorShape.PointingHandCursor if over_link
             else Qt.CursorShape.IBeamCursor
@@ -3242,10 +3257,11 @@ class InfoPanel(QTextEdit):
 
     def viewportEvent(self, event):
         # Qt's own tooltip lookup did not reliably reach the viewport, so the
-        # panel answers it: a value cut short shows its full text, anything
-        # else shows nothing.
+        # panel answers it: a value cut short shows its full text, the path
+        # says what a click does, anything else shows nothing.
         if event.type() == QEvent.Type.ToolTip:
-            full = self._elided.get(self.anchorAt(event.pos()))
+            href = self.anchorAt(event.pos())
+            full = "click to copy" if href == _PATH_HREF else self._elided.get(href)
             if full:
                 QToolTip.showText(event.globalPos(), full, self.viewport())
             else:
@@ -3437,7 +3453,7 @@ class InfoPanel(QTextEdit):
             pad = max(0, worst_lines - self._line_count(path))
             path_html = (
                 f"<span style='color:{_HEADER_COLOR}'>path</span><br>"
-                f"{e(path)}" + "<br>" * pad + "<br><br>"
+                f'<a href="{_PATH_HREF}">{e(path)}</a>' + "<br>" * pad + "<br><br>"
             )
             # The rows depend on the viewport width, which the scrollbar
             # takes a slice of once the document outgrows it.  Lay out for
@@ -3755,6 +3771,7 @@ class MainWindow(QMainWindow):
         if show_info:
             self._info_panel.refresh(self.view)
         self._info_panel.value_clicked.connect(self.view.goto_value)
+        self._info_panel.path_clicked.connect(self.view.copy_path)
 
         # Docked opposite the info sidebar so the two can be open at once.
         self._shortcut_panel = ShortcutPanel()
