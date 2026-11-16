@@ -32,10 +32,10 @@ pip install juxt[ssh]
 
 ```bash
 juxt /path/to/plots/                        # auto-detect axes from a directory of images
-juxt "plots/{sensor}_{date}.png"            # explicit local template
+juxt plots/{sensor}_{date}.png              # explicit local template
 juxt "plots/*.png"                          # wildcard match, recursing into subdirs
 juxt myhost:/path/to/plots/                 # remote directory over SSH
-juxt "myhost:/path/{sensor}_{date}.png"     # remote template over SSH
+juxt myhost:/path/{sensor}_{date}.png       # remote template over SSH
 juxt config.yaml                            # explicit config file
 ```
 
@@ -156,13 +156,22 @@ autoload -U bashcompinit && bashcompinit
 eval "$(juxt --bash-completion)"
 ```
 
-Then `juxt plots/{sensor}/2⇥` completes at the prompt, as do the command-line options. ble.sh is handled as well, through its own hook. Reload the shell (`source ~/.bashrc`, or open a new terminal) for it to take effect.
+Then `juxt "plots/{sensor}/2⇥` completes at the prompt, as do the command-line options. Quote the template as shown if options follow it. An unquoted template runs fine, but bash 5.1 stops completing after an unquoted word with two or more placeholders, so the `--NAME` pins below would not complete. ble.sh is handled as well, through its own hook. Reload the shell (`source ~/.bashrc`, or open a new terminal) for it to take effect.
 
 Point `JUXT_COMPLETE` at `juxt-complete` if juxt lives in a virtualenv you do not activate:
 
 ```bash
 export JUXT_COMPLETE=~/env/juxt/bin/juxt-complete
 ```
+
+Once the template is on the line, the options after it complete too. The placeholders become `--NAME` pin flags, and a pin's values are looked up on disk, narrowed by the pins already typed:
+
+```
+$ juxt "plots/{sensor}/{model}/{date}.png" --sensor SMOS --model ⇥
+dobson  mironov  park-2019  wang-schmugge     # only what exists under SMOS
+```
+
+`--axis-h`, `--axis-v` and `--grid` complete the placeholder names, and `--grid-values` the values of the `--grid` axis. The lookup is the scan juxt runs at startup, limited to the placeholder you are on, and gives up after half a second (`JUXT_COMPLETE_TIMEOUT=SECONDS` to change it) so a slow network share cannot freeze the prompt. Remote templates, directories and YAML configs have nothing to look up, and a pin that finds nothing falls back to completing a path, which is what a `--root` pointing at unrelated trees needs.
 
 Placeholders standing for a known kind of value complete only as far as that value: `plots/{date}⇥` stops at `plots/{date}_` rather than swallowing the rest of the filename. The names that count are the ones listed under `placeholders:` in `~/.juxt/settings.yaml`, which juxt seeds with `date datetime time year month day doy` — edit or delete them, and completion follows. Date-style shorthands such as `{yyyy-mm-dd}` are recognised on sight, with or without an entry.
 
