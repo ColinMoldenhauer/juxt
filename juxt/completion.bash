@@ -64,13 +64,39 @@ _juxt_completion() {
     fi
 
     COMPREPLY=("${_juxt_complete_reply[@]}")
+    ((${#COMPREPLY[@]} == 1)) || return 0
+
+    # Inside an open quote (a template typed as "plots/{a}/{b}.png", which is
+    # how it has to be typed for the --NAME pins after it to complete at all
+    # on bash 5.1) readline replaces only the text after the quote and, on a
+    # lone match, closes the quote before the append character.
+    local word=${COMPREPLY[0]} quoted=0 below
+    [[ $cur == [\"\']* ]] && quoted=1
+
+    if [[ $word != *[/_.-] ]]; then
+        # A finished word gets its space.  Inside quotes readline adds it after
+        # the closing quote; one appended here would land inside the quotes.
+        if ((quoted)); then
+            compopt +o nospace 2>/dev/null
+        else
+            COMPREPLY[0]+=" "
+        fi
+        return 0
+    fi
 
     # -o nospace keeps the word open where completion stopped at a boundary --
-    # a directory, or a token separator before the next {placeholder}.  Anything
-    # else is a finished word and gets its space.
-    if ((${#COMPREPLY[@]} == 1)) && [[ ${COMPREPLY[0]} != *[/_.-] ]]; then
-        COMPREPLY[0]+=" "
+    # a directory, or a token separator before the next {placeholder}.  Inside
+    # quotes that is not enough, as the quote would still be closed.  A second
+    # candidate extending the word prevents it: readline then inserts just the
+    # shared part.  The level below makes for useful extra candidates, since
+    # it is what a listing shown right away (show-all-if-ambiguous) should show.
+    ((quoted)) || return 0
+    if _juxt_complete_words "$word" "${COMP_WORDS[@]:1:COMP_CWORD-1}"; then
+        for below in "${_juxt_complete_reply[@]}"; do
+            [[ $below == "$word"?* ]] && COMPREPLY+=("$below")
+        done
     fi
+    ((${#COMPREPLY[@]} > 1)) || COMPREPLY+=("$word ")
 }
 
 complete -o nospace -F _juxt_completion juxt

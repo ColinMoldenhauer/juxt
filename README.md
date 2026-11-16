@@ -32,10 +32,10 @@ pip install juxt[ssh]
 
 ```bash
 juxt /path/to/plots/                        # auto-detect axes from a directory of images
-juxt "plots/{sensor}_{date}.png"            # explicit local template
+juxt plots/{sensor}_{date}.png              # explicit local template
 juxt "plots/*.png"                          # wildcard match, recursing into subdirs
 juxt myhost:/path/to/plots/                 # remote directory over SSH
-juxt "myhost:/path/{sensor}_{date}.png"     # remote template over SSH
+juxt myhost:/path/{sensor}_{date}.png       # remote template over SSH
 juxt config.yaml                            # explicit config file
 ```
 
@@ -156,7 +156,7 @@ autoload -U bashcompinit && bashcompinit
 eval "$(juxt --bash-completion)"
 ```
 
-Then `juxt plots/{sensor}/2⇥` completes at the prompt, as do the command-line options. ble.sh is handled as well, through its own hook. Reload the shell (`source ~/.bashrc`, or open a new terminal) for it to take effect.
+Then `juxt "plots/{sensor}/2⇥` completes at the prompt, as do the command-line options. Quote the template as shown if options follow it. An unquoted template runs fine, but bash 5.1 stops completing after an unquoted word with two or more placeholders, so the `--NAME` pins below would not complete. ble.sh is handled as well, through its own hook. Reload the shell (`source ~/.bashrc`, or open a new terminal) for it to take effect.
 
 Point `JUXT_COMPLETE` at `juxt-complete` if juxt lives in a virtualenv you do not activate:
 

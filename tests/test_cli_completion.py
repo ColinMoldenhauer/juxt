@@ -41,6 +41,11 @@ class TestCliComplete:
         assert words == ["plots/{sensor}/{overpass}/d1.png",
                          "plots/{sensor}/{overpass}/d2.png"]
 
+    def test_an_open_quote_is_left_to_the_shell(self, in_plot_dir):
+        """Inside an open quote the shell replaces only the text after it."""
+        assert cli_complete('"plots/{sensor}/') == ["plots/{sensor}/AM/", "plots/{sensor}/PM/"]
+        assert cli_complete("'plot") == ["plots/"]
+
     def test_trailing_placeholder_offers_one_shared_completion(self, in_plot_dir):
         assert cli_complete("plots/{sensor}") == ["plots/{sensor}/"]
 
@@ -192,7 +197,7 @@ def _run_completion(cwd: Path, words: list[str], setup: str = "") -> list[str]:
     PATH starts out empty and JUXT_COMPLETE is cleared, so each test states
     exactly which helper it offers.
     """
-    quoted = " ".join(f'"{w}"' for w in words)
+    quoted = " ".join(shlex.quote(w) for w in words)
     script = f'''
         set -u
         export PATH=/nonexistent
@@ -319,6 +324,33 @@ class TestBashFunction:
         reply = _run_completion(tmp_path, ["juxt", "plots/{yyyy-mm-dd}"],
                                 self._with_helper(helper))
         assert reply == ["plots/{yyyy-mm-dd}_"]
+
+    def test_a_quoted_path_is_completed(self, nested_plot_dir, helper):
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", '"plots/{sensor}/'],
+                                self._with_helper(helper))
+        assert reply == ["plots/{sensor}/AM/", "plots/{sensor}/PM/"]
+
+    def test_a_quoted_finished_word_leaves_the_space_to_readline(self, nested_plot_dir, helper):
+        """Readline closes the quote first; a space of ours would end up inside it."""
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", '"plots/A/AM/d1'],
+                                self._with_helper(helper))
+        assert reply == ["plots/A/AM/d1.png"]
+
+    def test_a_quoted_word_on_a_boundary_stays_open(self, nested_plot_dir, helper):
+        """A lone match would get its quote closed, so the level below joins it."""
+        reply = _run_completion(nested_plot_dir.parent, ["juxt", '"plots/{sensor}'],
+                                self._with_helper(helper))
+        assert reply == ["plots/{sensor}/", "plots/{sensor}/AM/", "plots/{sensor}/PM/"]
+
+    def test_a_quoted_word_with_nothing_below_still_stays_open(self, tmp_path):
+        stub = _stub(tmp_path / "juxt-complete", "printf 'plots/empty/\\n'")
+        reply = _run_completion(tmp_path, ["juxt", '"plots/em'], self._with_helper(stub))
+        assert reply == ["plots/empty/", "plots/empty/ "]
+
+    def test_pins_complete_after_a_quoted_template(self, nested_plot_dir, helper):
+        words = ["juxt", '"plots/{sensor}/{overpass}/{date}.png"', "--sen"]
+        reply = _run_completion(nested_plot_dir.parent, words, self._with_helper(helper))
+        assert reply == ["--sensor "]
 
     def test_a_crlf_helper_yields_clean_candidates(self, nested_plot_dir, tmp_path):
         """An older or foreign helper answering with CRLF must not leak the CR.

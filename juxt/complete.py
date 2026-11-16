@@ -757,9 +757,11 @@ def cli_complete(cur: str, prev: str = "", words: list[str] | None = None) -> li
             return []  # the value is free text juxt cannot know
 
     from .detect import _is_remote_pattern
-    if _is_remote_pattern(cur):
+    if _is_remote_pattern(word):
         return []  # listing a remote needs a live SFTP session — app only
-    return completion_words(cur, local_listdir())
+    # Inside an open quote the shell replaces only the text after the quote,
+    # so the candidates are built from (and returned without) it.
+    return completion_words(word, local_listdir())
 
 
 def bash_script() -> str:
