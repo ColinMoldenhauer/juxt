@@ -138,14 +138,29 @@ grid, so the dialogue doubles as an editor for the current view.
 
 ---
 
+## Colour theme
+
+juxt comes in a dark and a light theme, covering the canvas behind the image, both sidebars, the status bar, the dialogues and the startup window. Choose one in `~/.juxt/settings.yaml`:
+
+```yaml
+appearance:
+  theme: auto       # auto | dark | light
+```
+
+`auto` (the default) follows the operating system and switches along with it while juxt runs. Where the system reports no colour scheme, as on plain X11 or over X forwarding, `auto` picks dark. `:theme dark`, `:theme light` and `:theme auto` switch for the current session only; `:theme` on its own flips between dark and light. Saving a different `theme` in the settings file applies it straight away.
+
+The images themselves are never recoloured: a plot keeps the background it was drawn with.
+
+---
+
 ## Highlight format
 
 Three places show the current selection in colour: the active value in the info sidebar, the active axis in the status-bar coordinates, and the selected entry in a candidate list. All three are configurable in `~/.juxt/settings.yaml`:
 
 ```yaml
 highlight:
-  selected: "#6af:{}"       # info sidebar / active axis
-  candidates: "#6af:[{}]"   # status-bar candidate lists
+  selected: "accent:{}"     # info sidebar / active axis
+  candidates: "accent:[{}]" # status-bar candidate lists
 ```
 
 Each value is a single format string:
@@ -156,7 +171,7 @@ Each value is a single format string:
 
 | Part | Meaning |
 |---|---|
-| `style` | A colour (`#6af`, `#66aaff` or a CSS colour name) plus any of `bold`, `italic`, `underline`, separated by spaces. Omit the whole `style:` part to leave the colour untouched. |
+| `style` | A colour (`#6af`, `#66aaff`, a CSS colour name, or `accent` for the [theme's](#colour-theme) accent colour) plus any of `bold`, `italic`, `underline`, separated by spaces. Omit the whole `style:` part to leave the colour untouched. |
 | `template` | Free text around `{}`, which stands for the value. The text is inserted literally, so `<{}>` really shows angle brackets. |
 
 ```yaml
@@ -177,6 +192,8 @@ For anything the two fields cannot express, prefix the spec with `html:` and wri
 highlight:
   candidates: 'html:<span style="background:#334; color:#fff">[{}]</span>'
 ```
+
+A fixed colour stays the same in both themes, so `accent` is the safer choice unless you always use one theme. Settings files from before themes existed hold the old defaults, `"#6af:{}"` and `"#6af:[{}]"`; juxt reads exactly those two as `accent`.
 
 A spec without a `{}` placeholder is ignored: juxt logs a warning and keeps the default. Changes take effect as soon as the settings file is saved, no restart needed.
 

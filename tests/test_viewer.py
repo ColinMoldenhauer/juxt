@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import pytest
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPixmap, QTextCursor
 
+from juxt import theme as _theme
 from juxt.viewer import ImageView, NavMode
 
 
@@ -361,7 +363,7 @@ class TestInfoPanelLinks:
         assert image_view.pos == [0, 0]
 
     def test_current_value_uses_highlight_colour(self, image_view, qtbot):
-        from juxt.viewer import _HL_DEFAULT, _LINK_COLOR
+        from juxt import theme
 
         panel = self._panel(image_view, qtbot)
         colours = _anchor_colours(panel)
@@ -369,12 +371,12 @@ class TestInfoPanelLinks:
             f"juxt:value/{i}/{image_view.pos[i]}"
             for i in range(len(image_view.axis_values))
         }
-        hl = QColor(_HL_DEFAULT.color).name()
+        hl = QColor(theme.current().accent).name()
         assert cur_hrefs, "no axes to check"
         value_colours = {h: c for h, c in colours.items() if h.startswith("juxt:value/")}
         assert value_colours, "no value links found"
         for href, colour in value_colours.items():
-            expected = hl if href in cur_hrefs else QColor(_LINK_COLOR).name()
+            expected = hl if href in cur_hrefs else QColor(theme.current().text).name()
             assert colour == expected, f"{href}: {colour} != {expected}"
 
     def test_custom_highlight_format_applies(self, image_view, qtbot):
@@ -1579,7 +1581,7 @@ class TestStatusCandidateHighlight:
         from juxt.viewer import _HL_DEFAULT_CANDIDATES, _candidate_html
 
         html = _candidate_html(["alpha", "beta"], 1)
-        assert f'color:{_HL_DEFAULT_CANDIDATES.color}' in html
+        assert f'color:{_theme.current().accent}' in html
         assert ">[beta]</span>" in html
         assert "[alpha]" not in html
 
@@ -1614,7 +1616,7 @@ class TestStatusCandidateHighlight:
         }
         status = self._status(main_window)
         vals = main_window.view.axis_values[0]
-        colour = _HL_DEFAULT_CANDIDATES.color
+        colour = _theme.current().accent
         assert f'color:{colour}' in status
         assert f">[{vals[1]}]</span>" in status
         assert f"[{vals[0]}]" not in status
@@ -1636,7 +1638,7 @@ class TestStatusCandidateHighlight:
 
         main_window.view._cmd = {"phase": "verb", "query": "fit", "cursor": 0}
         status = self._status(main_window)
-        assert f'color:{_HL_DEFAULT_CANDIDATES.color}' in status
+        assert f'color:{_theme.current().accent}' in status
         assert ">[fit]</span>" in status
 
     def test_spaces_are_preserved_as_nbsp(self, main_window):
@@ -2356,12 +2358,13 @@ class TestShortcutPanel:
         assert "<table" in html.lower()
 
     def test_headers_and_keys_are_coloured_apart(self, keys_window):
-        from juxt.viewer import _HEADER_COLOR, _KEY_COLOR
+        from juxt import theme
 
+        t = theme.current()
         html = keys_window._shortcut_panel.toHtml().lower()
-        assert _HEADER_COLOR.lower() in html
-        assert _KEY_COLOR.lower() in html
-        assert _HEADER_COLOR.lower() != _KEY_COLOR.lower()
+        assert t.header in html
+        assert t.accent in html
+        assert t.header != t.accent
 
     def test_seek_mode_replaces_the_letter_section(self, keys_window):
         keys_window.view._cmd_execute("mode seek")
@@ -2538,15 +2541,17 @@ class TestMissingCommandsAndDimming:
         assert view._missing_along(0) == [False, True, False]
 
     def test_sidebar_dims_only_missing_on_focused_axis(self, view, qtbot):
-        from juxt.viewer import InfoPanel, _DIM_COLOR
+        from juxt import theme
+        from juxt.viewer import InfoPanel
+        dim = theme.current().dim
         panel = InfoPanel()
         qtbot.addWidget(panel)
         view._dim_missing = True
         panel.refresh(view)
-        assert _DIM_COLOR in panel.toHtml().lower() or "#555555" in panel.toHtml().lower()
+        assert dim in panel.toHtml().lower()
         view._dim_missing = False
         panel.refresh(view)
-        assert "#555555" not in panel.toHtml().lower()
+        assert dim not in panel.toHtml().lower()
 
 
 # ---------------------------------------------------------------------------
