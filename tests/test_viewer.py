@@ -1304,6 +1304,41 @@ class TestInfoPanelExpand:
         assert not self._one_per_row(panel, 0, 11)
         assert panel.textCursor().hasSelection()
 
+    def _path_point(self, panel):
+        span = panel._fragment_span_for_href("juxt:path")
+        cursor = QTextCursor(panel.document())
+        cursor.setPosition(span[0] + 2)
+        return panel.cursorRect(cursor).center(), span
+
+    def test_path_is_a_link(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        assert panel._fragment_span_for_href("juxt:path") is not None
+
+    def test_clicking_the_path_copies_it(self, packed_view, qtbot):
+        from PySide6.QtWidgets import QApplication
+
+        panel = self._panel(packed_view, qtbot)
+        panel.path_clicked.connect(packed_view.copy_path)
+        QApplication.clipboard().setText("")
+        pos, _span = self._path_point(panel)
+        qtbot.mouseClick(panel.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+        path = packed_view._key_to_path(packed_view._key())
+        assert QApplication.clipboard().text() == path
+
+    def test_dragging_across_the_path_selects_instead_of_copying(self, packed_view, qtbot):
+        panel = self._panel(packed_view, qtbot)
+        clicks = []
+        panel.path_clicked.connect(lambda: clicks.append(1))
+        start, span = self._path_point(panel)
+        cursor = QTextCursor(panel.document())
+        cursor.setPosition(span[1] - 1)
+        end = panel.cursorRect(cursor).center()
+        qtbot.mousePress(panel.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        qtbot.mouseMove(panel.viewport(), end)
+        qtbot.mouseRelease(panel.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        assert not clicks
+        assert panel.textCursor().hasSelection()
+
     def test_toggle_does_not_chase_the_navigation_target(self, scrollable_view, qtbot):
         """A toggle is not a navigation: a leftover scroll-to target from the
         last key press must not yank the sidebar away from the header."""
