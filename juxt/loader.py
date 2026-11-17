@@ -13,6 +13,8 @@ log = logging.getLogger(__name__)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 
+from .core import combo_paths
+
 if TYPE_CHECKING:
     from .config import RemoteConfig
 
@@ -38,20 +40,15 @@ def preload(
     progress: Callable[[int, int], None] | None = None,
 ) -> dict[tuple[int, ...], QPixmap]:
     """Load every image into memory. Returns dict keyed by index-tuple."""
-    axis_names = list(axes.keys())
-    axis_values = list(axes.values())
-    combos = list(product(*axis_values))
+    combos = list(combo_paths(template, axes))
 
     pixmaps: dict[tuple[int, ...], QPixmap] = {}
-    for i, combo in enumerate(combos):
+    for i, (key, path) in enumerate(combos):
         if progress:
             progress(i, len(combos))
-        mapping = dict(zip(axis_names, combo))
-        path = template.format(**mapping)
         pm = QPixmap(path)
         if pm.isNull():
             pm = _error_pixmap(path)
-        key = tuple(values.index(v) for values, v in zip(axis_values, combo))
         pixmaps[key] = pm
 
     if progress:

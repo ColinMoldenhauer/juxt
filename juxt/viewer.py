@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .core import Navigator, build_key_map, key_to_path
 from .fuzzy import fuzzy_filter, prefix_filter
 from .complete import (
     complete_path,
@@ -856,15 +857,13 @@ class ImageView(QGraphicsView):
 
         self.config = config
         self.pixmaps = pixmaps
-        self.axis_names = list(config.axes.keys())
-        self.axis_values = list(config.axes.values())
-        self.n_axes = len(self.axis_names)
-
-        self.pos: list[int] = [0] * self.n_axes
-        self.prev: list[int] | None = None
-
-        # Most recently focused axis first; focus_stack[0] → ←/→, [1] → ↑/↓
-        self.focus_stack: list[int] = list(range(self.n_axes))
+        # Position, history, focus stack and axis locks live in the Qt-free
+        # Navigator (shared with the notebook widget); the attributes below
+        # (pos, prev, focus_stack, axis_names, ...) are thin views onto it.
+        self.nav = Navigator(
+            list(config.axes.keys()), list(config.axes.values()),
+            is_missing=self._is_missing, skip_missing=skip_missing,
+        )
 
         # letter → axis index; rebuilt when mode changes
         self.key_to_axis: dict[str, int] = {}
@@ -900,7 +899,6 @@ class ImageView(QGraphicsView):
         self._seek_greedy: bool = seek_greedy
         self._seek_fuzzy: bool = seek_fuzzy
         self._swap_modifiers: bool = swap_modifiers
-        self._skip_missing: bool = skip_missing
         self._dim_missing: bool = dim_missing
         self._sidebar_copy: str = sidebar_copy
         self._keybindings: dict[tuple[int, int], str] = {}
@@ -926,8 +924,8 @@ class ImageView(QGraphicsView):
         self._pattern_progress.connect(self._on_pattern_progress)
         self._pattern_dlg = None
         self._initial_fit_done = False
-        self._locked_h: int | None = self.axis_names.index(axis_h) if axis_h and axis_h in self.axis_names else None
-        self._locked_v: int | None = self.axis_names.index(axis_v) if axis_v and axis_v in self.axis_names else None
+        self.nav.locked_h = self.axis_names.index(axis_h) if axis_h and axis_h in self.axis_names else None
+        self.nav.locked_v = self.axis_names.index(axis_v) if axis_v and axis_v in self.axis_names else None
 
         # Active incremental-search state (value picker and multi-select).
         # None  = no active selection
@@ -1171,76 +1169,65 @@ class ImageView(QGraphicsView):
         self.grid_mode_changed.emit(None)
         self._refresh()
 
+    # Navigation state is owned by self.nav; these properties keep the
+    # long-standing attribute names working for the rest of the viewer.
+    pos = property(lambda self: self.nav.pos,
+                   lambda self, v: setattr(self.nav, "pos", v))
+    prev = property(lambda self: self.nav.prev,
+                    lambda self, v: setattr(self.nav, "prev", v))
+    focus_stack = property(lambda self: self.nav.focus_stack,
+                           lambda self, v: setattr(self.nav, "focus_stack", v))
+    _locked_h = property(lambda self: self.nav.locked_h,
+                         lambda self, v: setattr(self.nav, "locked_h", v))
+    _locked_v = property(lambda self: self.nav.locked_v,
+                         lambda self, v: setattr(self.nav, "locked_v", v))
+    _skip_missing = property(lambda self: self.nav.skip_missing,
+                             lambda self, v: setattr(self.nav, "skip_missing", v))
+    axis_names = property(lambda self: self.nav.axis_names)
+    axis_values = property(lambda self: self.nav.axis_values)
+    n_axes = property(lambda self: self.nav.n_axes)
+
     def _h_axis(self) -> int:
-        return self._locked_h if self._locked_h is not None else self.focus_stack[0]
+        return self.nav.h_axis()
 
     def _v_axis(self) -> int | None:
-        if self._locked_v is not None:
-            return self._locked_v
-        return self.focus_stack[1] if len(self.focus_stack) >= 2 else None
+        return self.nav.v_axis()
 
     def _is_missing(self, pos) -> bool:
         return isinstance(self.pixmaps.get(tuple(pos)), MissingPixmap)
 
     def _missing_along(self, axis: int) -> list[bool]:
         """Per value of *axis*: is the combination (others held fixed) missing?"""
-        probe = list(self.pos)
-        flags = []
-        for j in range(len(self.axis_values[axis])):
-            probe[axis] = j
-            flags.append(self._is_missing(probe))
-        return flags
+        return self.nav.missing_along(axis)
 
     def _step(self, axis: int, delta: int) -> int:
-        """Index reached by stepping *delta* on *axis*, wrapping around.
-
-        With skip_missing on, combinations without a file are passed over;
-        if every other value on the axis is missing the position stays put.
-        """
-        n = len(self.axis_values[axis])
-        cur = self.pos[axis]
-        if not self._skip_missing:
-            return (cur + delta) % n
-        probe = list(self.pos)
-        for i in range(1, n + 1):
-            probe[axis] = (cur + delta * i) % n
-            if not self._is_missing(probe):
-                return probe[axis]
-        return cur
+        """Index reached by stepping *delta* on *axis* (see Navigator.step_target)."""
+        return self.nav.step_target(axis, delta)
 
     def _navigate(self, axis: int, delta: int, ensure_visible: bool = False):
-        n = len(self.axis_values[axis])
-        self.prev = list(self.pos)
         if axis == self._grid_axis and self._grid_widget is not None:
             # The grid axis scrolls inside the focused pane only, through the
             # values no other pane is showing.
+            self.prev = list(self.pos)
             cands = self._grid_candidates()
             cur = self.pos[axis]
             k = cands.index(cur) if cur in cands else 0
             self.pos[axis] = cands[(k + delta) % len(cands)] if cands else cur
         else:
-            self.pos[axis] = self._step(axis, delta)
+            self.nav.step(axis, delta)
         self._active_axis = axis
         self._active_axis_timer.start(1000)
         self._refresh(sidebar_target=(axis, self.pos[axis]) if ensure_visible else None)
 
     def _focus(self, axis: int):
-        if axis in self.focus_stack:
-            self.focus_stack.remove(axis)
-        self.focus_stack.insert(0, axis)
+        self.nav.focus(axis)
 
     def goto_value(self, axis: int, val_idx: int):
         """Jump to *val_idx* on *axis* and focus it (info-sidebar clicks)."""
-        if not 0 <= axis < len(self.axis_values):
+        if not self.nav.goto(axis, val_idx):
             return
-        if not 0 <= val_idx < len(self.axis_values[axis]):
-            return
-        self._focus(axis)
         self._active_axis = axis
         self._active_axis_timer.start(1000)
-        if self.pos[axis] != val_idx:
-            self.prev = list(self.pos)
-            self.pos[axis] = val_idx
         self._refresh()
 
     # ── incremental-search (value picker / multi-select) ─────────────────────
@@ -1676,16 +1663,10 @@ class ImageView(QGraphicsView):
             self._locked_v = None
             self.state_changed.emit()
         elif verb == "swap-axes":
-            h, v = self._h_axis(), self._v_axis()
-            if v is not None:
-                if self._locked_h is not None or self._locked_v is not None:
-                    self._locked_h, self._locked_v = v, h
-                else:
-                    self.focus_stack[0], self.focus_stack[1] = v, h
+            if self.nav.swap_axes():
                 self.state_changed.emit()
         elif verb == "switch-last":
-            if self.prev is not None:
-                self.pos, self.prev = self.prev, list(self.pos)
+            if self.nav.toggle_last():
                 self._refresh()
         elif verb == "grid":
             raw_args = parts[1:] if len(parts) > 1 else []
@@ -1828,31 +1809,7 @@ class ImageView(QGraphicsView):
 
     def _rebuild_key_to_axis(self):
         """Recompute letter→axis-index, filling any gaps with _auto_keys."""
-        from .config import _auto_keys
-        axes_dict = {name: self.axis_values[i] for i, name in enumerate(self.axis_names)}
-
-        # Start from auto-assigned keys so every axis gets a letter if possible
-        merged: dict[str, str] = _auto_keys(axes_dict)
-
-        # User-configured keys override auto assignments for their specific letters
-        for ch, name in self.config.keys.items():
-            if name in self.axis_names:
-                merged[ch] = name
-
-        # Remove any letter that ended up pointing at an axis that already has
-        # a better (user-configured) letter, to avoid duplicate axis entries
-        axis_to_ch: dict[str, str] = {}
-        user_keys = {ch for ch in self.config.keys if self.config.keys[ch] in self.axis_names}
-        for ch, name in list(merged.items()):
-            if ch in user_keys:
-                axis_to_ch[name] = ch          # user binding wins unconditionally
-            elif name not in axis_to_ch:
-                axis_to_ch[name] = ch          # first auto assignment wins
-
-        self.key_to_axis = {
-            ch: self.axis_names.index(name)
-            for name, ch in axis_to_ch.items()
-        }
+        self.key_to_axis = build_key_map(self.axis_names, self.axis_values, self.config.keys)
 
     # ── flash message ────────────────────────────────────────────────────────
 
@@ -1919,10 +1876,7 @@ class ImageView(QGraphicsView):
     # ── file watcher ─────────────────────────────────────────────────────────
 
     def _key_to_path(self, key: tuple) -> str:
-        path = self.config.template
-        for i, name in enumerate(self.axis_names):
-            path = path.replace(f"{{{name}}}", self.axis_values[i][key[i]])
-        return path
+        return key_to_path(self.config.template, self.axis_names, self.axis_values, key)
 
     def _build_path_to_key(self) -> dict[str, tuple]:
         import itertools
@@ -2168,12 +2122,7 @@ class ImageView(QGraphicsView):
 
         self.config = new_config
         self.pixmaps = new_pixmaps
-        self.axis_names = new_axis_names
-        self.axis_values = new_axis_values
-        self.n_axes = len(new_axis_names)
-        self.pos = new_pos
-        self.prev = None
-        self.focus_stack = list(range(self.n_axes))
+        self.nav.reset(new_axis_names, new_axis_values, pos=new_pos)
         self._locked_h = new_axis_names.index(old_locked_h_name) if old_locked_h_name in new_axis_names else None
         self._locked_v = new_axis_names.index(old_locked_v_name) if old_locked_v_name in new_axis_names else None
         self._rebuild_key_to_axis()
@@ -2216,12 +2165,7 @@ class ImageView(QGraphicsView):
             self._exit_grid()
         self.config = new_config
         self.pixmaps = new_pixmaps
-        self.axis_names = new_axis_names
-        self.axis_values = new_axis_values
-        self.n_axes = len(new_axis_names)
-        self.pos = new_pos
-        self.prev = None
-        self.focus_stack = list(range(self.n_axes))
+        self.nav.reset(new_axis_names, new_axis_values, pos=new_pos)
         self._locked_h = new_axis_names.index(old_h_name) if old_h_name in new_axis_names else None
         self._locked_v = new_axis_names.index(old_v_name) if old_v_name in new_axis_names else None
         self._sel = None
@@ -2615,14 +2559,7 @@ class ImageView(QGraphicsView):
             self._exit_grid()
         self.config = new_config
         self.pixmaps = new_pixmaps
-        self.axis_names = list(new_config.axes.keys())
-        self.axis_values = list(new_config.axes.values())
-        self.n_axes = len(self.axis_names)
-        self.pos = [0] * self.n_axes
-        self.prev = None
-        self.focus_stack = list(range(self.n_axes))
-        self._locked_h = None
-        self._locked_v = None
+        self.nav.reset(list(new_config.axes.keys()), list(new_config.axes.values()))
         self._rebuild_key_to_axis()
 
         # Restart watching with the new config
@@ -2775,27 +2712,19 @@ class ImageView(QGraphicsView):
                 self._navigate(v, -1)
             return
         if k == Qt.Key_Space:
-            if self.prev is not None:
-                self.pos, self.prev = self.prev, list(self.pos)
+            if self.nav.toggle_last():
                 self._refresh()
             return
         if k == Qt.Key_Home:
-            self.prev = list(self.pos)
-            self.pos[self._h_axis()] = 0
+            self.nav.first()
             self._refresh()
             return
         if k == Qt.Key_End:
-            h = self._h_axis()
-            self.prev = list(self.pos)
-            self.pos[h] = len(self.axis_values[h]) - 1
+            self.nav.last()
             self._refresh()
             return
         if Qt.Key_1 <= k <= Qt.Key_9:
-            idx = k - Qt.Key_1
-            h = self._h_axis()
-            if idx < len(self.axis_values[h]):
-                self.prev = list(self.pos)
-                self.pos[h] = idx
+            if self.nav.jump(k - Qt.Key_1):
                 self._refresh()
             return
         if k in (Qt.Key_Return, Qt.Key_Enter):
