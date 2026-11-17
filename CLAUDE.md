@@ -85,6 +85,7 @@ Triggered by `:`. Type a command and press Enter to execute; Escape or Backspace
 | `:fullscreen` | Toggle fullscreen |
 | `:mode tap\|seek\|pin` | Switch navigation mode |
 | `:switch-last` | Toggle between current and previous position (same as Spacebar) |
+| `:theme auto\|dark\|light` | Switch the colour theme for this session (no argument flips dark/light) |
 | `:version` | Show the juxt version (`juxt --version` prints it and exits) |
 | `:grid-dialog` | Open the grid builder dialogue (same as Ctrl+Shift+G) |
 

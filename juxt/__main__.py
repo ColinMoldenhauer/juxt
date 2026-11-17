@@ -39,6 +39,7 @@ from .detect import (
     resolve_wildcard_template,
 )
 from .loader import preload, preload_remote
+from . import theme
 from .settings import load_settings
 from .startup import StartupDialog
 from .viewer import MainWindow
@@ -445,6 +446,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("juxt")
+    theme.apply(settings.theme)   # before the startup window, so it matches
     _startup_screen = app.screenAt(QCursor.pos()) or app.primaryScreen()
     _logo = Path(__file__).parent / "assets" / "logo_transparent.ico"
     if not _logo.exists():  # fallback for editable installs
@@ -643,6 +645,7 @@ def main():
         show_info=args.info,
         show_status_bar=args.status_bar,
         show_keys=args.keys,
+        theme=settings.theme,
     )
     window.move(_startup_screen.geometry().topLeft())
     window.showMaximized()

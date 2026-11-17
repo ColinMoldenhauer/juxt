@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from . import theme as _theme
 from .fuzzy import fuzzy_filter, prefix_filter
 from .complete import (
     complete_path,
@@ -64,20 +65,33 @@ log = logging.getLogger(__name__)
 
 # Fallback highlight formats, used until settings are applied.
 _HL_DEFAULT = parse_highlight(DEFAULT_HIGHLIGHT)
-_DIM_COLOR = "#555"
 _HL_DEFAULT_CANDIDATES = parse_highlight(DEFAULT_HIGHLIGHT_CANDIDATES)
 
-# Colour of a non-highlighted value link in the info sidebar.
-_LINK_COLOR = "#ddd"
+# Colours come from the active theme (juxt/theme.py) at paint time.  In the
+# sidebars, section headers ("path", an axis name, "view", …) use the warm
+# `header` colour against the blue `accent` used for anything interactive, so
+# a header reads as a label rather than as something to click; key chords in
+# the shortcut sidebar pick up the accent, so a chord separates from its
+# description at a glance.
 
-# Section headers in both sidebars ("path", an axis name, "view", …).  Warm
-# against the blue used for anything interactive, so a header reads as a label
-# rather than as something to click.
-_HEADER_COLOR = "#d8a657"
 
-# Key chords in the shortcut sidebar, picking up the app's accent so the chord
-# separates from its description at a glance.
-_KEY_COLOR = "#66aaff"
+def _panel_css() -> str:
+    """Widget stylesheet shared by both sidebars."""
+    t = _theme.current()
+    return (
+        f"QTextEdit {{ background: {t.panel}; color: {t.text}; "
+        "font-family: 'Courier New', monospace; font-size: 9pt; "
+        "border: none; padding: 8px; }"
+    )
+
+
+def _panel_body() -> str:
+    """Opening of a sidebar document, up to and including `<body>`."""
+    t = _theme.current()
+    return (
+        "<html><body style='font-family:\"Courier New\",monospace; "
+        f"font-size:9pt; color:{t.text}; background:{t.panel}; margin:8px;'>"
+    )
 
 # Floor for the shortcut sidebar's key column; the real width is measured from
 # the chords actually on show (see ShortcutPanel._key_column_px).
@@ -109,7 +123,7 @@ def _hl_css(hl: Highlight) -> str:
     """Inline CSS for a parsed highlight format."""
     parts = []
     if hl.color:
-        parts.append(f"color:{hl.color}")
+        parts.append(f"color:{_theme.resolve_color(hl.color)}")
     if hl.bold:
         parts.append("font-weight:bold")
     if hl.italic:
@@ -336,6 +350,7 @@ _COMMANDS = [
     "write",
     "swap-axes",
     "switch-last",
+    "theme",
     "zoom",
 ]
 
@@ -362,6 +377,7 @@ _CMD_ARGS: dict[str, list[str]] = {
     "remove-value": [],
     "skip-missing": ["on", "off"],
     "subset": [],   # axis name; the values are then edited as free text
+    "theme": ["auto", "dark", "light"],
     "watch": ["true", "false"],
     "write": [],    # free-text path; empty → file dialog
     "zoom": ["50", "75", "100", "150", "200"],
@@ -440,6 +456,7 @@ _COMMAND_HELP: dict[str, str] = {
     "swap-axes":    "swap the ←/→ and ↑/↓ axis bindings",
     "skip-missing": "skip combinations with no file when cycling  (on / off)",
     "switch-last":  "toggle between current and previous position",
+    "theme":        "switch the colour theme  (auto / dark / light; no argument flips dark and light)",
     "watch":        "enable / disable / configure file watching",
     "zoom":         "set zoom level  (e.g. zoom 150)",
 }
@@ -575,10 +592,6 @@ def _window_title(
     return f"juxt | {lead}{path}" + (f" {pins}" if pins else "")
 
 
-# Focus accent, matching the :default button border in dialogs.py.
-_ACCENT = QColor(102, 170, 255)
-
-
 class _CellView(QGraphicsView):
     """Single-image viewport used inside GridWidget."""
 
@@ -601,10 +614,14 @@ class _CellView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.setBackgroundBrush(QColor(25, 25, 25))
+        self.apply_theme()
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+
+    def apply_theme(self):
+        self.setBackgroundBrush(QColor(_theme.current().canvas))
+        self.viewport().update()
 
     def set_pixmap(self, pm: QPixmap):
         self._item.setPixmap(pm)
@@ -671,10 +688,12 @@ class _CellView(QGraphicsView):
     def drawForeground(self, painter: QPainter, _rect):
         painter.save()
         painter.resetTransform()   # switch to viewport pixel coordinates
+        # Focus accent, matching the :default button border in dialogs.py.
+        accent = QColor(_theme.current().accent)
         if self._focused:
             # Marks the cell the grid axis is currently on — the one that
             # scrolls the window when it steps past an edge.
-            painter.setPen(QPen(_ACCENT, 2))
+            painter.setPen(QPen(accent, 2))
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(self.viewport().rect().adjusted(1, 1, -1, -1))
         if self._label_text:
@@ -683,7 +702,9 @@ class _CellView(QGraphicsView):
             text_w = fm.horizontalAdvance(self._label_text)
             text_h = fm.height()
             bg = QRectF(margin, margin, text_w + 2 * pad_x, text_h + 2 * pad_y)
-            painter.fillRect(bg, _ACCENT if self._focused else QColor(0, 0, 0, 160))
+            # The label sits on the image, not on the theme's background,
+            # so only the focused one takes a theme colour.
+            painter.fillRect(bg, accent if self._focused else QColor(0, 0, 0, 160))
             painter.setPen(QColor(255, 255, 255) if self._focused
                            else QColor(224, 224, 224))
             painter.drawText(
@@ -756,6 +777,10 @@ class GridWidget(QWidget):
             cell.zoomed.connect(lambda t, c=cell: self._on_zoom(t, c))
             cell.clicked.connect(lambda i=i: self.focus_requested.emit(i))
             cell.menu_requested.connect(self._image_view.show_image_menu)
+
+    def apply_theme(self):
+        for cell in self._cells:
+            cell.apply_theme()
 
     # ── sync handlers ─────────────────────────────────────────────────────────
 
@@ -862,6 +887,7 @@ class ImageView(QGraphicsView):
     toggle_bar = Signal()
     toggle_info = Signal()
     toggle_keys = Signal()
+    theme_requested = Signal(str)       # "auto" / "dark" / "light", or "" to flip
     config_changed = Signal()           # emitted after reload/pattern successfully replaces config
     grid_mode_changed = Signal(object)  # emits GridWidget on enter, None on exit
     _poll_result = Signal(object)       # emitted from poll worker; carries list or Exception
@@ -989,7 +1015,7 @@ class ImageView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.setBackgroundBrush(QColor(25, 25, 25))
+        self.setBackgroundBrush(QColor(_theme.current().canvas))
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
@@ -1626,6 +1652,13 @@ class ImageView(QGraphicsView):
                      "cursor": 0, "caret": len(initial)}
         self.state_changed.emit()
 
+    def apply_theme(self) -> None:
+        """Repaint the canvas, and every grid cell, for the active theme."""
+        self.setBackgroundBrush(QColor(_theme.current().canvas))
+        if self._grid_widget is not None:
+            self._grid_widget.apply_theme()
+        self.viewport().update()
+
     def copy_path(self) -> None:
         """Copy the current image's file path to the clipboard."""
         path = self._key_to_path(self._key())
@@ -1693,6 +1726,12 @@ class ImageView(QGraphicsView):
             from PySide6.QtGui import QDesktopServices
             path = ensure_settings_file(SETTINGS_PATH)
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif verb == "theme":
+            arg = args[0] if args else ""
+            if arg and arg not in _theme.THEME_SETTINGS:
+                self._flash(f"unknown theme: {arg!r}  (auto / dark / light)")
+            else:
+                self.theme_requested.emit(arg)
         elif verb == "version":
             self._flash(f"juxt {__version__}", 5000)
         elif verb == "watch":
@@ -3175,15 +3214,7 @@ class InfoPanel(QTextEdit):
         self.setReadOnly(True)
         self.setMinimumWidth(180)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setStyleSheet(
-            "QTextEdit { background: #111; color: #ddd; "
-            "font-family: 'Courier New', monospace; font-size: 9pt; "
-            "border: none; padding: 8px; }"
-        )
-        # Anchors carry the value links; keep them looking like plain values.
-        self.document().setDefaultStyleSheet(
-            f"a {{ color: {_LINK_COLOR}; text-decoration: none; }}"
-        )
+        self._style_for_theme()
         self.viewport().setMouseTracking(True)
         self._highlight = _HL_DEFAULT
         self._separator = "  "
@@ -3200,6 +3231,19 @@ class InfoPanel(QTextEdit):
         self._press_path = False
         # href → full text, for every value the last layout had to elide.
         self._elided: dict[str, str] = {}
+
+    def _style_for_theme(self) -> None:
+        self.setStyleSheet(_panel_css())
+        # Anchors carry the value links; keep them looking like plain values.
+        self.document().setDefaultStyleSheet(
+            f"a {{ color: {_theme.current().text}; text-decoration: none; }}"
+        )
+
+    def apply_theme(self) -> None:
+        """Restyle for the active theme, keeping the scroll position."""
+        self._style_for_theme()
+        if self._last_view is not None:
+            self.refresh(self._last_view, follow_target=False)
 
     def set_highlight(self, hl: Highlight) -> None:
         """Set the format used for the current value on each axis."""
@@ -3374,7 +3418,7 @@ class InfoPanel(QTextEdit):
         if current:
             inner = _hl(_sp(shown), hl)
         elif dim:
-            inner = f"<span style='color:{_DIM_COLOR}'>{_sp(shown)}</span>"
+            inner = f"<span style='color:{_theme.current().dim}'>{_sp(shown)}</span>"
         else:
             inner = _sp(shown)
         width = metrics.horizontalAdvance(shown) + decor_w
@@ -3421,7 +3465,7 @@ class InfoPanel(QTextEdit):
             marker = "▾" if expanded else "▸"
             parts.append(
                 f'<a href="{_axis_href(i)}">'
-                f"<span style='color:{_HEADER_COLOR}'>{marker}&nbsp;{_html.escape(name)}</span>"
+                f"<span style='color:{_theme.current().header}'>{marker}&nbsp;{_html.escape(name)}</span>"
                 f"</a><br>{val_html}<br><br>"
             )
         return "".join(parts)
@@ -3452,7 +3496,7 @@ class InfoPanel(QTextEdit):
             worst_lines = self._worst_case_line_count(self._worst_case_path(view))
             pad = max(0, worst_lines - self._line_count(path))
             path_html = (
-                f"<span style='color:{_HEADER_COLOR}'>path</span><br>"
+                f"<span style='color:{_theme.current().header}'>path</span><br>"
                 f'<a href="{_PATH_HREF}">{e(path)}</a>' + "<br>" * pad + "<br><br>"
             )
             # The rows depend on the viewport width, which the scrollbar
@@ -3463,8 +3507,7 @@ class InfoPanel(QTextEdit):
             width = self.viewport().width()
             for _attempt in range(3):
                 self.setHtml(
-                    "<html><body style='font-family:\"Courier New\",monospace; "
-                    "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+                    _panel_body()
                     + path_html
                     + self._axes_html(view, width - _SIDEBAR_TEXT_INSET_PX)
                     + "</body></html>"
@@ -3519,13 +3562,15 @@ class ShortcutPanel(QTextEdit):
         self.setReadOnly(True)
         self.setMinimumWidth(240)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setStyleSheet(
-            "QTextEdit { background: #111; color: #ddd; "
-            "font-family: 'Courier New', monospace; font-size: 9pt; "
-            "border: none; padding: 8px; }"
-        )
+        self.setStyleSheet(_panel_css())
         self._last_view: "ImageView | None" = None
         self._refreshing = False
+
+    def apply_theme(self) -> None:
+        """Restyle for the active theme."""
+        self.setStyleSheet(_panel_css())
+        if self._last_view is not None:
+            self.refresh(self._last_view)
 
     def resizeEvent(self, event):
         # The key column is measured against the viewport, which is not laid
@@ -3631,6 +3676,7 @@ class ShortcutPanel(QTextEdit):
         self._last_view = view
         sections = self._sections(view)
         key_col = self._key_column_px(sections)
+        t = _theme.current()
         parts = []
         for title, rows in sections:
             # A table, not two spans on one line: a description long enough to
@@ -3638,7 +3684,7 @@ class ShortcutPanel(QTextEdit):
             # the chord, where the two were impossible to tell apart.
             cells = "".join(
                 "<tr>"
-                f"<td valign='top' width='{key_col}' style='color:{_KEY_COLOR}'>"
+                f"<td valign='top' width='{key_col}' style='color:{t.accent}'>"
                 # The chord itself must not break across lines, so its spaces
                 # ("Home / End") stay non-breaking.
                 f"{e(key).replace(' ', '&nbsp;')}</td>"
@@ -3649,14 +3695,13 @@ class ShortcutPanel(QTextEdit):
                 for key, desc in rows
             )
             parts.append(
-                f"<div style='color:{_HEADER_COLOR}; font-weight:bold'>{e(title)}</div>"
+                f"<div style='color:{t.header}; font-weight:bold'>{e(title)}</div>"
                 f"<table cellspacing='0' cellpadding='1' width='100%'>{cells}</table>"
                 "<br>"
             )
         try:
             self.setHtml(
-                "<html><body style='font-family:\"Courier New\",monospace; "
-                "font-size:9pt; color:#ddd; background:#111; margin:8px;'>"
+                _panel_body()
                 + "".join(parts)
                 + "</body></html>"
             )
@@ -3697,8 +3742,15 @@ class MainWindow(QMainWindow):
         show_info: bool = False,
         show_status_bar: bool = True,
         show_keys: bool = False,
+        theme: str = "auto",
     ):
         super().__init__()
+        # The theme asked for this session (:theme changes it), and the one
+        # settings.yaml last named, so a reload only overrides :theme when
+        # the file's own value changed.
+        self._theme_setting = self._theme_file_setting = theme
+        self._applying_theme = False
+        _theme.apply(theme)
         self._session_name = session_name
         self._pinned_axes = tuple(pinned_axes)
         self._hl = highlight or _HL_DEFAULT
@@ -3731,27 +3783,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._stack)
 
         bar = self.statusBar()
-        bar.setStyleSheet(
-            "QStatusBar { background: #1a1a1a; color: #e0e0e0; "
-            "font-family: 'Courier New', monospace; font-size: 9pt; "
-            "border-top: 1px solid #333; }"
-            "QStatusBar::item { border: none; }"
-        )
         self._status_label = _ElidingLabel()
-        self._status_label.setStyleSheet(
-            "color: #e0e0e0; padding: 2px 8px; "
-            "font-family: 'Courier New', monospace; font-size: 9pt; "
-            "white-space: pre;"
-        )
         bar.addWidget(self._status_label, 1)
-
         self._help_label = QLabel()
-        self._help_label.setStyleSheet(
-            "color: #888888; padding: 2px 16px 2px 8px; "
-            "font-family: 'Courier New', monospace; font-size: 9pt; "
-            "white-space: pre;"
-        )
         bar.addPermanentWidget(self._help_label)
+        self._style_status_bar()
         bar.setVisible(show_status_bar)
 
         self._info_panel = InfoPanel()
@@ -3803,6 +3839,10 @@ class MainWindow(QMainWindow):
                 _window_title(self.view.config, self._session_name, self._pinned_axes))
         )
         self.view.grid_mode_changed.connect(self._on_grid_mode_changed)
+        self.view.theme_requested.connect(self._on_theme_requested)
+        hints = QApplication.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):      # Qt 6.5+
+            hints.colorSchemeChanged.connect(self._on_system_scheme_changed)
 
         self._bar_auto_shown = False
         self._bar_hide_timer = QTimer(self)
@@ -3822,6 +3862,52 @@ class MainWindow(QMainWindow):
 
         self._update_status()
         self._warn_keybinding_conflicts(flash=False)
+
+    # ── theme ─────────────────────────────────────────────────────────────────
+
+    def _style_status_bar(self) -> None:
+        t = _theme.current()
+        font = "font-family: 'Courier New', monospace; font-size: 9pt; "
+        self.statusBar().setStyleSheet(
+            f"QStatusBar {{ background: {t.surface}; color: {t.text}; {font}"
+            f"border-top: 1px solid {t.border}; }}"
+            "QStatusBar::item { border: none; }"
+        )
+        self._status_label.setStyleSheet(
+            f"color: {t.text}; padding: 2px 8px; {font}white-space: pre;"
+        )
+        self._help_label.setStyleSheet(
+            f"color: {t.muted}; padding: 2px 16px 2px 8px; {font}white-space: pre;"
+        )
+
+    def _apply_theme(self) -> None:
+        """Resolve the session's theme setting and restyle everything."""
+        # Resolving "auto" hands the colour scheme back to the platform,
+        # which can emit colorSchemeChanged and call back in here.
+        if self._applying_theme:
+            return
+        self._applying_theme = True
+        try:
+            _theme.apply(self._theme_setting)
+            self._style_status_bar()
+            self.view.apply_theme()
+            self._info_panel.apply_theme()
+            self._shortcut_panel.apply_theme()
+            self._update_status()
+        finally:
+            self._applying_theme = False
+
+    def _on_theme_requested(self, setting: str) -> None:
+        if not setting:     # flip between the two
+            setting = "light" if _theme.current() is _theme.DARK else "dark"
+        self._theme_setting = setting
+        self._apply_theme()
+        shown = _theme.current().name
+        self.view._flash(f"theme {setting}" + (f" ({shown})" if setting == "auto" else ""))
+
+    def _on_system_scheme_changed(self, _scheme) -> None:
+        if self._theme_setting == "auto":
+            self._apply_theme()
 
     def _tick_spinner(self):
         self._spinner_frame += 1
@@ -3978,7 +4064,8 @@ class MainWindow(QMainWindow):
             if unbound or coord_html is not None:
                 bound_html = "&nbsp;&nbsp;".join(sp(b) for b in bound_items)
                 unbound_html = "&nbsp;&nbsp;".join(
-                    f'<span style="color:#cc4444">{sp(n)}</span>' for n in unbound
+                    f'<span style="color:{_theme.current().error}">{sp(n)}</span>'
+                    for n in unbound
                 )
                 key_hints_html = "&nbsp;&nbsp;".join(filter(None, [bound_html, unbound_html]))
                 c = coord_html if coord_html is not None else sp(coord_str)
@@ -4067,6 +4154,9 @@ class MainWindow(QMainWindow):
             self._settings_watcher.addPath(str(SETTINGS_PATH))
         settings = load_settings(SETTINGS_PATH)
         self.view.apply_settings(settings)
+        if settings.theme != self._theme_file_setting:
+            self._theme_file_setting = self._theme_setting = settings.theme
+            self._apply_theme()
         self._hl = settings.highlight
         self._hl_candidates = settings.highlight_candidates
         self._info_panel.set_highlight(self._hl)

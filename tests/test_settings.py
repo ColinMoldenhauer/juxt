@@ -14,11 +14,21 @@ from juxt.settings import (
 class TestParseHighlight:
     def test_default_spec(self):
         hl = parse_highlight(DEFAULT_HIGHLIGHT)
-        assert (hl.color, hl.prefix, hl.suffix, hl.raw) == ("#6af", "", "", None)
+        assert (hl.color, hl.prefix, hl.suffix, hl.raw) == ("accent", "", "", None)
 
     def test_delimiters(self):
         hl = parse_highlight(DEFAULT_HIGHLIGHT_CANDIDATES)
-        assert (hl.color, hl.prefix, hl.suffix) == ("#6af", "[", "]")
+        assert (hl.color, hl.prefix, hl.suffix) == ("accent", "[", "]")
+
+    def test_old_defaults_follow_the_theme_accent(self):
+        """Settings files written before themes hold the old defaults
+        verbatim; they must not pin the dark theme's blue on a light one."""
+        assert parse_highlight("#6af:{}").color == "accent"
+        hl = parse_highlight("#6af:[{}]")
+        assert (hl.color, hl.prefix, hl.suffix) == ("accent", "[", "]")
+
+    def test_an_explicit_colour_is_kept(self):
+        assert parse_highlight("#6af:<{}>").color == "#6af"
 
     def test_style_flags(self):
         hl = parse_highlight("bold italic underline #f80:» {} «")

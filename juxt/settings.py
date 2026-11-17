@@ -7,14 +7,21 @@ from pathlib import Path
 
 import yaml
 
+from .theme import parse_theme_setting
+
 log = logging.getLogger(__name__)
 
 SETTINGS_PATH = Path.home() / ".juxt" / "settings.yaml"
 
 # ── highlight format ──────────────────────────────────────────────────────────
 
-DEFAULT_HIGHLIGHT = "#6af:{}"
-DEFAULT_HIGHLIGHT_CANDIDATES = "#6af:[{}]"
+DEFAULT_HIGHLIGHT = "accent:{}"
+DEFAULT_HIGHLIGHT_CANDIDATES = "accent:[{}]"
+
+# The defaults before themes existed, still written in most settings files
+# because juxt wrote them there itself.  They read as the theme accent, so an
+# untouched file looks right on a light theme too.
+_LEGACY_DEFAULTS = {"#6af:{}": DEFAULT_HIGHLIGHT, "#6af:[{}]": DEFAULT_HIGHLIGHT_CANDIDATES}
 
 _STYLE_FLAGS = ("bold", "italic", "underline")
 _RAW_MARKERS = ("html", "raw")
@@ -39,6 +46,7 @@ class Highlight:
 
 def _parse_highlight(spec: str) -> Highlight | None:
     """Parse one spec, or return None if it is malformed."""
+    spec = _LEGACY_DEFAULTS.get(spec, spec)
     if "{}" not in spec:
         return None
     m = _SPEC_RE.match(spec)
@@ -118,6 +126,12 @@ _TEMPLATE = """\
 # Edit this file and restart juxt for changes to take effect.
 # All fields are optional; omitted fields fall back to the defaults shown here.
 
+# Colour theme of the viewer, sidebars, status bar and dialogues.
+# auto follows the operating system, switching along with it while juxt runs;
+# dark or light pins one.  :theme switches for the current session only.
+appearance:
+  theme: auto       # auto | dark | light
+
 # Seek / value-picker behaviour
 seek:
   greedy: true      # auto-confirm when exactly one candidate remains
@@ -134,9 +148,10 @@ display:
 #
 #     [style:]template        {} is replaced by the value
 #
-#   style     a colour (#6af, #66aaff or a CSS colour name) plus any of
-#             bold  italic  underline, separated by spaces.  Omit the whole
-#             "style:" part to leave the colour untouched.
+#   style     a colour (#6af, #66aaff, a CSS colour name, or "accent" for
+#             the theme's accent colour) plus any of bold  italic
+#             underline, separated by spaces.  Omit the whole "style:" part
+#             to leave the colour untouched.
 #   template  free text around {}, e.g. "{}"  "[{}]"  "» {} «"
 #
 # Delimiters are inserted literally, so "<{}>" shows angle brackets.  For
@@ -145,8 +160,8 @@ display:
 #     'html:<span style="background:#334">[{}]</span>'
 # Invalid specs are logged and ignored.
 highlight:
-  selected: "#6af:{}"       # current value in the info sidebar / active axis
-  candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
+  selected: "accent:{}"     # current value in the info sidebar / active axis
+  candidates: "accent:[{}]" # highlighted entry in status-bar candidate lists
 
 # Modifier roles on axis letter keys (tap and pin modes).
 # Default:  Ctrl+letter  opens the value picker
@@ -196,6 +211,13 @@ keybindings:
 """ + _PLACEHOLDERS_SECTION
 
 _SECTION_TEMPLATES: dict[str, str] = {
+    "appearance": """
+# Colour theme of the viewer, sidebars, status bar and dialogues.
+# auto follows the operating system, switching along with it while juxt runs;
+# dark or light pins one.  :theme switches for the current session only.
+appearance:
+  theme: auto       # auto | dark | light
+""",
     "seek": """
 # Seek / value-picker behaviour
 seek:
@@ -211,13 +233,13 @@ display:
     "highlight": """
 # How the current selection is highlighted.  One format string per context:
 #     [style:]template        {} is replaced by the value
-#   style     a colour (#6af or a CSS name) plus any of bold italic underline
+#   style     a colour (#6af, a CSS name or "accent") plus any of bold italic underline
 #   template  free text around {}, e.g. "{}"  "[{}]"  "» {} «"
 # Prefix with "html:" to write the rich text yourself, e.g.
 #     'html:<span style="background:#334">[{}]</span>' 
 highlight:
-  selected: "#6af:{}"       # current value in the info sidebar / active axis
-  candidates: "#6af:[{}]"   # highlighted entry in status-bar candidate lists
+  selected: "accent:{}"     # current value in the info sidebar / active axis
+  candidates: "accent:[{}]" # highlighted entry in status-bar candidate lists
 """,
     "modifiers": """
 # Modifier roles on axis letter keys (tap and pin modes).
@@ -301,6 +323,7 @@ class Settings:
     placeholders: dict[str, object] = field(default_factory=dict)
     sidebar_separator: str = "  "
     sidebar_list_larger_than: int = 20
+    theme: str = "auto"
 
 
 def _parse_sidebar_copy(value: object) -> str:
@@ -344,6 +367,9 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         s = Settings()
+        appearance = data.get("appearance") or {}
+        if isinstance(appearance, dict) and "theme" in appearance:
+            s.theme = parse_theme_setting(appearance["theme"])
         seek = data.get("seek") or {}
         if isinstance(seek, dict):
             if "greedy" in seek:

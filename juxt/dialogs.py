@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+import string
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, Qt
@@ -30,46 +31,48 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import theme as _theme
+
 log = logging.getLogger(__name__)
 
-# Matches the viewport / status-bar palette in viewer.py.
-_STYLE = """
-QDialog { background: #191919; }
-QLabel, QCheckBox, QRadioButton { color: #e0e0e0;
+# Filled from the active theme (see juxt/theme.py) when a dialogue opens.
+_STYLE = string.Template("""
+QDialog { background: $surface; }
+QLabel, QCheckBox, QRadioButton { color: $text;
     font-family: 'Courier New', monospace; font-size: 9pt; }
-QLabel#hint { color: #888888; }
+QLabel#hint { color: $muted; }
 QComboBox, QSpinBox, QListWidget {
-    background: #111; color: #ddd; border: 1px solid #333;
-    selection-background-color: #2a4a6a; selection-color: #fff;
+    background: $panel; color: $text; border: 1px solid $border;
+    selection-background-color: $selection; selection-color: $selection_text;
     font-family: 'Courier New', monospace; font-size: 9pt; padding: 2px; }
-QComboBox QAbstractItemView { background: #111; color: #ddd;
-    border: 1px solid #333; }
-QSpinBox:disabled { color: #666; border-color: #2a2a2a; }
-QCheckBox:disabled { color: #666; }
+QComboBox QAbstractItemView { background: $panel; color: $text;
+    border: 1px solid $border; }
+QSpinBox:disabled { color: $disabled; border-color: $border; }
+QCheckBox:disabled { color: $disabled; }
 /* Give the step buttons a visible box of their own.  The arrows themselves are
    painted by _ArrowSpinBox — see the note there. */
 QSpinBox::up-button, QSpinBox::down-button {
     subcontrol-origin: border; width: 15px;
-    background: #222; border-left: 1px solid #333; }
+    background: $control; border-left: 1px solid $border; }
 QSpinBox::up-button   { subcontrol-position: top right;
-    border-bottom: 1px solid #333; }
+    border-bottom: 1px solid $border; }
 QSpinBox::down-button { subcontrol-position: bottom right; }
-QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #2c2c2c; }
-QSpinBox::up-button:pressed, QSpinBox::down-button:pressed { background: #2a4a6a; }
-QPushButton { background: #222; color: #e0e0e0; border: 1px solid #444;
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: $hover; }
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed { background: $selection; }
+QPushButton { background: $control; color: $text; border: 1px solid $border_strong;
     padding: 4px 12px;
     font-family: 'Courier New', monospace; font-size: 9pt; }
-QPushButton:hover { background: #2c2c2c; }
-QPushButton:default { border: 1px solid #6af; }
-QPushButton:disabled { color: #666; border-color: #333; }
+QPushButton:hover { background: $hover; }
+QPushButton:default { border: 1px solid $accent; }
+QPushButton:disabled { color: $disabled; border-color: $border; }
 QCheckBox::indicator, QListWidget::indicator {
     width: 12px; height: 12px;
-    background: #111; border: 1px solid #555; }
+    background: $panel; border: 1px solid $border_strong; }
 QCheckBox::indicator:checked, QListWidget::indicator:checked {
-    background: #6af; border: 1px solid #6af; }
+    background: $accent; border: 1px solid $accent; }
 QCheckBox::indicator:disabled, QListWidget::indicator:disabled {
-    border-color: #333; }
-"""
+    border-color: $border; }
+""")
 
 # Longer value lists scroll rather than growing the dialogue past this.
 _MAX_LIST_ROWS = 12
@@ -112,7 +115,8 @@ class _ArrowSpinBox(QSpinBox):
             live = self.isEnabled() and (
                 self.value() < self.maximum() if up else self.value() > self.minimum()
             )
-            p.setBrush(QColor("#cccccc" if live else "#555555"))
+            t = _theme.current()
+            p.setBrush(QColor(t.arrow if live else t.disabled))
             # Qt reports the button rect a couple of px wider than the frame;
             # keep the glyph inside the widget either way.
             cx = min(r.center().x() + 0.5, self.width() - hw - 3)
@@ -177,7 +181,7 @@ class GridDialog(QDialog):
 
         self.setWindowTitle("Grid view")
         self.setModal(True)
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(_STYLE.substitute(vars(_theme.current())))
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)

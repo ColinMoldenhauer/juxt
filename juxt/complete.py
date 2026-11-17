@@ -26,6 +26,8 @@ import stat as _stat
 import threading
 from dataclasses import dataclass, field
 
+from . import theme as _theme
+
 # A placeholder is either named — {sensor} — or anonymous — {} — which is
 # given a generated name when the pattern is applied.  A name may hold anything
 # but braces and a path separator, so date shorthands like {yyyy-mm-dd} count.
@@ -36,8 +38,9 @@ _PLACEHOLDER_SPLIT_RE = re.compile(r"\{([^{}/]*)\}")
 CARET = "▌"  # the status bar caret, which may sit inside a placeholder
 _HIGHLIGHT_RE = re.compile(r"\{[^{}/]*\}|\{[^{}/]*$")
 
-# Cycled per placeholder, in order of appearance.
-PLACEHOLDER_COLORS = ["#e8913a", "#4fc3f7", "#9ccc65", "#ce93d8", "#ffd54f"]
+# Cycled per placeholder, in order of appearance.  This is the dark theme's
+# set; what is painted follows the active theme.
+PLACEHOLDER_COLORS = _theme.DARK.placeholders
 
 _DELIMS = "_-. "
 
@@ -191,9 +194,11 @@ def normalize_template(template: str) -> str:
 
 
 def placeholder_spans(text: str) -> list[tuple[int, int, str]]:
-    """Each placeholder's `(start, end, colour)` in *text*, cycling the palette."""
+    """Each placeholder's `(start, end, colour)` in *text*, cycling the
+    active theme's palette."""
+    colors = _theme.current().placeholders
     return [
-        (m.start(), m.end(), PLACEHOLDER_COLORS[i % len(PLACEHOLDER_COLORS)])
+        (m.start(), m.end(), colors[i % len(colors)])
         for i, m in enumerate(_HIGHLIGHT_RE.finditer(text))
     ]
 

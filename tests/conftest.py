@@ -10,6 +10,22 @@ import pytest
 from juxt.config import Config, _auto_keys
 
 
+@pytest.fixture(autouse=True)
+def _restore_theme():
+    """The active theme is process-wide; put back the default after a test
+    that switched it, so later tests see the colours they expect."""
+    from juxt import theme
+
+    yield
+    if theme.current() is not theme.DARK:
+        from PySide6.QtWidgets import QApplication
+
+        if QApplication.instance() is not None:
+            theme.apply("dark")
+        else:
+            theme.set_current(theme.DARK)
+
+
 # ---------------------------------------------------------------------------
 # Minimal PNG helper (no external deps)
 # ---------------------------------------------------------------------------
