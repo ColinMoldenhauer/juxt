@@ -1,12 +1,14 @@
 """Tests for juxt/detect.py."""
 from __future__ import annotations
 
+import os
 from itertools import product
 
 import pytest
 
 from juxt.detect import (
     _axes_from_local_template,
+    _axes_from_sftp_template,
     _detect_from_rel_stems,
     _is_remote_pattern,
     _iter_images,
@@ -451,3 +453,57 @@ class TestHasBareWildcard:
 
     def test_plain_template_is_not_bare(self):
         assert has_bare_wildcard("{sensor}_{date}.png") is False
+
+
+class _OsSFTP:
+    """SFTP stand-in backed by the real filesystem, with paramiko's semantics:
+    `listdir_attr` reports lstat-style modes, so a symlinked directory shows up
+    as a link and only `stat` looks through it."""
+
+    class _Entry:
+        def __init__(self, filename, st_mode):
+            self.filename = filename
+            self.st_mode = st_mode
+
+    def listdir_attr(self, path):
+        return [
+            self._Entry(name, os.lstat(os.path.join(path, name)).st_mode)
+            for name in sorted(os.listdir(path))
+        ]
+
+    def stat(self, path):
+        return self._Entry(os.path.basename(path), os.stat(path).st_mode)
+
+    def normalize(self, path):
+        return os.path.realpath(path)
+
+
+class TestRemoteTemplateSymlinks:
+    """The remote walk has to look through symlinked directories: the tree it
+    walks may well be a folder of symlinks pointing at the real output dirs."""
+
+    def test_walks_through_a_symlinked_directory(self, tmp_path):
+        real = tmp_path / "real" / "AM"
+        real.mkdir(parents=True)
+        (real / "d1.png").write_bytes(b"")
+        (real / "d2.png").write_bytes(b"")
+        link_root = tmp_path / "plots"
+        link_root.mkdir()
+        (link_root / "A").symlink_to(real.parent / "AM")
+
+        axes = _axes_from_sftp_template(
+            f"{link_root.as_posix()}/{{sensor}}/{{date}}.png", _OsSFTP()
+        )
+        assert axes == {"sensor": ["A"], "date": ["d1", "d2"]}
+
+    def test_cyclic_symlink_does_not_loop(self, tmp_path):
+        root = tmp_path / "plots"
+        (root / "A").mkdir(parents=True)
+        (root / "A" / "d1.png").write_bytes(b"")
+        (root / "A" / "up").symlink_to(root)
+
+        axes = _axes_from_sftp_template(
+            f"{root.as_posix()}/{{sensor}}/{{date}}.png", _OsSFTP()
+        )
+        assert axes["sensor"] == ["A"]
+        assert axes["date"] == ["d1"]

@@ -465,6 +465,26 @@ def local_listdir():
     return _listdir
 
 
+def sftp_isdir(sftp, path: str, st_mode: int | None) -> bool:
+    """Whether the remote *path* is a directory, looking through symlinks.
+
+    `listdir_attr` reports lstat-style modes, so a symlinked directory never
+    sets S_ISDIR and a plain mode check would take it for a file (and, when
+    walking, stop at it).  Stat through the link instead to see what it is.
+    """
+    if st_mode is None:
+        return False
+    if _stat.S_ISDIR(st_mode):
+        return True
+    if not _stat.S_ISLNK(st_mode):
+        return False
+    try:
+        target = sftp.stat(path)
+    except Exception:
+        return False
+    return target.st_mode is not None and _stat.S_ISDIR(target.st_mode)
+
+
 def sftp_listdir(sftp):
     """Return a caching `listdir` over an open paramiko SFTP session."""
     cache: dict[str, list[tuple[str, bool]]] = {}
@@ -472,9 +492,10 @@ def sftp_listdir(sftp):
     def _listdir(path: str) -> list[tuple[str, bool]]:
         if path in cache:
             return cache[path]
+        base = path.rstrip("/") if path else "."
         try:
             entries = [
-                (e.filename, e.st_mode is not None and _stat.S_ISDIR(e.st_mode))
+                (e.filename, sftp_isdir(sftp, f"{base}/{e.filename}", e.st_mode))
                 for e in sftp.listdir_attr(path or ".")
             ]
         except Exception:

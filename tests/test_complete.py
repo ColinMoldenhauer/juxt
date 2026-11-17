@@ -233,6 +233,34 @@ class TestRemoteCompletion:
         comp = complete_path("/plots/{sensor}/d", sftp_listdir(fake_sftp))
         assert comp.matches == ["d1.png", "d2.png", "d3.png"]
 
+    def test_symlinked_directory_completes_as_a_directory(self, tmp_path):
+        """`listdir_attr` reports the link, not its target, so a symlinked
+        directory would otherwise complete as if it were a file."""
+        import os
+
+        (tmp_path / "real").mkdir()
+        (tmp_path / "plots").mkdir()
+        (tmp_path / "plots" / "A").symlink_to(tmp_path / "real")
+
+        class _OsSFTP:
+            class _Entry:
+                def __init__(self, filename, st_mode):
+                    self.filename, self.st_mode = filename, st_mode
+
+            def listdir_attr(self, path):
+                return [
+                    self._Entry(n, os.lstat(os.path.join(path, n)).st_mode)
+                    for n in sorted(os.listdir(path))
+                ]
+
+            def stat(self, path):
+                return self._Entry(path, os.stat(path).st_mode)
+
+        listdir = sftp_listdir(_OsSFTP())
+        assert listdir((tmp_path / "plots").as_posix()) == [("A", True)]
+        comp = complete_path((tmp_path / "plots").as_posix() + "/", listdir)
+        assert comp.append == "A/"
+
     def test_listings_are_cached(self, fake_sftp):
         listdir = sftp_listdir(fake_sftp)
         complete_path("/plots/", listdir)

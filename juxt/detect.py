@@ -10,7 +10,7 @@ from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
 
-from .complete import PLACEHOLDER_NAME_RE
+from .complete import PLACEHOLDER_NAME_RE, sftp_isdir
 from .config import Config, RemoteConfig, _auto_keys
 
 log = logging.getLogger(__name__)
@@ -168,7 +168,6 @@ def detect_config_remote(
     The template in the returned config uses absolute remote paths so that
     preload_remote can download files without modification.
     """
-    import stat
     from .loader import _connect_sftp
 
     base = remote_dir.rstrip('/')
@@ -176,6 +175,7 @@ def detect_config_remote(
     try:
         remote_files: list[str] = []
         stack = [base]
+        seen_dirs: set[str] = set()
         while stack:
             path = stack.pop()
             try:
@@ -184,8 +184,9 @@ def detect_config_remote(
                 continue
             for entry in sorted(entries, key=lambda e: e.filename):
                 full = f"{path}/{entry.filename}"
-                if stat.S_ISDIR(entry.st_mode):
-                    stack.append(full)
+                if sftp_isdir(sftp, full, entry.st_mode):
+                    if _unvisited(sftp, full, seen_dirs):
+                        stack.append(full)
                 elif any(entry.filename.lower().endswith(x) for x in IMAGE_EXTENSIONS):
                     remote_files.append(full)
     finally:
@@ -450,6 +451,21 @@ def _prune_common_prefix(values: list[str]) -> tuple[str, list[str]]:
     return prefix, ['/'.join(s[common:]) for s in split]
 
 
+def _unvisited(sftp, path: str, seen: set[str]) -> bool:
+    """Whether the remote directory *path* has not been walked yet, recording
+    it if not.  Keyed by the resolved path, so a symlink pointing back up the
+    tree (or two links to the same directory) can't send the walk in circles.
+    """
+    try:
+        key = sftp.normalize(path)
+    except Exception:
+        key = path
+    if key in seen:
+        return False
+    seen.add(key)
+    return True
+
+
 def _split_pinned(names: list[str], pinned: dict[str, list[str]]) -> tuple[list[str], list[str]]:
     """Validate *pinned* against the template's placeholder *names* and split
     them into (pinned_names, free_names), both in template order."""
@@ -692,8 +708,6 @@ def _axes_from_sftp_template(
     since a pinned placeholder can shift where the fixed prefix (and so the
     walk's starting directory) falls.
     """
-    import stat
-
     names = PLACEHOLDER_NAME_RE.findall(template)
     if not names:
         raise ValueError(f"Remote template {template!r} has no {{placeholder}} variables")
@@ -724,6 +738,7 @@ def _axes_from_sftp_template(
 
         remote_files: list[str] = []
         stack = [base_dir]
+        seen_dirs: set[str] = set()
         while stack:
             path = stack.pop()
             try:
@@ -732,8 +747,9 @@ def _axes_from_sftp_template(
                 continue
             for entry in entries:
                 full = f"{path}/{entry.filename}"
-                if stat.S_ISDIR(entry.st_mode):
-                    stack.append(full)
+                if sftp_isdir(sftp, full, entry.st_mode):
+                    if _unvisited(sftp, full, seen_dirs):
+                        stack.append(full)
                 else:
                     remote_files.append(full)
 
