@@ -5,6 +5,7 @@ import glob as _glob_mod
 import logging
 import math
 import re
+import stat
 import sys
 from itertools import product
 from pathlib import Path, PurePosixPath
@@ -706,7 +707,11 @@ def _axes_from_sftp_template(
     discovering them by walking the tree — see `_axes_from_local_template`
     for the semantics. One walk is done per combination of pinned values,
     since a pinned placeholder can shift where the fixed prefix (and so the
-    walk's starting directory) falls.
+    walk's starting directory) falls. Pinning several placeholders therefore
+    multiplies the walks, so the walk is pruned segment by segment and every
+    listing is cached: over SFTP each listing is a round trip, and the naive
+    product of combinations times subtree size is painfully slow on a large
+    tree (worse still when the remote path is itself a network mount).
     """
     names = PLACEHOLDER_NAME_RE.findall(template)
     if not names:
@@ -717,6 +722,17 @@ def _axes_from_sftp_template(
 
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
+
+    listings: dict[str, list] = {}
+
+    def entries(path: str) -> list:
+        """`listdir_attr`, cached across combinations: their walks overlap."""
+        if path not in listings:
+            try:
+                listings[path] = sftp.listdir_attr(path)
+            except IOError:
+                listings[path] = []
+        return listings[path]
 
     for combo in _pinned_combos(pinned_names, pinned):
         for n, v in combo.items():
@@ -736,21 +752,34 @@ def _axes_from_sftp_template(
         base_dir = prefix[:last_slash] if last_slash > 0 else '/'
         regex = _template_regex(sub)
 
+        # One regex per path segment below base_dir: a directory whose name
+        # can't be part of a match is skipped instead of being read out, and
+        # the walk stops at the depth the files sit at. A '{**name}' spans '/'
+        # and so pins neither the names nor the depth below it — there the
+        # whole subtree has to be read (seg_res None).
+        segs = sub[len(base_dir):].lstrip('/').split('/')
+        seg_res = (
+            None if any('**' in s for s in segs)
+            else [re.compile(_template_regex(s)) for s in segs]
+        )
+        leaf = len(segs) - 1
+
         remote_files: list[str] = []
-        stack = [base_dir]
+        stack = [(base_dir, 0)]
         seen_dirs: set[str] = set()
         while stack:
-            path = stack.pop()
-            try:
-                entries = sftp.listdir_attr(path)
-            except IOError:
-                continue
-            for entry in entries:
+            path, depth = stack.pop()
+            for entry in entries(path):
+                if seg_res is not None and not seg_res[depth].fullmatch(entry.filename):
+                    continue
                 full = f"{path}/{entry.filename}"
                 if sftp_isdir(sftp, full, entry.st_mode):
-                    if _unvisited(sftp, full, seen_dirs):
-                        stack.append(full)
-                else:
+                    if seg_res is not None and depth == leaf:
+                        continue  # the files sit here, so a directory is not one
+                    # Only a symlink can point back into the walk's own path.
+                    if not stat.S_ISLNK(entry.st_mode) or _unvisited(sftp, full, seen_dirs):
+                        stack.append((full, depth + 1))
+                elif seg_res is None or depth == leaf:
                     remote_files.append(full)
 
         for f in sorted(remote_files):

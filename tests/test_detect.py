@@ -465,7 +465,11 @@ class _OsSFTP:
             self.filename = filename
             self.st_mode = st_mode
 
+    def __init__(self):
+        self.listed: list[str] = []
+
     def listdir_attr(self, path):
+        self.listed.append(path)
         return [
             self._Entry(name, os.lstat(os.path.join(path, name)).st_mode)
             for name in sorted(os.listdir(path))
@@ -507,3 +511,40 @@ class TestRemoteTemplateSymlinks:
         )
         assert axes["sensor"] == ["A"]
         assert axes["date"] == ["d1"]
+
+
+class TestRemoteTemplateWalk:
+    """Every remote listing is a round trip, and pinning several placeholders
+    multiplies the walks, so the walk must stay close to what the template
+    can actually match."""
+
+    def test_skips_subtrees_the_template_cannot_match(self, tmp_path):
+        root = tmp_path / "plots"
+        (root / "A").mkdir(parents=True)
+        (root / "A" / "d1.png").write_bytes(b"")
+        # at the depth of the files, so it can never hold a match
+        (root / "A" / "extra").mkdir()
+        (root / "A" / "extra" / "d2.png").write_bytes(b"")
+
+        sftp = _OsSFTP()
+        axes = _axes_from_sftp_template(
+            f"{root.as_posix()}/{{sensor}}/{{date}}.png", sftp
+        )
+        assert axes == {"sensor": ["A"], "date": ["d1"]}
+        assert (root / "A" / "extra").as_posix() not in sftp.listed
+
+    def test_listings_are_shared_between_pinned_combinations(self, tmp_path):
+        root = tmp_path / "plots"
+        for sensor in ("A", "B"):
+            (root / sensor).mkdir(parents=True)
+            for date in ("d1", "d2"):
+                (root / sensor / f"{date}.png").write_bytes(b"")
+
+        sftp = _OsSFTP()
+        axes = _axes_from_sftp_template(
+            f"{root.as_posix()}/{{sensor}}/{{date}}.png",
+            sftp,
+            pinned={"date": ["d1", "d2"]},
+        )
+        assert axes == {"sensor": ["A", "B"], "date": ["d1", "d2"]}
+        assert sorted(set(sftp.listed)) == sorted(sftp.listed)
