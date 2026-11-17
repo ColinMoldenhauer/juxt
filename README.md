@@ -141,6 +141,20 @@ Matching is fuzzy: the characters you type only have to appear in order, so `:fh
 
 Path arguments complete with `{placeholders}` in place: `:pattern plots/{sensor}/2⇥` lists what every sensor directory holds, so a template is built top-down instead of completing a concrete path and deleting the parts that should vary. `{` + `Tab` completes an existing axis name, and anonymous `{}` placeholders are numbered automatically.
 
+## Jupyter notebooks (prototype)
+
+```bash
+pip install "juxt[notebook]"
+```
+
+```python
+from juxt.notebook import Viewer
+Viewer("config.yaml")                                    # any juxt config
+Viewer.from_function(plot, sensor=[...], date=[...])     # straight from a plotting function
+```
+
+Click the widget and navigate with the same keys as the desktop app. Navigation runs in the browser, so flipping never waits on the kernel. See [docs/notebook.md](docs/notebook.md) and `examples/notebook_demo.ipynb`.
+
 ## Shell completion
 
 The same completion works at the shell prompt. Add one line to `~/.bashrc`:

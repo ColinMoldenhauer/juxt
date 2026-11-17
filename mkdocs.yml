@@ -13,6 +13,7 @@ nav:
   - Configuration: configuration.md
   - Navigation: navigation.md
   - Remote (SSH): remote.md
+  - Jupyter notebooks: notebook.md
 
 theme:
   name: material

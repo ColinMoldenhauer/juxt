@@ -1,0 +1,91 @@
+.juxt-root {
+  --juxt-bg: #191919;
+  --juxt-fg: #d8d8d8;
+  --juxt-dim: #8a8a8a;
+  --juxt-accent: #4fa3ff;
+  --juxt-active: #ffcc4d;
+  --juxt-missing: #c85050;
+  --juxt-bar: #222;
+  display: flex;
+  flex-direction: column;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--juxt-fg);
+  background: var(--juxt-bg);
+  border: 2px solid transparent;
+  border-radius: 4px;
+  outline: none;
+  user-select: none;
+}
+.juxt-root.juxt-focused { border-color: var(--juxt-accent); }
+.juxt-root:fullscreen .juxt-canvas { height: auto !important; flex: 1; }
+
+.juxt-canvas {
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+.juxt-canvas.juxt-dragging { cursor: grabbing; }
+.juxt-img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  max-width: none;
+  max-height: none;
+  image-rendering: auto;
+}
+.juxt-missing {
+  display: none;
+  position: absolute;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--juxt-missing);
+  white-space: pre-line;
+  text-align: center;
+  padding: 1em;
+}
+.juxt-missing.juxt-on { display: flex; }
+.juxt-loading, .juxt-hint {
+  position: absolute;
+  right: 8px;
+  top: 6px;
+  color: var(--juxt-dim);
+  background: rgba(0, 0, 0, 0.55);
+  padding: 0 6px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+.juxt-loading { left: 8px; right: auto; }
+.juxt-root.juxt-focused .juxt-hint { display: none; }
+
+.juxt-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.2em;
+  padding: 2px 8px;
+  background: var(--juxt-bar);
+  min-height: 1.5em;
+}
+.juxt-mode { color: var(--juxt-accent); }
+.juxt-coord-active { color: var(--juxt-active); }
+.juxt-bind, .juxt-keys, .juxt-zoom, .juxt-cands { color: var(--juxt-dim); }
+.juxt-zoom { margin-left: auto; }
+.juxt-query { color: var(--juxt-active); }
+.juxt-cand { color: var(--juxt-dim); }
+.juxt-cand-on { color: var(--juxt-fg); text-decoration: underline; }
+.juxt-flash { color: var(--juxt-active); }
+
+.juxt-info {
+  padding: 4px 8px;
+  border-top: 1px solid #333;
+  max-height: 12em;
+  overflow-y: auto;
+}
+.juxt-info-row { display: flex; flex-wrap: wrap; gap: 0 0.8em; }
+.juxt-info-name { color: var(--juxt-accent); min-width: 10em; }
+.juxt-info-val { cursor: pointer; color: var(--juxt-dim); }
+.juxt-info-val:hover { color: var(--juxt-fg); }
+.juxt-info-val-on { color: var(--juxt-active); }
+.juxt-info-val-missing { text-decoration: line-through; color: var(--juxt-missing); }

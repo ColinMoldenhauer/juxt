@@ -43,6 +43,9 @@ docs = [
     "mkdocs-material",
     "mkdocs-include-markdown-plugin",
 ]
+notebook = [
+    "anywidget>=0.9",
+]
 test = [
     "pytest>=8.0",
     "pytest-qt>=4.4",

@@ -144,6 +144,13 @@ A working prototype would include:
 
 Launch: `juxt config.yaml`
 
+## Code layout
+
+- `juxt/core.py` — Qt-free navigation core (`Navigator`: position, history, focus stack, axis locks, skip-missing stepping; `combo_paths`, `build_key_map`). Must never import PySide6.
+- `juxt/viewer.py` — desktop UI. `ImageView.nav` is a `Navigator`; `pos`, `prev`, `focus_stack`, `axis_names`, `axis_values`, `_locked_h/_v`, `_skip_missing` are delegating properties onto it.
+- `juxt/notebook.py` + `juxt/static/{nav.js,widget.js,widget.css}` — anywidget-based Jupyter widget (`pip install juxt[notebook]`). Navigation runs client-side in `nav.js`, a port of `Navigator`; `tests/test_core.py::test_js_parity` replays random op sequences through both and must stay green when either changes. Images go to the browser once as binary comm messages (not synced state).
+- `benchmarks/` — `bench_desktop.py` + `compare.py` for regression checks against another revision (see `benchmarks/README.md`); `bench_notebook.py` runs the widget in headless JupyterLab via Playwright.
+
 ## Open questions
 
 - Single-file script vs. proper package with `pyproject.toml`?
