@@ -51,7 +51,15 @@ Only the listing goes to stdout; errors and the SSH password prompt go elsewhere
 
 `--subset-interactive` runs discovery as usual, then opens the value picker (one column per axis, every discovered value ticked) before a single image is read. Untick what you do not need and press `Load`; only the remaining combinations are loaded (or downloaded, for a remote PATH). `Cancel` quits.
 
-It is the point-and-click alternative to narrowing the hypercube with `--NAME VALUE` pins, and combines with them: pins still decide what discovery finds, the picker then trims it. `--squeeze` and `--save` see the picked values. The same picker is available at runtime as `:subset-interactive`.
+It is the point-and-click alternative to narrowing the hypercube with `--NAME VALUE` pins. Together with it, pins preselect instead of narrowing: discovery runs without them, the picker shows every value on disk, and only the pinned values of a pinned axis start ticked (its other values are offered unticked).
+
+```bash
+juxt "plots/{sensor}_{date}.png" --subset-interactive --sensor SMAP SMOS
+```
+
+opens with SMAP and SMOS ticked, the other sensors unticked, and every date ticked. A pin discovery cannot do without still narrows it: values containing `/`, a `{**name}` axis, and any pin a `*` wildcard needs (if discovery fails without the pins, it runs with them and nothing is preselected).
+
+`--squeeze` and `--save` see the picked values. The same picker is available at runtime as `:subset-interactive`.
 
 ---
 

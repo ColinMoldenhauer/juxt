@@ -192,7 +192,8 @@ def _print_help() -> None:
                               values, and exit; no window, no naming prompt
       --subset-interactive    after discovery, tick the values to load in a
                               dialogue (one column per axis) before any
-                              image is read
+                              image is read; --NAME VALUE pins then only
+                              preselect, the other values stay on offer
       --NAME VALUE [...]      pin a {placeholder}'s values instead of
                               globbing for them (template/wildcard PATH
                               only, must come after PATH); repeatable per
@@ -429,14 +430,54 @@ def _list_axes(args: argparse.Namespace, pins: dict[str, list[str]]) -> int:
     return 0
 
 
-def _pick_startup_values(config: Config, app_icon, screen) -> Config:
+def _resolve_for_picker(
+    args: argparse.Namespace,
+    pins: dict[str, list[str]],
+    ask_password,
+) -> tuple[Config, dict[str, list[str]]]:
+    """Discovery for `--subset-interactive`, where pins preselect instead of
+    narrowing: returns the config with every value found on disk, and the
+    pinned values to start out ticked.
+
+    A pin that discovery cannot do without keeps narrowing it: values with a
+    '/' in them (a glob never crosses one), a `{**name}` axis (its values are
+    taken literally, not pruned). And if discovery fails without the pins
+    (say, a placeholder before a '*' wildcard), it runs with all of them, as
+    without the flag, and nothing is preselected.
+    """
+    if not pins:
+        return _resolve_config(args, pins, ask_password), {}
+    from .detect import _parse_template_names
+    try:
+        _names, _raw, recursive = _parse_template_names(args.path or "")
+    except ValueError:
+        recursive = None
+    needed = {n: vs for n, vs in pins.items()
+              if n == recursive or any("/" in v for v in vs)}
+    if len(needed) < len(pins):
+        try:
+            config = _resolve_config(args, needed, ask_password)
+        except Exception as e:
+            log.info("Discovery without the pins failed (%s); keeping them", e)
+        else:
+            return config, {n: vs for n, vs in pins.items()
+                            if n not in needed and n in config.axes}
+    return _resolve_config(args, pins, ask_password), {}
+
+
+def _pick_startup_values(config: Config, app_icon, screen,
+                         preselect: dict[str, list[str]] | None = None) -> Config:
     """`--subset-interactive`: tick the values to load, before any image is read.
 
-    Every discovered value starts ticked; Cancel quits.
+    *preselect* maps an axis to the values that start out ticked (the
+    `--NAME VALUE` pins); the axis's other values are offered unticked. Every
+    value of the other axes starts ticked. Cancel quits.
     """
     from .dialogs import ValuesDialog
 
-    dlg = ValuesDialog(dict(config.axes), dict(config.axes),
+    preselect = preselect or {}
+    ticked = {name: list(preselect.get(name, vals)) for name, vals in config.axes.items()}
+    dlg = ValuesDialog(ticked, dict(config.axes),
                        title="juxt: choose the values to load", apply_text="Load")
     if not app_icon.isNull():
         dlg.setWindowIcon(app_icon)
@@ -519,14 +560,18 @@ def main():
             sys.exit(0)
         args.path = chosen
 
+    preselect: dict[str, list[str]] = {}
     try:
-        config = _resolve_config(args, pins, _ask_password)
+        if args.subset_interactive:
+            config, preselect = _resolve_for_picker(args, pins, _ask_password)
+        else:
+            config = _resolve_config(args, pins, _ask_password)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     if args.subset_interactive:
-        config = _pick_startup_values(config, app_icon, _startup_screen)
+        config = _pick_startup_values(config, app_icon, _startup_screen, preselect)
 
     if args.squeeze:
         squeezed = {k: v for k, v in config.axes.items() if len(v) > 1}

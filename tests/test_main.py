@@ -325,3 +325,77 @@ class TestSubsetInteractive:
         with pytest.raises(SystemExit) as exc:
             self._pick(qtbot, monkeypatch, ticked=None)
         assert exc.value.code == 0
+
+
+class TestPinsPreselectInThePicker:
+    """With --subset-interactive, --NAME VALUE ticks values instead of hiding the rest."""
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        d = tmp_path / "plots"
+        d.mkdir()
+        for s in ("A", "B", "C"):
+            for t in ("d1", "d2"):
+                (d / f"{s}_{t}.png").write_bytes(b"")
+        return d
+
+    def _args(self, path):
+        import argparse
+        return argparse.Namespace(path=path, auto=True, separator=None,
+                                  max_depth=None, full_path=False)
+
+    def test_pins_become_the_preselection(self, tree):
+        from juxt.__main__ import _resolve_for_picker
+        cfg, pre = _resolve_for_picker(
+            self._args(f"{tree.as_posix()}/{{sensor}}_{{date}}.png"),
+            {"sensor": ["A", "C"]}, None)
+        assert cfg.axes == {"sensor": ["A", "B", "C"], "date": ["d1", "d2"]}
+        assert pre == {"sensor": ["A", "C"]}
+
+    def test_no_pins_no_preselection(self, tree):
+        from juxt.__main__ import _resolve_for_picker
+        cfg, pre = _resolve_for_picker(
+            self._args(f"{tree.as_posix()}/{{sensor}}_{{date}}.png"), {}, None)
+        assert cfg.axes["sensor"] == ["A", "B", "C"]
+        assert pre == {}
+
+    def test_pins_with_a_slash_keep_narrowing(self, tree, tmp_path):
+        from juxt.__main__ import _resolve_for_picker
+        root = tree.as_posix()
+        cfg, pre = _resolve_for_picker(
+            self._args("{root}/{sensor}_{date}.png"),
+            {"root": [root], "sensor": ["B"]}, None)
+        assert cfg.axes["root"] == [root]
+        assert cfg.axes["sensor"] == ["A", "B", "C"]
+        assert pre == {"sensor": ["B"]}
+
+    def test_falls_back_to_pinned_discovery(self, tree):
+        """A placeholder before a '*' cannot be discovered without its pin."""
+        from juxt.__main__ import _resolve_for_picker
+        cfg, pre = _resolve_for_picker(
+            self._args("{root}/*.png"), {"root": [tree.as_posix()]}, None)
+        assert cfg.axes["root"] == [tree.as_posix()]
+        assert pre == {}
+
+    def test_picker_ticks_the_pins_and_offers_the_rest(self, qtbot, monkeypatch):
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWidgets import QApplication, QDialog
+        from juxt.__main__ import _pick_startup_values
+        from juxt.config import Config
+        from juxt.dialogs import ValuesDialog
+        seen = {}
+
+        def fake_exec(self):
+            seen["ticked"] = self.values()
+            p = self.panel("s")
+            seen["rows"] = [p.value_list.item(i).data(Qt.ItemDataRole.UserRole)
+                            for i in range(p.value_list.count())]
+            return QDialog.DialogCode.Accepted
+        monkeypatch.setattr(ValuesDialog, "exec", fake_exec)
+        cfg = Config(template="p/{s}_{d}.png",
+                     axes={"s": ["A", "B", "C"], "d": ["1", "2"]}, keys={})
+        out = _pick_startup_values(cfg, QIcon(), QApplication.primaryScreen(),
+                                   {"s": ["A", "C"]})
+        assert seen["rows"] == ["A", "B", "C"]
+        assert seen["ticked"] == {"s": ["A", "C"], "d": ["1", "2"]}
+        assert out.axes == {"s": ["A", "C"], "d": ["1", "2"]}
