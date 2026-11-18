@@ -56,11 +56,11 @@ Three navigation modes are available. Switch at runtime with `:mode tap|seek|pin
 
 | Key | Action |
 |---|---|
-| ←/→ | Cycle the horizontal axis (most-recently-focused) |
-| ↑/↓ | Cycle the vertical axis (second-most-recently-focused) |
+| ←/→ | Cycle the primary axis (most-recently-focused) |
+| ↑/↓ | Cycle the secondary axis (second-most-recently-focused) |
 | Spacebar | Toggle between current and previous position — the killer comparison feature |
-| Home/End | Jump to first/last value along the active (horizontal) axis |
-| 1–9 | Jump to the Nth value along the active axis |
+| Home/End | Jump to first/last value along the primary axis |
+| 1–9 | Jump to the Nth value along the primary axis |
 | double-click | Fit image to window |
 | `0` | Reset zoom to 100% |
 | `:` | Open command mode (vim-style) |

@@ -17,7 +17,7 @@ These bindings work identically regardless of which mode is active.
 | `←` / `→` | Cycle the primary axis (most recently focused) |
 | `↑` / `↓` | Cycle the secondary axis (second most recently focused) |
 | Scroll wheel | Step forward / backward on the primary axis |
-| `Shift` + scroll wheel | Step forward / backward on the **secondary** axis |
+| `Shift` + scroll wheel | Step forward / backward on the secondary axis |
 | `Space` | Toggle between current and previous position — the main comparison tool |
 | `Home` / `End` | Jump to first / last value on the primary axis |
 | `1` – `9` | Jump to the Nth value on the primary axis |
@@ -54,8 +54,8 @@ These bindings work identically regardless of which mode is active.
 
 Arrow keys always navigate the two most recently focused axes, regardless of mode. The focus stack tracks which axes have been touched most recently:
 
-- **`←` / `→`** — navigate `focus_stack[0]` (the most recently focused axis)
-- **`↑` / `↓`** — navigate `focus_stack[1]` (the second most recently focused axis)
+- **`←` / `→`** navigate the **primary axis**, `focus_stack[0]` (the most recently focused axis)
+- **`↑` / `↓`** navigate the **secondary axis**, `focus_stack[1]` (the second most recently focused axis)
 
 Any action that selects or navigates an axis promotes it to the top of the focus stack.
 
@@ -105,7 +105,7 @@ Optimised for comparing two axes at a time with no modifier keys in the hot path
 
 | Key | Action |
 |---|---|
-| Letter (e.g. `s` for `sensor`) | Focus that axis; it becomes `←`/`→`, previous primary becomes `↑`/`↓` |
+| Letter (e.g. `s` for `sensor`) | Focus that axis; it becomes the primary axis (`←`/`→`), the previous primary becomes the secondary (`↑`/`↓`) |
 | `Ctrl` + letter | Open the value picker for that axis |
 
 Letter keys only shift focus — they do not advance the axis. Use arrow keys after focusing to cycle through values. This keeps sustained rapid cycling (dozens of presses) free of modifier keys.
@@ -122,7 +122,7 @@ Letter keys only shift focus — they do not advance the axis. Use arrow keys af
 
 ## Modifier roles
 
-Two modifiers act on an axis letter key, and which does what is configurable:
+Two modifiers act on an axis key, and which does what is configurable:
 
 | | Value picker | Navigate −1 (tap only) |
 |---|---|---|
@@ -182,11 +182,11 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:switch-last` | Toggle between current and previous position (same as `Space`) |
 | `:theme [auto\|dark\|light]` | Switch the [colour theme](ui.md#colour-theme) for this session; without an argument, flip between dark and light |
 | `:version` | Show the juxt version in the status bar (`juxt --version` prints it from the shell) |
-| `:axis-h NAME` | Lock `←`/`→` to a named axis |
-| `:axis-v NAME` | Lock `↑`/`↓` to a named axis |
+| `:axis-h NAME` | Lock the primary axis (`←`/`→`) to a named axis |
+| `:axis-v NAME` | Lock the secondary axis (`↑`/`↓`) to a named axis |
 | `:axis-auto` | Restore dynamic axis-to-arrow assignment |
-| `:swap-axes` | Swap the `←`/`→` and `↑`/`↓` axis bindings |
-| `:grid [AXIS]` | Expand an axis into a tiled grid of independent viewports (defaults to the active axis) |
+| `:swap-axes` | Swap the primary and secondary axes |
+| `:grid [AXIS]` | Expand an axis into a tiled grid of independent viewports (defaults to the primary axis) |
 | `:grid AXIS VAL …` | Same, but show only the listed values |
 | `:grid AXIS NxM` | Same, with an explicit layout (e.g. `:grid sensor 2x2`) |
 | `:grid AXIS VAL … NxM` | Values and explicit layout combined |
@@ -354,7 +354,7 @@ spellings.
 
 | Field | Meaning |
 |---|---|
-| **Axis** | Which axis to tile. Defaults to the current grid axis, or the `←`/`→` axis when not in grid view. |
+| **Axis** | Which axis to tile. Defaults to the current grid axis, or the primary axis when not in grid view. |
 | **Values** | Tick the values to show. `All` / `None` / `Invert` set them in bulk. |
 | **Layout** | With `auto` ticked the spin boxes show the layout that fits the viewport; stepping either one takes it off `auto` and sets rows × cols by hand. Re-tick `auto` to go back. A layout smaller than the value count gives the focused pane something to cycle, as above. |
 | **Sync pan/zoom** | The `:grid-sharex` / `:grid-sharey` toggles. |
@@ -412,7 +412,7 @@ The status bar at the bottom shows:
 
 - Current navigation mode — `[tap]`, `[seek]`, or `[pin]`; a `●` is appended outside the brackets when live file watching is active (e.g. `[tap]  ●`)
 - Current axis values (e.g. `sensor=ASCAT  date=2024-03-15  overpass=AM  source=L2`)
-- Which axes are bound to `←`/`→` and `↑`/`↓`
+- The primary (`←`/`→`) and secondary (`↑`/`↓`) axes
 - Letter-to-axis assignments; axes with no available letter binding are shown in red
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode; description of the highlighted command shown right-aligned
@@ -421,7 +421,7 @@ Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Sh
 
 ### Highlight format
 
-The colour and delimiters used for the current value (info sidebar, active axis, candidate lists) are set in `~/.juxt/settings.yaml`; see [Highlight format](ui.md#highlight-format).
+The colour and delimiters used for the current value (info sidebar, last-moved axis, candidate lists) are set in `~/.juxt/settings.yaml`; see [Highlight format](ui.md#highlight-format).
 
 ### Custom keybindings
 

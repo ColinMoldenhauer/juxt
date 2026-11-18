@@ -23,7 +23,7 @@ PATH                        directory to scan or YAML config file
     --max-depth N           maximum subdirectory search depth
     --NAME VALUE [...]      pin a {placeholder}'s values (template/wildcard
                             PATH only, must come after PATH); see below
-    --full-path             show a {**name} axis's full matched path
+    --full-path             show the full matched path of a {**name} axis
                             instead of pruning the shared leading part
     --list-axes             run axis discovery, print every axis with all
                             its values, and exit (no window); see below

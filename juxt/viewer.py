@@ -311,7 +311,7 @@ def _chord_str(key: int, mods: int) -> str:
 
 
 def _modifier_roles(swap: bool) -> tuple[Qt.KeyboardModifier, Qt.KeyboardModifier]:
-    """(value-picker modifier, reverse-navigation modifier) for axis letter keys.
+    """(value-picker modifier, reverse-navigation modifier) for axis keys.
 
     Ctrl picks and Shift reverses by default; *swap* exchanges the two for
     users who would rather hold Shift for the picker.
@@ -479,8 +479,8 @@ _COMMAND_HELP: dict[str, str] = {
     "copy-image":   "copy current image to clipboard",
     "copy-path":    "copy current image file path to clipboard",
     "dim-missing":  "dim sidebar values with no file on the last-moved axis  (on / off)",
-    "axis-h":       "lock ←/→ to a named axis",
-    "axis-v":       "lock ↑/↓ to a named axis",
+    "axis-h":       "lock the primary (←/→) axis to a named axis",
+    "axis-v":       "lock the secondary (↑/↓) axis to a named axis",
     "fit":          "fit image to window",
     "fit-height":   "fit image height to viewport",
     "fit-off":      "stop auto-fitting; keep the current zoom",
@@ -507,7 +507,7 @@ _COMMAND_HELP: dict[str, str] = {
     "values":       "pick the values of one axis from those on disk: add, remove  (e.g. values sensor)",
     "version":      "show the juxt version",
     "write":        "write current config to a YAML file",
-    "swap-axes":    "swap the ←/→ and ↑/↓ axis bindings",
+    "swap-axes":    "swap the primary (←/→) and secondary (↑/↓) axes",
     "skip-missing": "skip combinations with no file when cycling  (on / off)",
     "switch-last":  "toggle between current and previous position",
     "theme":        "switch the colour theme  (auto / dark / light; no argument flips dark and light)",
@@ -3946,8 +3946,8 @@ class ShortcutPanel(QTextEdit):
             ("↑ / ↓", f"cycle {view.axis_names[view._v_axis()]}"
                      if view._v_axis() is not None else "cycle the second axis"),
             ("Space", "flip to the previous position"),
-            ("Home / End", "first / last value on the ←/→ axis"),
-            ("1–9", "Nth value on the ←/→ axis"),
+            ("Home / End", "first / last value on the primary (←/→) axis"),
+            ("1–9", "Nth value on the primary (←/→) axis"),
             (":", "command mode"),
             ("Enter", "toggle fullscreen"),
             ("Escape", "leave fullscreen / cancel"),
@@ -3975,8 +3975,8 @@ class ShortcutPanel(QTextEdit):
             ("0", "zoom back to 100%"),
             ("double-click", "fit the image to the window"),
             ("drag", "pan"),
-            ("wheel", "step the ←/→ axis"),
-            ("Shift+wheel", "step the ↑/↓ axis"),
+            ("wheel", "step the primary (←/→) axis"),
+            ("Shift+wheel", "step the secondary (↑/↓) axis"),
             ("Ctrl+wheel", "zoom under the cursor"),
             ("right-click", "copy path / image menu"),
         ]

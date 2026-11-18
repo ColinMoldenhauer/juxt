@@ -118,8 +118,8 @@ def _print_help() -> None:
         None,  # horizontal rule
         "↑ ↓ ← →         navigate axes",
         "Space           toggle between two positions",
-        "Home / End      first / last value on active axis",
-        "1–9             jump to Nth value on active axis",
+        "Home / End      first / last value on the primary axis",
+        "1–9             jump to Nth value on the primary axis",
         "Enter           toggle fullscreen",
         "Escape          exit fullscreen / cancel",
         ":               command mode  (:fit  :zoom N  :q)",
@@ -136,8 +136,8 @@ def _print_help() -> None:
         "double-click    fit image to window",
         "drag            pan the image",
         "right-click     copy path / image menu",
-        "wheel           step the ←/→ axis",
-        "Shift+wheel     step the ↑/↓ axis",
+        "wheel           step the primary (←/→) axis",
+        "Shift+wheel     step the secondary (↑/↓) axis",
         "Ctrl+wheel      zoom under the cursor",
         "",
         "mode keys",
@@ -151,7 +151,7 @@ def _print_help() -> None:
         "Key bindings are configurable in",
         "~/.juxt/settings.yaml  (also via :settings);",
         "modifiers.swap there exchanges the Ctrl",
-        "and Shift roles on axis letter keys.",
+        "and Shift roles on axis keys.",
         "",
     ]
     pad = 2
@@ -204,8 +204,8 @@ def _print_help() -> None:
                               match (see {root}/{**plot}.png above)
       --no-watch              disable automatic file watching (local only)
       --watch-interval SEC    poll remote for changes every SEC seconds (default: 5, 0 to disable)
-      --axis-h NAME           lock ←/→ to this axis on startup
-      --axis-v NAME           lock ↑/↓ to this axis on startup
+      --axis-h NAME           make this the primary (←/→) axis on startup
+      --axis-v NAME           make this the secondary (↑/↓) axis on startup
       --squeeze               drop axes with only one value
       --name NAME             session name shown in window title (default: the template path
                               and any pinned values)
@@ -353,7 +353,7 @@ def _resolve_config(
                           keys=_auto_keys(axes), remote=remote_cfg)
         if pins:
             raise ValueError(
-                "--<axis> VALUE pinning requires a {placeholder} template, "
+                "--NAME VALUE pinning requires a {placeholder} template, "
                 "not a plain remote directory"
             )
         config, sep, n_remote = detect_config_remote(
@@ -362,7 +362,7 @@ def _resolve_config(
     if Path(raw).is_dir():
         if pins:
             raise ValueError(
-                "--<axis> VALUE pinning requires a {placeholder} template, not a directory"
+                "--NAME VALUE pinning requires a {placeholder} template, not a directory"
             )
         p = Path(raw)
         files = _iter_images(p, args.max_depth)
@@ -371,7 +371,7 @@ def _resolve_config(
     if raw.lower().endswith((".yaml", ".yml")):
         if pins:
             raise ValueError(
-                "--<axis> VALUE pinning requires a {placeholder} template, not a YAML config"
+                "--NAME VALUE pinning requires a {placeholder} template, not a YAML config"
             )
         return load_config(raw)
     if has_bare_wildcard(raw):

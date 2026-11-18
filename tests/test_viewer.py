@@ -2191,7 +2191,7 @@ class TestCommandMatching:
 
 
 # ---------------------------------------------------------------------------
-# Swapping the Ctrl / Shift modifier roles on axis letter keys
+# Swapping the Ctrl / Shift modifier roles on axis keys
 # ---------------------------------------------------------------------------
 
 CTRL = Qt.KeyboardModifier.ControlModifier
