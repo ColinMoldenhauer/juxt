@@ -104,6 +104,8 @@ _VALUE_HREF_RE = _re.compile(r"^juxt:value/(\d+)/(\d+)$")
 _AXIS_HREF = "juxt:axis/{axis}"
 _AXIS_HREF_RE = _re.compile(r"^juxt:axis/(\d+)$")
 _PATH_HREF = "juxt:path"
+_EDIT_HREF = "juxt:edit/{axis}"
+_EDIT_HREF_RE = _re.compile(r"^juxt:edit/(\d+)$")
 
 # Width of the info sidebar's viewport that its text cannot use: the 8px body
 # margin and 4px document margin on each side, plus generous slack (measured,
@@ -175,6 +177,53 @@ def _parse_axis_href(href: str) -> int | None:
     """Inverse of :func:`_axis_href`; returns None for foreign hrefs."""
     m = _AXIS_HREF_RE.match(href)
     return int(m.group(1)) if m else None
+
+
+def _edit_href(axis_idx: int) -> str:
+    """Anchor target of the [+] after one axis header, which opens its value picker."""
+    return _EDIT_HREF.format(axis=axis_idx)
+
+
+def _parse_edit_href(href: str) -> int | None:
+    """Inverse of :func:`_edit_href`; returns None for foreign hrefs."""
+    m = _EDIT_HREF_RE.match(href)
+    return int(m.group(1)) if m else None
+
+
+def _dispose(dialog: QWidget) -> None:
+    """Close a finished dialogue and have Qt delete it.
+
+    A dialogue parented to the window is owned by it, so without this every
+    value picker or progress dialogue opened would live as long as the window.
+    """
+    dialog.close()
+    dialog.deleteLater()
+
+
+def _images_label(verb: str, n: int) -> str:
+    """Progress text as on startup, e.g. "Loading 4 images…"."""
+    return f"{verb} {n} image{'s' if n != 1 else ''}…"
+
+
+def _shared_sftp(conn: list, remote, get_password):
+    """The SFTP client of the session's shared *conn* (`[ssh, sftp]`),
+    reconnecting first when there is none or its transport has died.
+
+    The password asked at startup is cached, so a reconnect does not ask again.
+    Call with the viewer's remote lock held.
+    """
+    ssh, sftp = conn
+    transport = ssh.get_transport() if ssh is not None else None
+    if sftp is None or transport is None or not transport.is_active():
+        for c in (sftp, ssh):
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+        from .loader import _connect_sftp
+        conn[0], conn[1] = _connect_sftp(remote, get_password)
+    return conn[1]
 
 
 def _pack_rows(widths: list[int], sep_w: int, limit: int) -> list[list[int]]:
@@ -345,6 +394,7 @@ _COMMANDS = [
     "remove-value",
     "subset",
     "ungrid",
+    "values",
     "version",
     "watch",
     "write",
@@ -377,6 +427,7 @@ _CMD_ARGS: dict[str, list[str]] = {
     "remove-value": [],
     "skip-missing": ["on", "off"],
     "subset": [],   # axis name; the values are then edited as free text
+    "values": [],   # axis name; opens the value picker
     "theme": ["auto", "dark", "light"],
     "watch": ["true", "false"],
     "write": [],    # free-text path; empty → file dialog
@@ -451,6 +502,7 @@ _COMMAND_HELP: dict[str, str] = {
     "remove-value": "remove a value from an axis  (e.g. remove-value sensor SMAP)",
     "subset":       "edit the values of an axis: delete, reorder, rename, add  (e.g. subset sensor)",
     "ungrid":       "return to single-image view",
+    "values":       "pick the values of an axis from those on disk: add, remove  (e.g. values sensor)",
     "version":      "show the juxt version",
     "write":        "write current config to a YAML file",
     "swap-axes":    "swap the ←/→ and ↑/↓ axis bindings",
@@ -894,6 +946,8 @@ class ImageView(QGraphicsView):
     _reload_result = Signal(object)     # emitted from reload worker; carries tuple or Exception
     _pattern_result = Signal(object)    # emitted from pattern worker; carries dict or Exception
     _pattern_progress = Signal(int, int, str)  # value, total, label
+    _values_found = Signal(object)      # value-picker listing: (axis, found | Exception)
+    _values_loaded = Signal(object)     # remote subset download: dict | Exception | None
 
     def __init__(
         self,
@@ -985,7 +1039,16 @@ class ImageView(QGraphicsView):
         self._poll_interval: int = poll_interval if poll_interval > 0 else 5
         self._poll_in_progress: bool = False
         self._reload_in_progress: bool = False
+        # Status-bar text while _reload_in_progress; "" keeps the bar quiet
+        # (the value picker shows its own spinner).
+        self._busy_label: str | None = None
         self._remote_conn: list = [None, None]   # [ssh_client, sftp_client], worker-thread only
+        # Serialises workers that share _remote_conn (poll, value picker, subset
+        # download): an SFTP session runs one request sequence at a time.
+        self._remote_lock = threading.Lock()
+        # Bumped whenever the axes change, so a worker started on the old axes
+        # can tell its index-tuple keys no longer mean the same images.
+        self._axes_gen: int = 0
         self._remote_mtimes: dict = remote_mtimes if remote_mtimes is not None else {}
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._start_poll_worker)
@@ -994,6 +1057,9 @@ class ImageView(QGraphicsView):
         self._pattern_result.connect(self._apply_pattern)
         self._pattern_progress.connect(self._on_pattern_progress)
         self._pattern_dlg = None
+        self._values_found.connect(self._on_values_found)
+        self._values_dlg = None   # the open value picker, if any
+        self._values_loaded.connect(self._on_subset_downloaded)
         self._initial_fit_done = False
         self._locked_h: int | None = self.axis_names.index(axis_h) if axis_h and axis_h in self.axis_names else None
         self._locked_v: int | None = self.axis_names.index(axis_v) if axis_v and axis_v in self.axis_names else None
@@ -1441,7 +1507,7 @@ class ImageView(QGraphicsView):
             verb = self._cmd["verb"]
             if "axis" in self._cmd:     # editing the values of one axis
                 return []
-            if verb in ("axis-h", "axis-v", "remove-axis", "subset"):
+            if verb in ("axis-h", "axis-v", "remove-axis", "subset", "values"):
                 pool = list(self.axis_names)
             elif verb == "grid":
                 return self._grid_cmd_candidates(self._cmd["query"])
@@ -1933,6 +1999,14 @@ class ImageView(QGraphicsView):
                 self._do_subset(axis_idx, parse_values(rest))
             else:
                 self._cmd_open_subset(axis_idx)
+        elif verb == "values":
+            raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            axis_name = next((n for n in self.axis_names if n == raw), None) or next(
+                (n for n in self.axis_names if n.lower() == raw.lower()), None)
+            if axis_name is None:
+                self._flash("usage: values AXIS")
+                return
+            self.open_values_dialog(self.axis_names.index(axis_name))
         elif verb == "change-key":
             raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
             tokens = raw.rsplit(None, 1)
@@ -2173,8 +2247,14 @@ class ImageView(QGraphicsView):
         mtimes = self._remote_mtimes   # mutable dict, updated in-place by worker
         get_pw = self._get_password
         config = self.config
+        gen = self._axes_gen
+        lock = self._remote_lock
 
         def _worker():
+            with lock:
+                _poll()
+
+        def _poll():
             # Lazily connect; reconnect whenever the session is dead
             if conn[1] is None:
                 try:
@@ -2187,7 +2267,7 @@ class ImageView(QGraphicsView):
                 from .loader import poll_remote_with_sftp
                 changed = poll_remote_with_sftp(
                     config.template, config.axes, tmpdir, conn[1], mtimes)
-                self._poll_result.emit(changed)
+                self._poll_result.emit((gen, changed))
             except Exception as e:
                 # Session likely dead — clear so next poll reconnects
                 try:
@@ -2206,10 +2286,14 @@ class ImageView(QGraphicsView):
             log.warning("Remote poll failed: %s", result)
             self._flash(f"poll failed: {result}")
             return
-        # result is list[(key, local_path|None)] for changed files only.
+        # result is (gen, list[(key, local_path|None)]) for changed files only.
         # local_path is None when the remote file was deleted or moved.
         # Decode QPixmaps here on the main thread (Qt requirement).
-        changed: list = result
+        gen, changed = result
+        if gen != self._axes_gen:
+            # The axes changed while the poll ran, so its keys point at other
+            # images now; the next poll compares against the new axes.
+            return
         if changed:
             log.debug("Remote poll: %d file(s) changed", len(changed))
         for key, local_path in changed:
@@ -2349,6 +2433,7 @@ class ImageView(QGraphicsView):
 
         self.config = new_config
         self.pixmaps = new_pixmaps
+        self._axes_gen += 1
         self.axis_names = new_axis_names
         self.axis_values = new_axis_values
         self.n_axes = len(new_axis_names)
@@ -2397,6 +2482,7 @@ class ImageView(QGraphicsView):
             self._exit_grid()
         self.config = new_config
         self.pixmaps = new_pixmaps
+        self._axes_gen += 1
         self.axis_names = new_axis_names
         self.axis_values = new_axis_values
         self.n_axes = len(new_axis_names)
@@ -2464,23 +2550,100 @@ class ImageView(QGraphicsView):
         self._apply_axes_change(new_config, new_pixmaps)
         self._flash(f"removed {axis_name}={removed_val}")
 
-    def _do_subset(self, axis_idx: int, wanted: list[str]):
+    # ── value picker (:values, the sidebar's [+]) ────────────────────────────
+
+    def open_values_dialog(self, axis_idx: int):
+        """Let the user tick the values an axis should have, out of those
+        found on disk (:values / the [+] in the info sidebar).
+
+        The dialogue opens at once with the current values and a spinner;
+        the disk is searched in a worker meanwhile (over the session's own
+        SFTP connection when remote, so the password asked at startup is
+        reused) and the values found join the open dialogue.
+        """
+        if not 0 <= axis_idx < self.n_axes:
+            return
+        if self._reload_in_progress:
+            self._flash("busy, try again in a moment")
+            return
+        axis = self.axis_names[axis_idx]
+        current = list(self.axis_values[axis_idx])
+        # Busy (no reload or :pattern may swap the connection under the
+        # worker), but quiet: the spinner is in the dialogue.
+        self._reload_in_progress = True
+        self._busy_label = ""
+
+        config = self.config
+        gen = self._axes_gen
+        conn, lock, get_pw = self._remote_conn, self._remote_lock, self._get_password
+
+        def _worker():
+            from .detect import axis_values_on_disk
+            try:
+                if config.remote is None:
+                    found = axis_values_on_disk(config.template, config.axes, axis)
+                else:
+                    with lock:
+                        sftp = _shared_sftp(conn, config.remote, get_pw)
+                        found = axis_values_on_disk(
+                            config.template, config.axes, axis, sftp)
+                self._values_found.emit((axis, found))
+            except Exception as e:
+                self._values_found.emit((axis, e))
+
+        from .dialogs import ValuesDialog
+        dlg = ValuesDialog(axis, current, parent=self.window())
+        self._values_dlg = dlg
+        threading.Thread(target=_worker, daemon=True).start()
+        try:
+            accepted = dlg.exec() == QDialog.DialogCode.Accepted
+            chosen = dlg.values()
+        finally:
+            self._values_dlg = None
+            _dispose(dlg)
+        self.setFocus()
+        if not accepted or chosen == current:
+            return
+        if gen != self._axes_gen or self.axis_names[axis_idx:axis_idx + 1] != [axis]:
+            self._flash("the axes changed meanwhile; open the value picker again")
+            return
+        self._do_subset(axis_idx, chosen, snap_case=False)
+
+    def _on_values_found(self, result: object):
+        """The listing is in: hand it to the value picker, if still open."""
+        axis, found = result
+        self._reload_in_progress = False
+        self._busy_label = None
+        self.state_changed.emit()
+        dlg = self._values_dlg
+        if dlg is None or dlg.axis_name != axis:
+            return   # closed before the listing came in
+        if isinstance(found, Exception):
+            log.warning("Listing %s values failed: %s", axis, found)
+            dlg.set_found([], error=str(found))
+        else:
+            dlg.set_found(found)
+
+    # ── subset edit ──────────────────────────────────────────────────────────
+
+    def _do_subset(self, axis_idx: int, wanted: list[str], *, snap_case: bool = True):
         """Make *wanted* the values of an axis, in that order.
 
         Kept values carry their images along, values not in the axis yet are
-        loaded from the template, and the rest are dropped.
+        loaded from the template (downloaded in a worker when remote), and the
+        rest are dropped. With *snap_case*, a typed value that differs from an
+        existing one only in case is taken to be that value.
         """
         j = axis_idx
         axis_name = self.axis_names[j]
         old_vals = self.axis_values[j]
 
-        # A value that differs from an existing one only in case is that value
         lowered: dict[str, list[str]] = {}
         for v in old_vals:
             lowered.setdefault(v.lower(), []).append(v)
         new_vals: list[str] = []
         for w in wanted:
-            if w not in old_vals and len(lowered.get(w.lower(), [])) == 1:
+            if snap_case and w not in old_vals and len(lowered.get(w.lower(), [])) == 1:
                 w = lowered[w.lower()][0]
             if w not in new_vals:
                 new_vals.append(w)
@@ -2489,48 +2652,188 @@ class ImageView(QGraphicsView):
             return
 
         added = [v for v in new_vals if v not in old_vals]
-        if added and self.config.remote is not None:
-            self._flash("adding values to a remote session is not supported yet; use :pattern")
-            return
-
-        # Images of the values that stay, re-indexed
         new_idx = {v: i for i, v in enumerate(new_vals)}
         remap = {i: new_idx[v] for i, v in enumerate(old_vals) if v in new_idx}
+        if not added:
+            self._finish_subset(j, new_vals, remap, {}, {})
+        elif self.config.remote is None:
+            files = [(key, path, val, path)
+                     for key, path, val in self._added_jobs(j, new_vals, added)]
+            dlg = self._load_dialog(_images_label("Loading", len(files)), len(files))
+            loaded = self._decode_added(j, files, dlg)
+            _dispose(dlg)
+            if loaded is not None:
+                self._finish_subset(j, new_vals, remap, loaded, {})
+        else:
+            self._download_added_remote(j, new_vals, remap, added)
+
+    def _added_jobs(self, j: int, new_vals: list[str],
+                    added: list[str]) -> list[tuple[tuple, str, str]]:
+        """`(key, path, value)` for every image the *added* values of axis *j*
+        bring in: one per combination of the other axes, keyed in the index
+        space of *new_vals*."""
+        from itertools import product
+        others = [range(len(vals)) for vals in self.axis_values]
+        others[j] = range(1)
+        new_idx = {v: i for i, v in enumerate(new_vals)}
+        jobs = []
+        for val in added:
+            for combo in product(*others):
+                mapping = {n: self.axis_values[i][combo[i]]
+                           for i, n in enumerate(self.axis_names)}
+                mapping[self.axis_names[j]] = val
+                key = combo[:j] + (new_idx[val],) + combo[j + 1:]
+                jobs.append((key, self.config.template.format(**mapping), val))
+        return jobs
+
+    def _load_dialog(self, label: str, total: int):
+        """A progress dialogue like the one on the initial load."""
+        from PySide6.QtWidgets import QProgressDialog
+        dlg = QProgressDialog(label, "Cancel", 0, total, self.window())
+        dlg.setWindowTitle("juxt")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        return dlg
+
+    def _decode_added(self, j: int, files: list[tuple[tuple, str | None, str, str]],
+                      dlg=None, offset: int = 0) -> dict[tuple, QPixmap] | None:
+        """Pixmaps of `(key, local_path, value, shown_path)` *files*, or None
+        (and a flash) when some value has no file at all, which is how a typo
+        shows. A missing file (`local_path` None or unreadable) gets the usual
+        placeholder naming *shown_path*. Progress goes to the progress
+        dialogue *dlg*, counted from *offset*; cancelling it returns None."""
+        from .loader import _error_pixmap
+        loaded: dict[tuple, QPixmap] = {}
+        found: set[str] = set()
+        for i, (key, local, val, shown) in enumerate(files):
+            if dlg is not None:
+                dlg.setValue(offset + i)   # window-modal: keeps the UI painting
+                if dlg.wasCanceled():
+                    self._flash("cancelled; the axis is unchanged")
+                    return None
+            pm = QPixmap(local) if local else QPixmap()
+            if pm.isNull():
+                pm = _error_pixmap(shown)
+            else:
+                found.add(val)
+            loaded[key] = pm
+        for val in dict.fromkeys(f[2] for f in files):
+            if val not in found:
+                self._flash(f"no files for {self.axis_names[j]}={val}")
+                return None
+        return loaded
+
+    def _download_added_remote(self, j: int, new_vals: list[str],
+                               remap: dict[int, int], added: list[str]):
+        """Fetch the images of the *added* values in a worker, over the
+        session's SFTP connection, then finish the edit on the main thread."""
+        if self._reload_in_progress:
+            self._flash("busy, try again in a moment")
+            return
+        if self._remote_tmpdir is None:
+            self._flash("this remote session has no download cache; use :pattern")
+            return
+        jobs = self._added_jobs(j, new_vals, added)
+        n = len(jobs)
+        axis = self.axis_names[j]
+        self._reload_in_progress = True
+        self._busy_label = f"downloading {axis} values…"
+        if self._watching:
+            self._poll_timer.stop()
+        self.state_changed.emit()
+
+        # Downloading fills the first half, decoding the second, as on startup.
+        dlg = self._load_dialog(_images_label("Downloading", n), 2 * n)
+        self._pattern_dlg = dlg
+        cancel = threading.Event()
+        # A lambda, not cancel.set: PySide holds a plain object's bound method
+        # only weakly, so the worker dropping the last reference to the Event
+        # would disconnect the slot from that thread and deadlock the GUI.
+        dlg.canceled.connect(lambda: cancel.set())
+
+        gen = self._axes_gen
+        conn, lock, get_pw = self._remote_conn, self._remote_lock, self._get_password
+        remote, tmpdir = self.config.remote, self._remote_tmpdir
+
+        def _worker():
+            from .loader import download_remote_files
+
+            def _progress(i, total):
+                if cancel.is_set():
+                    raise _Cancelled()
+                self._pattern_progress.emit(i, 2 * total, "")
+
+            try:
+                mtimes: dict = {}
+                with lock:
+                    sftp = _shared_sftp(conn, remote, get_pw)
+                    got = download_remote_files(
+                        [(key, path) for key, path, _v in jobs],
+                        tmpdir, sftp, mtimes, _progress)
+                files = [(key, local, val, path)
+                         for (key, local), (_k, path, val) in zip(got, jobs)]
+                self._values_loaded.emit({
+                    "gen": gen, "axis": j, "new_vals": new_vals, "remap": remap,
+                    "files": files, "mtimes": mtimes,
+                })
+            except _Cancelled:
+                self._values_loaded.emit(None)
+            except Exception as e:
+                self._values_loaded.emit(e)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_subset_downloaded(self, result: object):
+        self._reload_in_progress = False
+        self._busy_label = None
+        dlg, self._pattern_dlg = self._pattern_dlg, None
+        if self._watching and self.config.remote is not None:
+            self._poll_timer.start(self._poll_interval * 1000)
+        try:
+            if result is None:
+                self._flash("cancelled; the axis is unchanged")
+            elif isinstance(result, Exception):
+                log.warning("Downloading new values failed: %s", result)
+                self._flash(f"download failed: {result}")
+            elif result["gen"] != self._axes_gen:
+                self._flash("the axes changed meanwhile; nothing was added")
+            else:
+                j, files = result["axis"], result["files"]
+                if dlg is not None:
+                    dlg.setLabelText(_images_label("Loading", len(files)))
+                loaded = self._decode_added(j, files, dlg, offset=len(files))
+                if loaded is not None:
+                    self._finish_subset(j, result["new_vals"], result["remap"],
+                                        loaded, result["mtimes"])
+        finally:
+            if dlg is not None:
+                _dispose(dlg)
+            self.state_changed.emit()
+
+    def _finish_subset(self, j: int, new_vals: list[str], remap: dict[int, int],
+                       loaded: dict[tuple, QPixmap], new_mtimes: dict):
+        """Apply a subset edit: re-index the kept images, add the *loaded* ones."""
+        axis_name = self.axis_names[j]
+        old_n = len(self.axis_values[j])
         new_pixmaps: dict[tuple, QPixmap] = {}
         for key, pm in self.pixmaps.items():
             if key[j] in remap:
                 new_pixmaps[key[:j] + (remap[key[j]],) + key[j + 1:]] = pm
+        new_pixmaps.update(loaded)
 
-        # Images of the values that are new: every combination of the other axes
-        if added:
-            from itertools import product
-            from .loader import _error_pixmap
-            others = [range(len(vals)) for vals in self.axis_values]
-            others[j] = range(1)
-            loaded: dict[tuple, QPixmap] = {}
-            for val in added:
-                found = False
-                for combo in product(*others):
-                    mapping = {n: self.axis_values[i][combo[i]]
-                               for i, n in enumerate(self.axis_names)}
-                    mapping[axis_name] = val
-                    path = self.config.template.format(**mapping)
-                    pm = QPixmap(path)
-                    found = found or not pm.isNull()
-                    key = combo[:j] + (new_idx[val],) + combo[j + 1:]
-                    loaded[key] = pm if not pm.isNull() else _error_pixmap(path)
-                if not found:
-                    self._flash(f"no files for {axis_name}={val}")
-                    return
-            new_pixmaps.update(loaded)
-
-        if self.config.remote is not None and self._remote_mtimes:
+        if self.config.remote is not None:
+            # A fresh dict rather than an in-place edit: a poll still running
+            # on the old axes writes into the old one, and its result is
+            # dropped once the axes generation moves on.
             moved = {}
-            for key, mtime in self._remote_mtimes.items():
+            for key, mtime in dict(self._remote_mtimes).items():
                 if key[j] in remap:
                     moved[key[:j] + (remap[key[j]],) + key[j + 1:]] = mtime
-            self._remote_mtimes.clear()
-            self._remote_mtimes.update(moved)
+            moved.update(new_mtimes)
+            self._remote_mtimes = moved
 
         new_axes = dict(self.config.axes)
         new_axes[axis_name] = new_vals
@@ -2543,9 +2846,10 @@ class ImageView(QGraphicsView):
             remote=self.config.remote,
         )
         self._apply_axes_change(new_config, new_pixmaps)
-        dropped = len(old_vals) - len(remap)
+        added = len(new_vals) - len(remap)
+        dropped = old_n - len(remap)
         self._flash(f"{axis_name}: {len(new_vals)} values"
-                    f" ({len(added)} added, {dropped} removed)")
+                    f" ({added} added, {dropped} removed)")
 
     def _do_change_key(self, axis_name: str, letter: str | None):
         new_keys = {k: n for k, n in self.config.keys.items()
@@ -2647,7 +2951,8 @@ class ImageView(QGraphicsView):
         self._pattern_dlg = dlg
 
         cancel_event = threading.Event()
-        dlg.canceled.connect(cancel_event.set)
+        # Not cancel_event.set; see _download_added_remote.
+        dlg.canceled.connect(lambda: cancel_event.set())
 
         def _worker():
             def _check():
@@ -2811,7 +3116,7 @@ class ImageView(QGraphicsView):
 
         def _close_dlg():
             if self._pattern_dlg is not None:
-                self._pattern_dlg.close()
+                _dispose(self._pattern_dlg)
                 self._pattern_dlg = None
 
         if result is None:  # cancelled by user
@@ -2879,6 +3184,7 @@ class ImageView(QGraphicsView):
             self._exit_grid()
         self.config = new_config
         self.pixmaps = new_pixmaps
+        self._axes_gen += 1
         self.axis_names = list(new_config.axes.keys())
         self.axis_values = list(new_config.axes.values())
         self.n_axes = len(self.axis_names)
@@ -3208,6 +3514,7 @@ class InfoPanel(QTextEdit):
 
     value_clicked = Signal(int, int)  # axis index, value index
     path_clicked = Signal()
+    edit_clicked = Signal(int)        # axis index: open its value picker
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3229,6 +3536,7 @@ class InfoPanel(QTextEdit):
         self._expanded: dict[str, bool] = {}
         self._press_axis: int | None = None
         self._press_path = False
+        self._press_edit: int | None = None
         # href → full text, for every value the last layout had to elide.
         self._elided: dict[str, str] = {}
 
@@ -3262,6 +3570,7 @@ class InfoPanel(QTextEdit):
             w.view.setFocus()
         self._press_axis = None
         self._press_path = False
+        self._press_edit = None
         if event.button() != Qt.MouseButton.LeftButton:
             return
         target = _parse_value_href(href)
@@ -3269,6 +3578,8 @@ class InfoPanel(QTextEdit):
             self.value_clicked.emit(*target)
         elif href == _PATH_HREF:
             self._press_path = True
+        elif _parse_edit_href(href) is not None:
+            self._press_edit = _parse_edit_href(href)
         else:
             self._press_axis = _parse_axis_href(href)
 
@@ -3279,6 +3590,7 @@ class InfoPanel(QTextEdit):
         # not rebuild the document under the selection.
         axis, self._press_axis = self._press_axis, None
         on_path, self._press_path = self._press_path, False
+        edit, self._press_edit = self._press_edit, None
         if (event.button() != Qt.MouseButton.LeftButton
                 or self.textCursor().hasSelection()):
             return
@@ -3287,12 +3599,15 @@ class InfoPanel(QTextEdit):
             self.toggle_axis(axis)
         elif on_path and href == _PATH_HREF:
             self.path_clicked.emit()
+        elif edit is not None and _parse_edit_href(href) == edit:
+            self.edit_clicked.emit(edit)
 
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
         href = self.anchorAt(event.position().toPoint())
         over_link = (_parse_value_href(href) is not None
                      or _parse_axis_href(href) is not None
+                     or _parse_edit_href(href) is not None
                      or href == _PATH_HREF)
         self.viewport().setCursor(
             Qt.CursorShape.PointingHandCursor if over_link
@@ -3305,7 +3620,12 @@ class InfoPanel(QTextEdit):
         # says what a click does, anything else shows nothing.
         if event.type() == QEvent.Type.ToolTip:
             href = self.anchorAt(event.pos())
-            full = "click to copy" if href == _PATH_HREF else self._elided.get(href)
+            if href == _PATH_HREF:
+                full = "click to copy"
+            elif _parse_edit_href(href) is not None:
+                full = "add or remove values  (:values)"
+            else:
+                full = self._elided.get(href)
             if full:
                 QToolTip.showText(event.globalPos(), full, self.viewport())
             else:
@@ -3463,10 +3783,13 @@ class InfoPanel(QTextEdit):
                     sep_html.join(links[k][0] for k in row) for row in rows
                 )
             marker = "▾" if expanded else "▸"
+            header = _theme.current().header
             parts.append(
                 f'<a href="{_axis_href(i)}">'
-                f"<span style='color:{_theme.current().header}'>{marker}&nbsp;{_html.escape(name)}</span>"
-                f"</a><br>{val_html}<br><br>"
+                f"<span style='color:{header}'>{marker}&nbsp;{_html.escape(name)}</span>"
+                f'</a>&nbsp;&nbsp;<a href="{_edit_href(i)}">'
+                f"<span style='color:{_theme.current().muted}'>[+]</span></a>"
+                f"<br>{val_html}<br><br>"
             )
         return "".join(parts)
 
@@ -3808,6 +4131,7 @@ class MainWindow(QMainWindow):
             self._info_panel.refresh(self.view)
         self._info_panel.value_clicked.connect(self.view.goto_value)
         self._info_panel.path_clicked.connect(self.view.copy_path)
+        self._info_panel.edit_clicked.connect(self.view.open_values_dialog)
 
         # Docked opposite the info sidebar so the two can be open at once.
         self._shortcut_panel = ShortcutPanel()
@@ -3926,11 +4250,12 @@ class MainWindow(QMainWindow):
             self._bar_hide_timer.start()
         self._help_label.setText("")
 
-        if v._reload_in_progress:
+        if v._reload_in_progress and v._busy_label != "":
             if not self._spinner_timer.isActive():
                 self._spinner_timer.start()
             self._status_label.setText(
-                f"{_SPINNER[self._spinner_frame % len(_SPINNER)]}  reloading…"
+                f"{_SPINNER[self._spinner_frame % len(_SPINNER)]}  "
+                f"{v._busy_label or 'reloading…'}"
             )
             return
 

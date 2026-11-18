@@ -171,6 +171,39 @@ def preload_remote(
     return preload(local_template, axes, _offset_progress), tmpdir, mtimes
 
 
+def download_remote_files(
+    jobs: list[tuple[tuple[int, ...], str]],
+    tmpdir: str,
+    sftp: "paramiko.SFTPClient",
+    mtimes: dict[tuple[int, ...], float],
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[tuple[tuple[int, ...], str | None]]:
+    """Download each `(key, remote_path)` of *jobs* into *tmpdir*.
+
+    Records the remote mtime of every file fetched in *mtimes* under its key,
+    so later polls skip it while unchanged. Returns `(key, local_path)` pairs
+    in job order, with `local_path` None for a file the remote does not have;
+    the caller decodes the pixmaps on the main thread.
+    """
+    out: list[tuple[tuple[int, ...], str | None]] = []
+    for i, (key, remote_path) in enumerate(jobs):
+        if on_progress:
+            on_progress(i, len(jobs))
+        local_path = Path(tmpdir) / PurePosixPath(remote_path.lstrip("/"))
+        try:
+            mtime = sftp.stat(remote_path).st_mtime
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            sftp.get(remote_path, str(local_path))
+        except OSError:
+            out.append((key, None))
+            continue
+        mtimes[key] = mtime
+        out.append((key, str(local_path)))
+    if on_progress:
+        on_progress(len(jobs), len(jobs))
+    return out
+
+
 def poll_remote_with_sftp(
     template: str,
     axes: dict[str, list[str]],

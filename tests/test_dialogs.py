@@ -5,7 +5,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QDialogButtonBox
 
-from juxt.dialogs import GridDialog, auto_layout
+from juxt.dialogs import GridDialog, ValuesDialog, auto_layout, merge_values
 
 
 AXIS_NAMES = ["sensor", "date"]
@@ -241,3 +241,186 @@ class TestViewerIntegration:
         assert stub.last.kwargs["axis"] == 1
         assert stub.last.kwargs["values"] == [0]
         assert stub.last.kwargs["in_grid"] is True
+
+
+class TestMergeValues:
+    def test_sorted_axis_takes_new_values_in_place(self):
+        assert merge_values(["A", "C"], ["A", "B", "C", "D"]) == ["A", "B", "C", "D"]
+
+    def test_numeric_axis_sorts_numerically(self):
+        assert merge_values(["2", "10"], ["2", "3", "10"]) == ["2", "3", "10"]
+
+    def test_reordered_axis_keeps_its_order_and_appends(self):
+        assert merge_values(["C", "A"], ["A", "B", "C"]) == ["C", "A", "B"]
+
+    def test_nothing_new(self):
+        assert merge_values(["B", "A"], ["A", "B"]) == ["B", "A"]
+
+
+@pytest.fixture
+def values_dlg(qtbot):
+    def _make(current=("A", "C"), found=("A", "B", "C", "D"), **kw):
+        d = ValuesDialog("sensor", list(current), list(found), **kw)
+        qtbot.addWidget(d)
+        return d
+    return _make
+
+
+def _rows(d):
+    items = [d.value_list.item(i) for i in range(d.value_list.count())]
+    return [(it.data(Qt.ItemDataRole.UserRole), it.text(),
+             it.checkState() == Qt.CheckState.Checked) for it in items]
+
+
+class TestValuesDialog:
+    def test_current_ticked_new_unticked_and_marked(self, values_dlg):
+        assert _rows(values_dlg()) == [
+            ("A", "A", True), ("B", "B", False),
+            ("C", "C", True), ("D", "D", False),
+        ]
+
+    def test_unchanged_returns_current(self, values_dlg):
+        assert values_dlg().values() == ["A", "C"]
+
+    def test_ticking_adds_in_list_order(self, values_dlg):
+        d = values_dlg()
+        d.value_list.item(1).setCheckState(Qt.CheckState.Checked)   # B
+        d.value_list.item(0).setCheckState(Qt.CheckState.Unchecked)  # A
+        assert d.values() == ["B", "C"]
+        assert d.hint.text() == "+1  −1"
+
+    def test_value_without_files_is_flagged(self, values_dlg):
+        d = values_dlg(current=["A", "Z"], found=["A"])
+        assert ("Z", "Z  no files", True) in _rows(d)
+
+    def test_listing_error_shows_current_only(self, values_dlg):
+        d = values_dlg(found=[], error="boom")
+        assert [r[1] for r in _rows(d)] == ["A", "C"]
+        assert "boom" in d.hint.text()
+
+    def test_no_change_shows_no_hint(self, values_dlg):
+        assert values_dlg().hint.text() == ""
+
+    def test_opens_large_enough_for_its_values(self, values_dlg):
+        d = values_dlg(current=[f"v{i:02d}" for i in range(15)], found=[])
+        d.show()
+        assert d.width() >= 360
+        list_h = d.value_list.height()
+        assert list_h >= 15 * d.value_list.sizeHintForRow(0)
+
+    def test_buttons_never_overlap_the_list(self, values_dlg, qtbot):
+        d = values_dlg(current=[f"v{i:02d}" for i in range(40)], found=[])
+        d.show()
+        d.resize(d.width(), 200)   # squeeze it
+        qtbot.wait(10)
+        lst = d.value_list.geometry()
+        for b in d.findChildren(type(d.buttons.button(QDialogButtonBox.StandardButton.Ok))):
+            if b.isVisible():
+                top_left = b.mapTo(d, b.rect().topLeft())
+                assert top_left.y() >= lst.bottom(), b.text()
+
+    def test_filter_limits_all_and_none(self, values_dlg):
+        d = values_dlg(current=["A1", "B1"], found=["A1", "A2", "B1", "B2"])
+        d.filter_edit.setText("a")
+        hidden = [d.value_list.item(i).isHidden() for i in range(4)]
+        assert hidden == [False, False, True, True]
+        d._set_visible(True)
+        assert d.values() == ["A1", "A2", "B1"]
+        d._set_visible(False)
+        assert d.values() == ["B1"]
+
+    def test_apply_disabled_without_values(self, values_dlg):
+        d = values_dlg()
+        d._set_visible(False)
+        assert not d.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+        d._accept()
+        assert d.result() != QDialog.DialogCode.Accepted
+
+    def test_down_from_filter_enters_list(self, values_dlg, qtbot):
+        d = values_dlg(current=["A1", "B1"], found=["A1", "A2", "B1", "B2"])
+        d.show()
+        d.filter_edit.setFocus()
+        d.filter_edit.setText("b")
+        qtbot.keyClick(d.filter_edit, Qt.Key.Key_Down)
+        assert d.value_list.currentRow() == 2
+
+
+class TestValuesDialogLoading:
+    def test_opens_with_current_values_and_a_spinner(self, qtbot):
+        d = ValuesDialog("sensor", ["A", "C"])
+        qtbot.addWidget(d)
+        assert d.loading
+        assert [r[1] for r in _rows(d)] == ["A", "C"]
+        assert "searching" in d.hint.text()
+        assert d.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+
+    def test_listing_joins_in_place_keeping_ticks_and_filter(self, qtbot):
+        d = ValuesDialog("sensor", ["A", "C"])
+        qtbot.addWidget(d)
+        d.value_list.item(0).setCheckState(Qt.CheckState.Unchecked)   # drop A
+        d.filter_edit.setText("c")
+        d.set_found(["A", "B", "C", "D"])
+        assert not d.loading
+        assert _rows(d) == [("A", "A", False), ("B", "B", False),
+                            ("C", "C", True), ("D", "D", False)]
+        assert [d.value_list.item(i).isHidden() for i in range(4)] == [True, True, False, True]
+        assert d.hint.text() == "−1"
+
+    def test_spinner_animates(self, qtbot):
+        d = ValuesDialog("sensor", ["A"])
+        qtbot.addWidget(d)
+        first = d.hint.text()
+        qtbot.waitUntil(lambda: d.hint.text() != first, timeout=1000)
+
+    def test_does_not_shrink_when_the_listing_arrives(self, qtbot):
+        d = ValuesDialog("sensor", ["A"])
+        qtbot.addWidget(d)
+        d.show()
+        d.resize(600, 500)
+        d.set_found(["A", "B"])
+        assert (d.width(), d.height()) == (600, 500)
+
+
+class TestValuesDialogDoubleClick:
+    def _dialog(self, qtbot):
+        d = ValuesDialog("sensor", ["A"], ["A", "B"])
+        qtbot.addWidget(d)
+        d.show()
+        qtbot.waitExposed(d)
+        return d
+
+    def _point(self, d, row, dx):
+        rect = d.value_list.visualItemRect(d.value_list.item(row))
+        return rect.topLeft() + type(rect.topLeft())(dx, rect.height() // 2)
+
+    def test_double_click_on_text_toggles(self, qtbot):
+        d = self._dialog(qtbot)
+        qtbot.mouseDClick(d.value_list.viewport(), Qt.MouseButton.LeftButton,
+                          pos=self._point(d, 1, 60))
+        assert d.values() == ["A", "B"]
+        qtbot.mouseDClick(d.value_list.viewport(), Qt.MouseButton.LeftButton,
+                          pos=self._point(d, 1, 60))
+        assert d.values() == ["A"]
+
+    def test_double_click_updates_hint(self, qtbot):
+        d = self._dialog(qtbot)
+        qtbot.mouseDClick(d.value_list.viewport(), Qt.MouseButton.LeftButton,
+                          pos=self._point(d, 1, 60))
+        assert d.hint.text() == "+1"
+
+    def test_box_is_left_to_qt(self, qtbot):
+        """A double-click on the box itself is Qt's (one toggle), not ours too."""
+        d = self._dialog(qtbot)
+        item = d.value_list.item(1)
+        x = d.value_list.visualItemRect(item).left() + 4
+        assert d._on_indicator(item, x)
+        assert not d._on_indicator(item, x + 56)
+
+
+def test_new_values_are_marked_by_colour(qtbot):
+    from PySide6.QtGui import QColor
+    from juxt import theme
+    d = ValuesDialog("sensor", ["A"], ["A", "B"])
+    qtbot.addWidget(d)
+    assert d.value_list.item(1).foreground().color() == QColor(theme.current().accent)
+    assert d.value_list.item(0).foreground().color() != QColor(theme.current().accent)

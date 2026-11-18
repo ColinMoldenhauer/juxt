@@ -1,7 +1,9 @@
 """Modal dialogues driven from the viewer's key bindings.
 
-Currently only the grid builder (``Ctrl+Shift+G`` / ``:grid-dialog``), which is
-a point-and-click front end for the ``:grid`` command family.
+The grid builder (``Ctrl+Shift+G`` / ``:grid-dialog``), a point-and-click front
+end for the ``:grid`` command family, and the value picker (``:values`` / the
+``[+]`` next to an axis in the info sidebar), which adds and removes the values
+of one axis.
 """
 from __future__ import annotations
 
@@ -10,7 +12,7 @@ import math
 import string
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -41,7 +44,7 @@ QDialog { background: $surface; }
 QLabel, QCheckBox, QRadioButton { color: $text;
     font-family: 'Courier New', monospace; font-size: 9pt; }
 QLabel#hint { color: $muted; }
-QComboBox, QSpinBox, QListWidget {
+QComboBox, QSpinBox, QListWidget, QLineEdit {
     background: $panel; color: $text; border: 1px solid $border;
     selection-background-color: $selection; selection-color: $selection_text;
     font-family: 'Courier New', monospace; font-size: 9pt; padding: 2px; }
@@ -76,6 +79,8 @@ QCheckBox::indicator:disabled, QListWidget::indicator:disabled {
 
 # Longer value lists scroll rather than growing the dialogue past this.
 _MAX_LIST_ROWS = 12
+_MAX_VALUE_ROWS = 20   # the value picker has room to spare
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 class _ArrowSpinBox(QSpinBox):
@@ -402,4 +407,285 @@ class GridDialog(QDialog):
             sharey=self.sharey_check.isChecked(),
         )
         log.debug("grid dialog: %s", self.spec)
+        self.accept()
+
+
+def merge_values(current: list[str], found: list[str]) -> list[str]:
+    """The values of *current* and *found* in the order the value picker lists them.
+
+    The new values (in *found* only) slot into place when *current* is sorted,
+    numerically if every value is a number and as text otherwise, so a plain
+    discovered axis stays sorted. An axis the user reordered keeps its order,
+    and the new values follow it.
+    """
+    seen = set(current)
+    new = [v for v in found if v not in seen]
+    union = list(current) + new
+    if not new:
+        return union
+    try:
+        nums = {v: float(v) for v in union}
+        key = nums.__getitem__ if all(math.isfinite(n) for n in nums.values()) else None
+    except ValueError:
+        key = None
+    if key is None:
+        key = str
+    if list(current) == sorted(current, key=key):
+        return sorted(union, key=key)
+    return union
+
+
+class ValuesDialog(QDialog):
+    """Tick the values one axis should have, out of those found on disk.
+
+    Lists the axis's current values (ticked) and the values found on disk
+    that it does not have yet (unticked, in the accent colour). With *found* None the
+    dialogue opens while the disk is still being searched: it shows the
+    current values with a spinner, and :meth:`set_found` adds the rest once
+    the listing is in. After ``exec()`` returns :data:`Accepted`,
+    :meth:`values` holds the ticked values in list order, ready for the
+    viewer's subset edit.
+    """
+
+    def __init__(
+        self,
+        axis_name: str,
+        current: list[str],
+        found: list[str] | None = None,
+        *,
+        error: str | None = None,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.axis_name = axis_name
+        self._current = list(current)
+        self._found: set[str] | None = None   # None until the listing is in
+        self._error: str | None = None
+        self._new: list[str] = []
+        self._spin_frame = 0
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(80)
+        self._spin_timer.timeout.connect(self._spin)
+
+        self.setWindowTitle(f"Values of {axis_name}")
+        self.setModal(True)
+        self.setStyleSheet(_STYLE.substitute(vars(_theme.current())))
+
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("filter")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.installEventFilter(self)
+
+        self.value_list = QListWidget()
+        self.value_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.value_list.viewport().installEventFilter(self)
+
+        btn_all = QPushButton("All")
+        btn_none = QPushButton("None")
+        sel_row = QHBoxLayout()
+        sel_row.setContentsMargins(0, 0, 0, 0)
+        for b in (btn_all, btn_none):
+            sel_row.addWidget(b)
+        sel_row.addStretch(1)
+
+        self.hint = QLabel()
+        self.hint.setObjectName("hint")
+        self.hint.setWordWrap(True)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Apply")
+
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+        root.addWidget(self.filter_edit)
+        root.addWidget(self.value_list, 1)   # the list takes any spare height
+        root.addLayout(sel_row)
+        root.addWidget(self.hint)
+        root.addWidget(self.buttons)
+
+        self._populate({})
+        if found is not None or error is not None:
+            self.set_found(found or [], error)
+        else:
+            self._spin_timer.start()
+        self._size_to_list()
+
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        self.value_list.itemChanged.connect(self._update_hint)
+        btn_all.clicked.connect(lambda: self._set_visible(True))
+        btn_none.clicked.connect(lambda: self._set_visible(False))
+        self.buttons.accepted.connect(self._accept)
+        self.buttons.rejected.connect(self.reject)
+
+        self._update_hint()
+        self.filter_edit.setFocus()
+
+    # ── list ─────────────────────────────────────────────────────────────────
+
+    @property
+    def loading(self) -> bool:
+        """Whether the listing of the values on disk is still outstanding."""
+        return self._found is None and self._error is None
+
+    def set_found(self, found: list[str], error: str | None = None) -> None:
+        """Take in the values found on disk (or why listing them failed).
+
+        The new values join the list in place; every tick the user already
+        set is kept, and so is the filter.
+        """
+        ticks = {item.data(Qt.ItemDataRole.UserRole):
+                 item.checkState() == Qt.CheckState.Checked for item in self._items()}
+        self._spin_timer.stop()
+        self._error = error
+        self._found = None if error is not None else set(found)
+        current = set(self._current)
+        self._new = [] if error is not None else [v for v in found if v not in current]
+        self.value_list.blockSignals(True)
+        self.value_list.clear()
+        self._populate(ticks)
+        self.value_list.blockSignals(False)
+        self._apply_filter(self.filter_edit.text())
+        self._grow_to_list()
+        self._update_hint()
+
+    def _spin(self):
+        self._spin_frame += 1
+        self._update_hint()
+
+    def _populate(self, ticks: dict[str, bool]):
+        """Fill the list; *ticks* keeps the user's choice per value, the rest
+        start ticked exactly when the axis has them."""
+        t = _theme.current()
+        current = set(self._current)
+        # Without a listing to compare against, nothing can be called missing.
+        listed = self._found is not None
+        for val in merge_values(self._current, self._new):
+            text = val
+            item = QListWidgetItem()
+            if val not in current:
+                item.setForeground(QColor(t.accent))   # new: the colour says so
+            elif listed and val not in self._found:
+                text += "  no files"
+                item.setForeground(QColor(t.muted))
+            item.setText(text)
+            item.setData(Qt.ItemDataRole.UserRole, val)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            checked = ticks.get(val, val in current)
+            item.setCheckState(
+                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            )
+            self.value_list.addItem(item)
+
+    def _size_to_list(self):
+        """Open tall enough for the values (up to a screenful of rows) and
+        wide enough for the longest one; the list is never pinned to that
+        height, so the layout cannot squeeze the buttons onto it."""
+        self.ensurePolished()
+        self.value_list.ensurePolished()
+        n = self.value_list.count()
+        row_h = max(self.value_list.sizeHintForRow(0) if n else 0,
+                    self.value_list.fontMetrics().height() + 6)
+        rows = max(6, min(n, _MAX_VALUE_ROWS))
+        self.value_list.setMinimumHeight(4 * row_h)
+        list_h = rows * row_h + 2 * self.value_list.frameWidth() + 8
+        width = max(360, self.value_list.sizeHintForColumn(0) + 60)
+        chrome = self.sizeHint().height() - self.value_list.sizeHint().height()
+        self.resize(width, chrome + list_h)
+
+    def _grow_to_list(self):
+        """After the listing came in: grow to fit the added rows, never shrink
+        a dialogue the user is looking at (or has resized)."""
+        w, h = self.width(), self.height()
+        self._size_to_list()
+        self.resize(max(w, self.width()), max(h, self.height()))
+
+    def _items(self):
+        return [self.value_list.item(i) for i in range(self.value_list.count())]
+
+    def _apply_filter(self, text: str):
+        q = text.strip().lower()
+        for item in self._items():
+            val = item.data(Qt.ItemDataRole.UserRole)
+            item.setHidden(bool(q) and q not in val.lower())
+
+    def _set_visible(self, checked: bool):
+        """Tick or untick every row the filter shows."""
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        self.value_list.blockSignals(True)
+        for item in self._items():
+            if not item.isHidden():
+                item.setCheckState(state)
+        self.value_list.blockSignals(False)
+        self._update_hint()
+
+    def _on_indicator(self, item: QListWidgetItem, x: int) -> bool:
+        """Whether *x* (viewport coordinates) falls on *item*'s check box."""
+        style = self.value_list.style()
+        zone = (style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth)
+                + 2 * style.pixelMetric(QStyle.PixelMetric.PM_FocusFrameHMargin) + 4)
+        return x - self.value_list.visualItemRect(item).left() < zone
+
+    def eventFilter(self, obj, event):
+        # A double-click on a row's text ticks it. On the box itself Qt's own
+        # handling stays: the first click toggles, the second is swallowed.
+        if (obj is self.value_list.viewport()
+                and event.type() == event.Type.MouseButtonDblClick
+                and event.button() == Qt.MouseButton.LeftButton):
+            pos = event.position().toPoint()
+            item = self.value_list.itemAt(pos)
+            if item is not None and not self._on_indicator(item, pos.x()):
+                item.setCheckState(
+                    Qt.CheckState.Unchecked
+                    if item.checkState() == Qt.CheckState.Checked
+                    else Qt.CheckState.Checked
+                )
+                return True
+        # Down from the filter field steps into the list, onto the first row
+        # the filter left, where Space toggles it.
+        if (obj is self.filter_edit and event.type() == event.Type.KeyPress
+                and event.key() == Qt.Key.Key_Down):
+            for i, item in enumerate(self._items()):
+                if not item.isHidden():
+                    self.value_list.setCurrentRow(i)
+                    self.value_list.setFocus()
+                    break
+            return True
+        return super().eventFilter(obj, event)
+
+    # ── result ───────────────────────────────────────────────────────────────
+
+    def values(self) -> list[str]:
+        """The ticked values, in list order."""
+        return [
+            item.data(Qt.ItemDataRole.UserRole) for item in self._items()
+            if item.checkState() == Qt.CheckState.Checked
+        ]
+
+    def _update_hint(self, *_):
+        chosen = self.values()
+        ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setEnabled(bool(chosen))
+        current = set(self._current)
+        added = sum(v not in current for v in chosen)
+        removed = len(current - set(chosen))
+        change = "  ".join(t for t in (f"+{added}" if added else "",
+                                       f"−{removed}" if removed else "") if t)
+        if self._error is not None:
+            text = f"listing failed: {self._error}"
+        elif not chosen:
+            text = "tick at least one value"
+        else:
+            text = change
+        if self.loading:
+            spin = f"{_SPINNER[self._spin_frame % len(_SPINNER)]}  searching disk…"
+            text = f"{spin}   {text}" if text else spin
+        self.hint.setText(text)
+        self.hint.setVisible(bool(text))
+
+    def _accept(self):
+        if not self.values():
+            return
+        log.debug("values dialog: %s → %s", self.axis_name, self.values())
         self.accept()

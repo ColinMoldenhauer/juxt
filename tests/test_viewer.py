@@ -2639,11 +2639,12 @@ class TestSubsetCommand:
         view._cmd_execute("subset nope A")
         assert "usage" in view._flash_msg
 
-    def test_remote_add_is_refused(self, view):
+    def test_remote_add_without_cache_is_refused(self, view):
         from juxt.config import RemoteConfig
         view.config.remote = RemoteConfig(host="h")
         view._cmd_execute("subset sensor A B C")
         assert view.axis_values[0] == ["A", "B"]
+        assert "download cache" in view._flash_msg
 
     def test_axis_only_opens_editor_prefilled(self, view):
         view._cmd_execute("subset sensor")
@@ -2683,3 +2684,313 @@ class TestSubsetPrompt:
         w._update_status()
         text = w._status_label.text().replace("&nbsp;", " ")
         assert ":subset sensor  A B" in text
+
+
+# ---------------------------------------------------------------------------
+# :values / the sidebar's [+] -- pick the values of an axis from those on disk
+# ---------------------------------------------------------------------------
+
+class _LocalSFTP:
+    """SFTP stand-in over the real filesystem: lists, stats and 'downloads'."""
+
+    def __init__(self):
+        self.fetched: list[str] = []
+
+    def listdir_attr(self, path):
+        import os
+        from types import SimpleNamespace
+        return [SimpleNamespace(filename=n, st_mode=os.lstat(os.path.join(path, n)).st_mode)
+                for n in sorted(os.listdir(path))]
+
+    def stat(self, path):
+        import os
+        st = os.stat(path)
+        return type("Attr", (), {"st_mode": st.st_mode, "st_mtime": st.st_mtime})()
+
+    def get(self, remote, local):
+        import shutil
+        self.fetched.append(remote)
+        shutil.copy(remote, local)
+
+    def normalize(self, path):
+        import os
+        return os.path.realpath(path)
+
+
+def _tick_all(monkeypatch, ticked=None):
+    """Make the value picker tick *ticked* (default: everything) and apply."""
+    from PySide6.QtWidgets import QDialog
+    from juxt.dialogs import ValuesDialog
+
+    seen = {}
+
+    def fake_exec(self):
+        import time
+        from PySide6.QtWidgets import QApplication
+        seen["loading_at_open"] = self.loading
+        deadline = time.monotonic() + 5
+        while self.loading and time.monotonic() < deadline:   # as a user would wait
+            QApplication.processEvents()
+            time.sleep(0.005)
+        seen["rows"] = [self.value_list.item(i).data(Qt.ItemDataRole.UserRole)
+                        for i in range(self.value_list.count())]
+        seen["hint"] = self.hint.text()
+        for i in range(self.value_list.count()):
+            item = self.value_list.item(i)
+            val = item.data(Qt.ItemDataRole.UserRole)
+            on = ticked is None or val in ticked
+            item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(ValuesDialog, "exec", fake_exec)
+    return seen
+
+
+class TestValuesPicker:
+    @pytest.fixture
+    def view(self, flat_config, flat_plot_dir, qtbot):
+        """sensor A,B x date d1,d2, plus C on disk."""
+        from conftest import make_png
+        from juxt.loader import preload
+
+        for date in ("d1", "d2"):
+            (flat_plot_dir / f"C_{date}.png").write_bytes(make_png())
+        v = ImageView(flat_config, preload(flat_config.template, flat_config.axes))
+        qtbot.addWidget(v)
+        v.show()
+        return v
+
+    def test_lists_disk_values_and_adds_ticked(self, view, qtbot, monkeypatch):
+        from juxt.loader import MissingPixmap
+        seen = _tick_all(monkeypatch)
+        view._cmd_execute("values sensor")
+        qtbot.waitUntil(lambda: view.axis_values[0] == ["A", "B", "C"])
+        assert seen["rows"] == ["A", "B", "C"]
+        assert not isinstance(view.pixmaps[(2, 1)], MissingPixmap)
+        assert not view._reload_in_progress
+
+    def test_unticking_removes(self, view, qtbot, monkeypatch):
+        _tick_all(monkeypatch, ticked={"B"})
+        view._cmd_execute("values sensor")
+        qtbot.waitUntil(lambda: view.axis_values[0] == ["B"])
+
+    def test_cancel_leaves_axis(self, view, qtbot, monkeypatch):
+        from PySide6.QtWidgets import QDialog
+        from juxt.dialogs import ValuesDialog
+        opened = []
+        monkeypatch.setattr(ValuesDialog, "exec",
+                            lambda self: opened.append(1) or QDialog.DialogCode.Rejected)
+        view._cmd_execute("values sensor")
+        qtbot.waitUntil(lambda: bool(opened))
+        assert view.axis_values[0] == ["A", "B"]
+
+    def test_axis_name_ignores_case(self, view, qtbot, monkeypatch):
+        _tick_all(monkeypatch)
+        view._cmd_execute("values SENSOR")
+        qtbot.waitUntil(lambda: len(view.axis_values[0]) == 3)
+
+    def test_unknown_axis_flashes_usage(self, view):
+        view._cmd_execute("values nope")
+        assert "usage" in view._flash_msg
+
+    def test_busy_is_refused(self, view):
+        view._reload_in_progress = True
+        view.open_values_dialog(0)
+        assert "busy" in view._flash_msg
+
+    def test_dialog_opens_before_the_listing(self, view, monkeypatch):
+        seen = _tick_all(monkeypatch)
+        view.open_values_dialog(0)
+        assert seen["loading_at_open"] is True
+        assert seen["rows"] == ["A", "B", "C"]
+
+    def test_listing_arriving_after_close_is_ignored(self, view):
+        view._reload_in_progress = True
+        view._on_values_found(("sensor", ["A", "B", "C"]))
+        assert not view._reload_in_progress
+        assert view.axis_values[0] == ["A", "B"]
+
+    def test_listing_error_shows_in_the_open_dialog(self, view, qtbot):
+        from juxt.dialogs import ValuesDialog
+        dlg = ValuesDialog("sensor", ["A", "B"])
+        qtbot.addWidget(dlg)
+        view._values_dlg = dlg
+        view._on_values_found(("sensor", ValueError("boom")))
+        assert not dlg.loading
+        assert "boom" in dlg.hint.text()
+        view._values_dlg = None
+
+    def test_axes_changing_while_open_drops_the_edit(self, view, monkeypatch):
+        from PySide6.QtWidgets import QDialog
+        from juxt.dialogs import ValuesDialog
+
+        def exec_and_change_axes(self):
+            view._axes_gen += 1
+            return QDialog.DialogCode.Accepted
+        monkeypatch.setattr(ValuesDialog, "exec", exec_and_change_axes)
+        monkeypatch.setattr(ValuesDialog, "values", lambda self: ["A"])
+        view.open_values_dialog(0)
+        assert view.axis_values[0] == ["A", "B"]
+        assert "changed meanwhile" in view._flash_msg
+
+    def test_adding_shows_the_loading_dialog(self, view, monkeypatch):
+        from PySide6.QtWidgets import QProgressDialog
+        shown = []
+        orig = ImageView._load_dialog
+
+        def spy(self, label, total):
+            dlg = orig(self, label, total)
+            shown.append((label, total))
+            return dlg
+        monkeypatch.setattr(ImageView, "_load_dialog", spy)
+        view._do_subset(0, ["A", "B", "C"])
+        assert shown == [("Loading 2 images…", 2)]
+        assert view.axis_values[0] == ["A", "B", "C"]
+
+    def test_cancelling_the_load_leaves_axis(self, view, monkeypatch):
+        from PySide6.QtWidgets import QProgressDialog
+        monkeypatch.setattr(QProgressDialog, "wasCanceled", lambda self: True)
+        view._do_subset(0, ["A", "B", "C"])
+        assert view.axis_values[0] == ["A", "B"]
+        assert "cancelled" in view._flash_msg
+
+    def test_picked_values_keep_their_case(self, view, flat_plot_dir):
+        """Unlike typed :subset values, picked ones are exact file names."""
+        from conftest import make_png
+        for date in ("d1", "d2"):
+            (flat_plot_dir / f"b_{date}.png").write_bytes(make_png())
+        view._do_subset(0, ["A", "B", "b"], snap_case=False)
+        assert view.axis_values[0] == ["A", "B", "b"]
+
+
+class TestRemoteValues:
+    @pytest.fixture
+    def view(self, flat_config, flat_plot_dir, tmp_path, qtbot, monkeypatch):
+        """A 'remote' session whose host is the local filesystem."""
+        from conftest import make_png
+        from juxt.config import Config, RemoteConfig
+        from juxt.loader import preload
+
+        for date in ("d1", "d2"):
+            (flat_plot_dir / f"C_{date}.png").write_bytes(make_png())
+        cfg = Config(template=flat_config.template, axes=flat_config.axes,
+                     keys=flat_config.keys, remote=RemoteConfig(host="h"))
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        sftp = _LocalSFTP()
+        monkeypatch.setattr("juxt.viewer._shared_sftp", lambda conn, remote, pw: sftp)
+        mtimes = {(0, 0): 1.0, (1, 1): 2.0}
+        v = ImageView(cfg, preload(cfg.template, cfg.axes), remote_tmpdir=str(cache),
+                      remote_mtimes=mtimes, watch=False)
+        v._sftp = sftp
+        qtbot.addWidget(v)
+        v.show()
+        return v
+
+    def test_subset_add_downloads_new_images(self, view, qtbot):
+        from juxt.loader import MissingPixmap
+        view._do_subset(0, ["A", "B", "C"])
+        qtbot.waitUntil(lambda: view.axis_values[0] == ["A", "B", "C"])
+        assert len(view._sftp.fetched) == 2
+        assert not isinstance(view.pixmaps[(2, 0)], MissingPixmap)
+        assert set(view._remote_mtimes) == {(0, 0), (1, 1), (2, 0), (2, 1)}
+        assert not view._reload_in_progress
+
+    def test_download_then_load_in_one_dialog(self, view, qtbot, monkeypatch):
+        labels = []
+        orig = ImageView._load_dialog
+
+        def spy(self, label, total):
+            dlg = orig(self, label, total)
+            labels.append((label, total))
+            dlg.setLabelText = lambda text, _o=dlg.setLabelText: (labels.append(text), _o(text))
+            return dlg
+        monkeypatch.setattr(ImageView, "_load_dialog", spy)
+        view._do_subset(0, ["A", "B", "C"])
+        qtbot.waitUntil(lambda: view.axis_values[0] == ["A", "B", "C"])
+        assert labels == [("Downloading 2 images…", 4), "Loading 2 images…"]
+
+    def test_reorder_and_add_remaps_mtimes(self, view, qtbot):
+        view._do_subset(0, ["C", "B"])
+        qtbot.waitUntil(lambda: view.axis_values[0] == ["C", "B"])
+        # B moved from index 1 to 1, A dropped, C new at 0
+        assert view._remote_mtimes[(1, 1)] == 2.0
+        assert (0, 0) in view._remote_mtimes and view._remote_mtimes[(0, 0)] != 1.0
+
+    def test_value_without_files_is_refused(self, view, qtbot):
+        view._do_subset(0, ["A", "B", "Z"])
+        qtbot.waitUntil(lambda: not view._reload_in_progress)
+        assert view.axis_values[0] == ["A", "B"]
+        assert "no files" in view._flash_msg
+
+    def test_picker_lists_over_sftp(self, view, qtbot, monkeypatch):
+        seen = _tick_all(monkeypatch)
+        view.open_values_dialog(0)
+        qtbot.waitUntil(lambda: view.axis_values[0] == ["A", "B", "C"])
+        assert seen["rows"] == ["A", "B", "C"]
+
+    def test_stale_download_is_dropped(self, view):
+        view._on_subset_downloaded({"gen": view._axes_gen - 1})
+        assert view.axis_values[0] == ["A", "B"]
+        assert "changed meanwhile" in view._flash_msg
+
+    def test_cancelled_download_leaves_axis(self, view):
+        view._reload_in_progress = True
+        view._on_subset_downloaded(None)
+        assert view.axis_values[0] == ["A", "B"]
+        assert not view._reload_in_progress
+
+    def test_poll_from_before_an_axis_change_is_ignored(self, view):
+        before = view.pixmaps[(0, 0)]
+        view._apply_remote_poll((view._axes_gen - 1, [((0, 0), None)]))
+        assert view.pixmaps[(0, 0)] is before
+
+
+class TestSidebarValuesButton:
+    def _panel(self, image_view, qtbot):
+        from juxt.viewer import InfoPanel
+        panel = InfoPanel()
+        qtbot.addWidget(panel)
+        panel.resize(300, 600)
+        panel.show()
+        panel.refresh(image_view)
+        return panel
+
+    def test_every_axis_has_a_button(self, image_view, qtbot):
+        html = self._panel(image_view, qtbot).toHtml()
+        for i in range(len(image_view.axis_names)):
+            assert f'href="juxt:edit/{i}"' in html
+
+    def test_click_emits_axis(self, image_view, qtbot):
+        panel = self._panel(image_view, qtbot)
+        clicks = []
+        panel.edit_clicked.connect(clicks.append)
+        start, _end = panel._fragment_span_for_href("juxt:edit/1")
+        cursor = QTextCursor(panel.document())
+        cursor.setPosition(start + 1)
+        pos = panel.cursorRect(cursor).center()
+        qtbot.mouseClick(panel.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+        assert clicks == [1]
+
+    def test_window_wires_button_to_picker(self, main_window, monkeypatch):
+        opened = []
+        monkeypatch.setattr(main_window.view, "open_values_dialog", opened.append)
+        main_window._info_panel.edit_clicked.disconnect()
+        main_window._info_panel.edit_clicked.connect(main_window.view.open_values_dialog)
+        main_window._info_panel.edit_clicked.emit(0)
+        assert opened == [0]
+
+    def test_status_bar_names_the_busy_task(self, main_window):
+        v = main_window.view
+        v._reload_in_progress = True
+        v._busy_label = "listing sensor values…"
+        main_window._update_status()
+        assert "listing sensor values…" in main_window._status_label._full_plain
+        v._reload_in_progress = False
+
+    def test_status_bar_quiet_for_the_value_picker(self, main_window):
+        v = main_window.view
+        v._reload_in_progress, v._busy_label = True, ""
+        main_window._update_status()
+        assert "…" not in main_window._status_label._full_plain
+        v._reload_in_progress, v._busy_label = False, None
