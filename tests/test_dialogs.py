@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QDialogButtonBox
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QPushButton
 
-from juxt.dialogs import GridDialog, auto_layout
+from juxt.dialogs import GridDialog, ValuesDialog, auto_layout, merge_values
 
 
 AXIS_NAMES = ["sensor", "date"]
@@ -241,3 +241,328 @@ class TestViewerIntegration:
         assert stub.last.kwargs["axis"] == 1
         assert stub.last.kwargs["values"] == [0]
         assert stub.last.kwargs["in_grid"] is True
+
+
+class TestMergeValues:
+    def test_sorted_axis_takes_new_values_in_place(self):
+        assert merge_values(["A", "C"], ["A", "B", "C", "D"]) == ["A", "B", "C", "D"]
+
+    def test_numeric_axis_sorts_numerically(self):
+        assert merge_values(["2", "10"], ["2", "3", "10"]) == ["2", "3", "10"]
+
+    def test_reordered_axis_keeps_its_order_and_appends(self):
+        assert merge_values(["C", "A"], ["A", "B", "C"]) == ["C", "A", "B"]
+
+    def test_nothing_new(self):
+        assert merge_values(["B", "A"], ["A", "B"]) == ["B", "A"]
+
+
+def _one(qtbot, current=("A", "C"), found=("A", "B", "C", "D")):
+    """A single-axis value picker and its one column; *found* None = still searching."""
+    d = ValuesDialog({"sensor": list(current)},
+                     None if found is None else {"sensor": list(found)})
+    qtbot.addWidget(d)
+    return d, d.panels[0]
+
+
+@pytest.fixture
+def values_dlg(qtbot):
+    return lambda **kw: _one(qtbot, **kw)
+
+
+def _rows(p):
+    items = [p.value_list.item(i) for i in range(p.value_list.count())]
+    return [(it.data(Qt.ItemDataRole.UserRole), it.text(),
+             it.checkState() == Qt.CheckState.Checked) for it in items]
+
+
+def _ok(d):
+    return d.buttons.button(QDialogButtonBox.StandardButton.Ok)
+
+
+class TestValuesDialog:
+    def test_current_ticked_new_unticked(self, values_dlg):
+        _d, p = values_dlg()
+        assert _rows(p) == [
+            ("A", "A", True), ("B", "B", False),
+            ("C", "C", True), ("D", "D", False),
+        ]
+
+    def test_new_values_are_marked_by_colour(self, values_dlg):
+        from PySide6.QtGui import QColor
+        from juxt import theme
+        _d, p = values_dlg()
+        accent = QColor(theme.current().accent)
+        assert p.value_list.item(1).foreground().color() == accent
+        assert p.value_list.item(0).foreground().color() != accent
+
+    def test_unchanged_returns_current(self, values_dlg):
+        d, _p = values_dlg()
+        assert d.values() == {"sensor": ["A", "C"]}
+
+    def test_single_axis_has_no_column_title(self, values_dlg):
+        d, _p = values_dlg()
+        assert d.windowTitle() == "Values of sensor"
+        assert not [l for l in d.findChildren(QLabel) if l.text() == "sensor"]
+
+    def test_ticking_adds_in_list_order(self, values_dlg):
+        d, p = values_dlg()
+        p.value_list.item(1).setCheckState(Qt.CheckState.Checked)   # B
+        p.value_list.item(0).setCheckState(Qt.CheckState.Unchecked)  # A
+        assert d.values() == {"sensor": ["B", "C"]}
+        assert p.hint.text() == "+1  −1"
+
+    def test_value_without_files_is_flagged(self, values_dlg):
+        _d, p = values_dlg(current=["A", "Z"], found=["A"])
+        assert ("Z", "Z  no files", True) in _rows(p)
+
+    def test_listing_error_shows_current_only(self, values_dlg):
+        d, p = values_dlg(found=None)
+        d.set_found("sensor", [], error="boom")
+        assert [r[1] for r in _rows(p)] == ["A", "C"]
+        assert "boom" in p.hint.text()
+
+    def test_no_change_shows_no_hint(self, values_dlg):
+        _d, p = values_dlg()
+        assert p.hint.text() == ""
+
+    def test_opens_large_enough_for_its_values(self, values_dlg):
+        d, p = values_dlg(current=[f"v{i:02d}" for i in range(15)], found=[])
+        d.show()
+        assert d.width() >= 360
+        assert p.value_list.height() >= 15 * p.value_list.sizeHintForRow(0)
+
+    def test_buttons_never_overlap_the_list(self, values_dlg, qtbot):
+        d, p = values_dlg(current=[f"v{i:02d}" for i in range(40)], found=[])
+        d.show()
+        d.resize(d.width(), 200)   # squeeze it
+        qtbot.wait(10)
+        bottom = p.value_list.mapTo(d, p.value_list.rect().bottomLeft()).y()
+        for b in d.findChildren(QPushButton):
+            if b.isVisible():
+                assert b.mapTo(d, b.rect().topLeft()).y() >= bottom, b.text()
+
+    def test_filter_limits_all_and_none(self, values_dlg):
+        d, p = values_dlg(current=["A1", "B1"], found=["A1", "A2", "B1", "B2"])
+        p.filter_edit.setText("a")
+        hidden = [p.value_list.item(i).isHidden() for i in range(4)]
+        assert hidden == [False, False, True, True]
+        p._set_visible(True)
+        assert p.values() == ["A1", "A2", "B1"]
+        p._set_visible(False)
+        assert p.values() == ["B1"]
+
+    def test_apply_disabled_without_values(self, values_dlg):
+        d, p = values_dlg()
+        p._set_visible(False)
+        assert not _ok(d).isEnabled()
+        d._accept()
+        assert d.result() != QDialog.DialogCode.Accepted
+
+    def test_down_from_filter_enters_list(self, values_dlg, qtbot):
+        d, p = values_dlg(current=["A1", "B1"], found=["A1", "A2", "B1", "B2"])
+        d.show()
+        p.filter_edit.setFocus()
+        p.filter_edit.setText("b")
+        qtbot.keyClick(p.filter_edit, Qt.Key.Key_Down)
+        assert p.value_list.currentRow() == 2
+
+
+class TestValuesDialogLoading:
+    def test_opens_with_current_values_and_a_spinner(self, qtbot):
+        d, p = _one(qtbot, found=None)
+        assert d.loading
+        assert [r[1] for r in _rows(p)] == ["A", "C"]
+        assert "searching" in p.hint.text()
+        assert _ok(d).isEnabled()
+
+    def test_listing_joins_in_place_keeping_ticks_and_filter(self, qtbot):
+        d, p = _one(qtbot, found=None)
+        p.value_list.item(0).setCheckState(Qt.CheckState.Unchecked)   # drop A
+        p.filter_edit.setText("c")
+        d.set_found("sensor", ["A", "B", "C", "D"])
+        assert not d.loading
+        assert _rows(p) == [("A", "A", False), ("B", "B", False),
+                            ("C", "C", True), ("D", "D", False)]
+        assert [p.value_list.item(i).isHidden() for i in range(4)] == [True, True, False, True]
+        assert p.hint.text() == "−1"
+
+    def test_spinner_animates(self, qtbot):
+        _d, p = _one(qtbot, found=None)
+        first = p.hint.text()
+        qtbot.waitUntil(lambda: p.hint.text() != first, timeout=1000)
+
+    def test_does_not_shrink_when_the_listing_arrives(self, qtbot):
+        d, _p = _one(qtbot, current=["A"], found=None)
+        d.show()
+        d.resize(600, 500)
+        d.set_found("sensor", ["A", "B"])
+        assert (d.width(), d.height()) == (600, 500)
+
+
+class TestValuesDialogMouse:
+    """Toggling several rows: selection + Space / double-click, and dragging
+    from a box (or a double-click) across rows."""
+
+    def _dialog(self, qtbot, current=("A",), found=("A", "B", "C", "D")):
+        d, p = _one(qtbot, current=list(current), found=list(found))
+        d.show()
+        qtbot.waitExposed(d)
+        return d, p
+
+    def _pt(self, p, row, on_box=False):
+        rect = p.value_list.visualItemRect(p.value_list.item(row))
+        x = 4 if on_box else 60
+        return rect.topLeft() + type(rect.topLeft())(x, rect.height() // 2)
+
+    def _vp(self, p):
+        return p.value_list.viewport()
+
+    def _dclick(self, qtbot, p, row):
+        """A real double-click: QTest's mouseDClick sends only the double-click
+        event, without the press and release of the first click."""
+        qtbot.mouseClick(self._vp(p), Qt.MouseButton.LeftButton, pos=self._pt(p, row))
+        qtbot.mouseDClick(self._vp(p), Qt.MouseButton.LeftButton, pos=self._pt(p, row))
+
+    def test_double_click_on_text_toggles(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        self._dclick(qtbot, p, 1)
+        assert p.values() == ["A", "B"]
+        assert p.hint.text() == "+1"
+        self._dclick(qtbot, p, 1)
+        assert p.values() == ["A"]
+
+    def test_click_on_box_toggles_once(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        qtbot.mouseClick(self._vp(p), Qt.MouseButton.LeftButton, pos=self._pt(p, 2, True))
+        assert p.values() == ["A", "C"]
+
+    def test_drag_from_a_box_paints_its_new_state(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mousePress(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1, True))
+        for row in (2, 3):
+            qtbot.mouseMove(vp, self._pt(p, row))
+        qtbot.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 3))
+        assert p.values() == ["A", "B", "C", "D"]
+        assert p.hint.text() == "+3"
+
+    def test_drag_unticks_when_the_first_box_was_ticked(self, qtbot):
+        _d, p = self._dialog(qtbot, current=("A", "B", "C"))
+        vp = self._vp(p)
+        qtbot.mousePress(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 0, True))
+        qtbot.mouseMove(vp, self._pt(p, 1))
+        qtbot.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1))
+        assert p.values() == ["C"]
+
+    def test_moving_after_release_paints_nothing(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1, True))
+        qtbot.mouseMove(vp, self._pt(p, 3))
+        assert p.values() == ["A", "B"]
+
+    def test_shift_click_range_then_space(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1))
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier, self._pt(p, 3))
+        assert len(p._selected()) == 3
+        qtbot.keyClick(p.value_list, Qt.Key.Key_Space)
+        assert p.values() == ["A", "B", "C", "D"]
+        qtbot.keyClick(p.value_list, Qt.Key.Key_Space)   # all on -> all off
+        assert p.values() == ["A"]
+
+    def test_ctrl_click_then_double_click_toggles_the_selection(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1))
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ControlModifier, self._pt(p, 3))
+        self._dclick(qtbot, p, 3)
+        assert p.values() == ["A", "B", "D"]
+        assert {it.data(Qt.ItemDataRole.UserRole) for it in p._selected()} == {"B", "D"}
+
+    def test_double_click_outside_the_selection_toggles_one_row(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1))
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ControlModifier, self._pt(p, 2))
+        self._dclick(qtbot, p, 3)
+        assert p.values() == ["A", "D"]
+
+    def test_space_skips_rows_the_filter_hides(self, qtbot):
+        _d, p = self._dialog(qtbot, found=("A", "B1", "B2", "C"))
+        p.value_list.selectAll()
+        p.filter_edit.setText("b")
+        qtbot.keyClick(p.value_list, Qt.Key.Key_Space)
+        assert p.values() == ["A", "B1", "B2"]
+
+    def test_double_click_then_drag_paints(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        self._dclick(qtbot, p, 1)                  # B on, painting on
+        qtbot.mouseMove(vp, self._pt(p, 2))
+        qtbot.mouseMove(vp, self._pt(p, 3))
+        qtbot.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 3))
+        assert p.values() == ["A", "B", "C", "D"]
+
+    def test_box_zone(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        item = p.value_list.item(1)
+        x = p.value_list.visualItemRect(item).left() + 4
+        assert p._on_indicator(item, x)
+        assert not p._on_indicator(item, x + 56)
+
+
+class TestJointValuesDialog:
+    AXES = {"sensor": ["A", "B"], "date": ["d1", "d2", "d3"]}
+
+    def _dialog(self, qtbot, found=None):
+        d = ValuesDialog({k: list(v) for k, v in self.AXES.items()}, found)
+        qtbot.addWidget(d)
+        return d
+
+    def test_one_titled_column_per_axis(self, qtbot):
+        d = self._dialog(qtbot)
+        assert d.axis_names == ["sensor", "date"]
+        titles = {l.text() for l in d.findChildren(QLabel)}
+        assert {"sensor", "date"} <= titles
+        assert d.windowTitle() == "Values"
+
+    def test_columns_fill_in_as_listings_arrive(self, qtbot):
+        d = self._dialog(qtbot)
+        d.set_found("date", ["d1", "d2", "d3", "d4"])
+        assert d.panel("date").value_list.count() == 4
+        assert d.panel("sensor").loading
+        assert d.loading
+        d.set_found("sensor", ["A", "B"])
+        assert not d.loading
+
+    def test_values_per_axis(self, qtbot):
+        d = self._dialog(qtbot, found={"sensor": ["A", "B", "C"], "date": ["d1", "d2", "d3"]})
+        d.panel("sensor").value_list.item(2).setCheckState(Qt.CheckState.Checked)
+        d.panel("date").value_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+        assert d.values() == {"sensor": ["A", "B", "C"], "date": ["d2", "d3"]}
+
+    def test_apply_needs_a_value_on_every_axis(self, qtbot):
+        d = self._dialog(qtbot)
+        d.panel("date")._set_visible(False)
+        assert not _ok(d).isEnabled()
+        d.panel("date")._set_visible(True)
+        assert _ok(d).isEnabled()
+
+    def test_custom_title_and_apply_text(self, qtbot):
+        d = ValuesDialog({"a": ["1"]}, {"a": ["1"]}, title="pick", apply_text="Load")
+        qtbot.addWidget(d)
+        assert d.windowTitle() == "pick"
+        assert _ok(d).text() == "Load"
+
+    def test_many_axes_fit_the_screen(self, qtbot):
+        axes = {f"axis_{i}": [f"some_long_value_{j}" for j in range(5)] for i in range(12)}
+        d = ValuesDialog(axes, axes)
+        qtbot.addWidget(d)
+        d.show()
+        assert d.width() <= d.screen().availableGeometry().width()

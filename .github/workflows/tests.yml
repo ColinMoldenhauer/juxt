@@ -46,7 +46,7 @@ jobs:
             libfontconfig1
 
       - name: Install package with all extras
-        run: pip install -e ".[ssh,test]"
+        run: pip install -e ".[test]"
 
       # Generate a throwaway key pair, authorise it, and start a temporary sshd
       # on port 2222.  No credentials are stored or exposed — the key pair is

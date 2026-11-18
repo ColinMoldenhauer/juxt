@@ -80,7 +80,7 @@ jobs:
             libfontconfig1
 
       - name: Install dependencies
-        run: pip install pyinstaller ".[ssh]" ${{ matrix.extra_deps }}
+        run: pip install pyinstaller . ${{ matrix.extra_deps }}
 
       - name: Build with PyInstaller
         env:

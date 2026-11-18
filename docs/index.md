@@ -28,7 +28,7 @@ juxt /path/to/plots/
 
 juxt scans the filenames, infers the axes, and opens an interactive viewer. Press letter keys to navigate axes, `Space` to toggle between two positions, and `:` to enter command mode.
 
-See the [Installation](installation.md) page for full setup options, including the SSH extra for remote image directories.
+See the [Installation](installation.md) page for full setup options.
 
 Want to see it first? Try the [web demo](demo.md).
 

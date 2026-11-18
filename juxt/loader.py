@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import shutil
 import tempfile
 from itertools import product
@@ -59,6 +60,25 @@ def preload(
     return pixmaps
 
 
+def local_cache_path(tmpdir: str, remote_path: str) -> Path:
+    """Where the local copy of *remote_path* goes: under *tmpdir*, always.
+
+    The remote path's parts are joined one by one, so an absolute one never
+    replaces *tmpdir*: Python 3.12's pathlib reads `C:/x`, which a Windows
+    SSH server reports as `/C:/x`, as a drive path of its own. `..` parts
+    are dropped, and on Windows ':' and '\\' (not allowed in a file name
+    there, or a separator) become '_'.
+    """
+    parts = []
+    for part in PurePosixPath(remote_path).parts:
+        if part in ("/", ".", ".."):
+            continue
+        if os.name == "nt":
+            part = part.replace(":", "_").replace("\\", "_")
+        parts.append(part)
+    return Path(tmpdir).joinpath(*parts)
+
+
 def _connect_sftp(
     remote: "RemoteConfig",
     get_password: Callable[[str], str | None] | None = None,
@@ -66,15 +86,8 @@ def _connect_sftp(
     """Open an authenticated SSH+SFTP session, optionally prompting for a password.
 
     Resolves host aliases and keys via ~/.ssh/config.
-    Requires paramiko: pip install juxt[ssh]
     """
-    try:
-        import paramiko
-    except ImportError:
-        raise ImportError(
-            "paramiko is required for SSH support. Install it with:\n"
-            "    pip install juxt[ssh]"
-        )
+    import paramiko   # here, not at the top: only remote sessions pay its import time
 
     log.debug("Connecting to %s@%s:%s", remote.user or "", remote.host, remote.port)
     host, user, port, key = remote.host, remote.user, remote.port, remote.key_path
@@ -131,7 +144,6 @@ def preload_remote(
     Returns (pixmaps, tmpdir, mtimes) where mtimes maps each coordinate key to the
     remote file's mtime at download time — used by poll_remote_with_sftp to skip
     unchanged files on subsequent polls.
-    Requires paramiko: pip install juxt[ssh]
     """
     axis_names = list(axes.keys())
     axis_values = list(axes.values())
@@ -144,13 +156,15 @@ def preload_remote(
     client, sftp = _connect_sftp(remote, get_password)
 
     mtimes: dict[tuple[int, ...], float] = {}
+    local_paths: list[tuple[tuple[int, ...], Path]] = []
     for i, combo in enumerate(combos):
         if progress:
             progress(i, n * 2)
         mapping = dict(zip(axis_names, combo))
         remote_path = template.format(**mapping)
         key = tuple(values.index(v) for values, v in zip(axis_values, combo))
-        local_path = Path(tmpdir) / PurePosixPath(remote_path.lstrip("/"))
+        local_path = local_cache_path(tmpdir, remote_path)
+        local_paths.append((key, local_path))
         local_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             attr = sftp.stat(remote_path)
@@ -162,13 +176,48 @@ def preload_remote(
     sftp.close()
     client.close()
 
-    local_template = str(Path(tmpdir) / PurePosixPath(template.lstrip("/")))
-
-    def _offset_progress(i: int, _n: int):
+    pixmaps: dict[tuple[int, ...], QPixmap] = {}
+    for i, (key, local_path) in enumerate(local_paths):
         if progress:
             progress(n + i, n * 2)
+        pm = QPixmap(str(local_path))
+        pixmaps[key] = pm if not pm.isNull() else _error_pixmap(str(local_path))
+    if progress:
+        progress(n * 2, n * 2)
+    return pixmaps, tmpdir, mtimes
 
-    return preload(local_template, axes, _offset_progress), tmpdir, mtimes
+
+def download_remote_files(
+    jobs: list[tuple[tuple[int, ...], str]],
+    tmpdir: str,
+    sftp: "paramiko.SFTPClient",
+    mtimes: dict[tuple[int, ...], float],
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[tuple[tuple[int, ...], str | None]]:
+    """Download each `(key, remote_path)` of *jobs* into *tmpdir*.
+
+    Records the remote mtime of every file fetched in *mtimes* under its key,
+    so later polls skip it while unchanged. Returns `(key, local_path)` pairs
+    in job order, with `local_path` None for a file the remote does not have;
+    the caller decodes the pixmaps on the main thread.
+    """
+    out: list[tuple[tuple[int, ...], str | None]] = []
+    for i, (key, remote_path) in enumerate(jobs):
+        if on_progress:
+            on_progress(i, len(jobs))
+        local_path = local_cache_path(tmpdir, remote_path)
+        try:
+            mtime = sftp.stat(remote_path).st_mtime
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            sftp.get(remote_path, str(local_path))
+        except OSError:
+            out.append((key, None))
+            continue
+        mtimes[key] = mtime
+        out.append((key, str(local_path)))
+    if on_progress:
+        on_progress(len(jobs), len(jobs))
+    return out
 
 
 def poll_remote_with_sftp(
@@ -209,7 +258,7 @@ def poll_remote_with_sftp(
         if mtimes.get(key) == new_mtime:
             continue  # unchanged — skip download entirely
 
-        local_path = Path(tmpdir) / PurePosixPath(remote_path.lstrip("/"))
+        local_path = local_cache_path(tmpdir, remote_path)
         local_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             sftp.get(remote_path, str(local_path))

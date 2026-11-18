@@ -160,10 +160,10 @@ display:
 #     'html:<span style="background:#334">[{}]</span>'
 # Invalid specs are logged and ignored.
 highlight:
-  selected: "accent:{}"     # current value in the info sidebar / active axis
+  selected: "accent:{}"     # current value in the info sidebar / last-moved axis
   candidates: "accent:[{}]" # highlighted entry in status-bar candidate lists
 
-# Modifier roles on axis letter keys (tap and pin modes).
+# Modifier roles on axis keys (tap and pin modes).
 # Default:  Ctrl+letter  opens the value picker
 #           Shift+letter steps backward on that axis (tap only)
 # swap: true exchanges the two, so Shift+letter opens the picker and
@@ -238,11 +238,11 @@ display:
 # Prefix with "html:" to write the rich text yourself, e.g.
 #     'html:<span style="background:#334">[{}]</span>' 
 highlight:
-  selected: "accent:{}"     # current value in the info sidebar / active axis
+  selected: "accent:{}"     # current value in the info sidebar / last-moved axis
   candidates: "accent:[{}]" # highlighted entry in status-bar candidate lists
 """,
     "modifiers": """
-# Modifier roles on axis letter keys (tap and pin modes).
+# Modifier roles on axis keys (tap and pin modes).
 # Default:  Ctrl+letter  opens the value picker
 #           Shift+letter steps backward on that axis (tap only)
 # swap: true exchanges the two, so Shift+letter opens the picker and

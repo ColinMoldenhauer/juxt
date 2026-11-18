@@ -17,7 +17,7 @@ These bindings work identically regardless of which mode is active.
 | `←` / `→` | Cycle the primary axis (most recently focused) |
 | `↑` / `↓` | Cycle the secondary axis (second most recently focused) |
 | Scroll wheel | Step forward / backward on the primary axis |
-| `Shift` + scroll wheel | Step forward / backward on the **secondary** axis |
+| `Shift` + scroll wheel | Step forward / backward on the secondary axis |
 | `Space` | Toggle between current and previous position — the main comparison tool |
 | `Home` / `End` | Jump to first / last value on the primary axis |
 | `1` – `9` | Jump to the Nth value on the primary axis |
@@ -54,8 +54,8 @@ These bindings work identically regardless of which mode is active.
 
 Arrow keys always navigate the two most recently focused axes, regardless of mode. The focus stack tracks which axes have been touched most recently:
 
-- **`←` / `→`** — navigate `focus_stack[0]` (the most recently focused axis)
-- **`↑` / `↓`** — navigate `focus_stack[1]` (the second most recently focused axis)
+- **`←` / `→`** navigate the **primary axis**, `focus_stack[0]` (the most recently focused axis)
+- **`↑` / `↓`** navigate the **secondary axis**, `focus_stack[1]` (the second most recently focused axis)
 
 Any action that selects or navigates an axis promotes it to the top of the focus stack.
 
@@ -105,7 +105,7 @@ Optimised for comparing two axes at a time with no modifier keys in the hot path
 
 | Key | Action |
 |---|---|
-| Letter (e.g. `s` for `sensor`) | Focus that axis; it becomes `←`/`→`, previous primary becomes `↑`/`↓` |
+| Letter (e.g. `s` for `sensor`) | Focus that axis; it becomes the primary axis (`←`/`→`), the previous primary becomes the secondary (`↑`/`↓`) |
 | `Ctrl` + letter | Open the value picker for that axis |
 
 Letter keys only shift focus — they do not advance the axis. Use arrow keys after focusing to cycle through values. This keeps sustained rapid cycling (dozens of presses) free of modifier keys.
@@ -122,7 +122,7 @@ Letter keys only shift focus — they do not advance the axis. Use arrow keys af
 
 ## Modifier roles
 
-Two modifiers act on an axis letter key, and which does what is configurable:
+Two modifiers act on an axis key, and which does what is configurable:
 
 | | Value picker | Navigate −1 (tap only) |
 |---|---|---|
@@ -182,11 +182,11 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:switch-last` | Toggle between current and previous position (same as `Space`) |
 | `:theme [auto\|dark\|light]` | Switch the [colour theme](ui.md#colour-theme) for this session; without an argument, flip between dark and light |
 | `:version` | Show the juxt version in the status bar (`juxt --version` prints it from the shell) |
-| `:axis-h NAME` | Lock `←`/`→` to a named axis |
-| `:axis-v NAME` | Lock `↑`/`↓` to a named axis |
+| `:axis-h NAME` | Lock the primary axis (`←`/`→`) to a named axis |
+| `:axis-v NAME` | Lock the secondary axis (`↑`/`↓`) to a named axis |
 | `:axis-auto` | Restore dynamic axis-to-arrow assignment |
-| `:swap-axes` | Swap the `←`/`→` and `↑`/`↓` axis bindings |
-| `:grid [AXIS]` | Expand an axis into a tiled grid of independent viewports (defaults to the active axis) |
+| `:swap-axes` | Swap the primary and secondary axes |
+| `:grid [AXIS]` | Expand an axis into a tiled grid of independent viewports (defaults to the primary axis) |
 | `:grid AXIS VAL …` | Same, but show only the listed values |
 | `:grid AXIS NxM` | Same, with an explicit layout (e.g. `:grid sensor 2x2`) |
 | `:grid AXIS VAL … NxM` | Values and explicit layout combined |
@@ -201,6 +201,8 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:write [PATH]` / `:w [PATH]` | Write the current config to a YAML file; opens a file dialog if PATH is omitted |
 | `:pattern PATH` | Change the template / source path without restarting (see below) |
 | `:subset AXIS [VALUES]` | Edit the values of an axis: delete, reorder, rename or add (see below) |
+| `:subset-interactive` | Pick the values of every axis from those found on disk, one column per axis (see below) |
+| `:values AXIS` | Pick the values of one axis from those found on disk: add or remove (see below) |
 | `:watch` / `:watch true` | Enable live file watching / polling |
 | `:watch false` | Disable live file watching / polling |
 | `:watch N` | Set remote poll interval to N seconds |
@@ -283,7 +285,26 @@ Edit the line and press `Enter`; the line becomes the axis, in the order written
 
 `Tab` completes the word under the caret with the values found on disk and lists the candidates when several match, which is also how to see what can be added. `Escape` cancels. Your position is kept when its value survives.
 
-The whole edit can be given in one go, e.g. `:subset sensor SMAP ASCAT`. Adding values is not supported for remote sessions yet (deleting and reordering are); use `:pattern` there.
+The whole edit can be given in one go, e.g. `:subset sensor SMAP ASCAT`. In a remote session the images of added values are downloaded over the session's SSH connection, with a progress dialogue; Tab completion of values on disk is local only.
+
+### Picking values from disk (:subset-interactive, :values)
+
+`:subset-interactive` opens a checklist of the values found on disk for every axis, one column per axis. `:values AXIS`, or a click on the `[+]` next to an axis in the [info sidebar](ui.md#info-sidebar), opens the same checklist for that one axis:
+
+![Value picker: SMOS ticked to add, one date unticked to remove, L3 on offer](assets/screenshots/value-picker.png)
+
+The dialogue opens at once with the current values and a spinner while the disk is searched; the values found then join each column as its axis is done, keeping any ticks you already changed. Current values are ticked, values on disk the axis does not have yet are unticked and shown in the accent colour. Tick to add, untick to remove, then `Apply`: only the images of the added values are loaded (with the same progress dialogue as on startup), everything already loaded stays. This is the quick way to pull in a new run or sensor without restarting juxt.
+
+- The search pins every other axis to the values it has now, so a value is listed only if it has at least one image among the combinations you are looking at. This keeps the search fast, also over SSH.
+- New values slot into place when the axis is sorted; an axis you reordered keeps its order and the new values follow it.
+- The filter field narrows the list as you type; `All` and `None` act on the rows it shows. `↓` moves from the filter into the list.
+- Several rows at once: select them (click, `Shift`+click for a range, `Ctrl`+click to add one, or drag over the row text), then press `Space` or double-click one of them. `Space` ticks them all, or unticks them all if they all were ticked; a double-click gives them all the opposite of the clicked row's state. Rows the filter hides are left alone.
+- Or paint: press on a check box and drag across rows; each row passed over takes the state that first box got. A double-click followed by a drag paints the same way.
+- A current value with no file on disk is marked `no files`.
+- Changes on several axes apply in one go: every combination involving an added value is loaded, and an added value that has no image among the combinations you end up with is refused, which catches a value that only exists next to one you dropped.
+- To pick the values before anything is loaded, start juxt with [`--subset-interactive`](configuration.md#picking-values-at-startup).
+
+Remote sessions reuse their SSH connection (and the password already entered), so neither the listing nor the download asks again.
 
 ## Grid view
 
@@ -333,7 +354,7 @@ spellings.
 
 | Field | Meaning |
 |---|---|
-| **Axis** | Which axis to tile. Defaults to the current grid axis, or the `←`/`→` axis when not in grid view. |
+| **Axis** | Which axis to tile. Defaults to the current grid axis, or the primary axis when not in grid view. |
 | **Values** | Tick the values to show. `All` / `None` / `Invert` set them in bulk. |
 | **Layout** | With `auto` ticked the spin boxes show the layout that fits the viewport; stepping either one takes it off `auto` and sets rows × cols by hand. Re-tick `auto` to go back. A layout smaller than the value count gives the focused pane something to cycle, as above. |
 | **Sync pan/zoom** | The `:grid-sharex` / `:grid-sharey` toggles. |
@@ -391,7 +412,7 @@ The status bar at the bottom shows:
 
 - Current navigation mode — `[tap]`, `[seek]`, or `[pin]`; a `●` is appended outside the brackets when live file watching is active (e.g. `[tap]  ●`)
 - Current axis values (e.g. `sensor=ASCAT  date=2024-03-15  overpass=AM  source=L2`)
-- Which axes are bound to `←`/`→` and `↑`/`↓`
+- The primary (`←`/`→`) and secondary (`↑`/`↓`) axes
 - Letter-to-axis assignments; axes with no available letter binding are shown in red
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode; description of the highlighted command shown right-aligned
@@ -400,7 +421,7 @@ Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Sh
 
 ### Highlight format
 
-The colour and delimiters used for the current value (info sidebar, active axis, candidate lists) are set in `~/.juxt/settings.yaml`; see [Highlight format](ui.md#highlight-format).
+The colour and delimiters used for the current value (info sidebar, last-moved axis, candidate lists) are set in `~/.juxt/settings.yaml`; see [Highlight format](ui.md#highlight-format).
 
 ### Custom keybindings
 

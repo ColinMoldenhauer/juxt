@@ -17,10 +17,11 @@ from .complete import main as _complete_main
 if len(sys.argv) > 1 and sys.argv[1] in (*SCRIPT_FLAGS, WORDS_FLAG):
     sys.exit(_complete_main(sys.argv[1:]))
 
-from PySide6.QtCore import Qt, QSocketNotifier, QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, Qt, QSocketNotifier, QTimer  # noqa: E402
 from PySide6.QtGui import QCursor, QIcon  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
+    QDialog,
     QInputDialog,
     QLineEdit,
     QProgressDialog,
@@ -117,8 +118,8 @@ def _print_help() -> None:
         None,  # horizontal rule
         "↑ ↓ ← →         navigate axes",
         "Space           toggle between two positions",
-        "Home / End      first / last value on active axis",
-        "1–9             jump to Nth value on active axis",
+        "Home / End      first / last value on the primary axis",
+        "1–9             jump to Nth value on the primary axis",
         "Enter           toggle fullscreen",
         "Escape          exit fullscreen / cancel",
         ":               command mode  (:fit  :zoom N  :q)",
@@ -135,8 +136,8 @@ def _print_help() -> None:
         "double-click    fit image to window",
         "drag            pan the image",
         "right-click     copy path / image menu",
-        "wheel           step the ←/→ axis",
-        "Shift+wheel     step the ↑/↓ axis",
+        "wheel           step the primary (←/→) axis",
+        "Shift+wheel     step the secondary (↑/↓) axis",
         "Ctrl+wheel      zoom under the cursor",
         "",
         "mode keys",
@@ -150,7 +151,7 @@ def _print_help() -> None:
         "Key bindings are configurable in",
         "~/.juxt/settings.yaml  (also via :settings);",
         "modifiers.swap there exchanges the Ctrl",
-        "and Shift roles on axis letter keys.",
+        "and Shift roles on axis keys.",
         "",
     ]
     pad = 2
@@ -177,8 +178,8 @@ def _print_help() -> None:
     {root}/*.png  --root A B  pin {root} then wildcard-match within each
     {root}/{**plot}.png       {**name} captures across '/', for one axis
                               spanning an arbitrarily deep subtree
-    host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
-    host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
+    host:/path/to/dir         remote directory over SSH
+    host:/path/{sensor}.png   remote template over SSH
     config.yaml               explicit YAML config file
     (default: opens a dialog to browse a directory or build a template)
 
@@ -189,6 +190,10 @@ def _print_help() -> None:
       --save PATH             save resolved config to PATH after detection
       --list-axes             run axis discovery, print each axis with all its
                               values, and exit; no window, no naming prompt
+      --subset-interactive    after discovery, tick the values to load in a
+                              dialogue (one column per axis) before any
+                              image is read; --NAME VALUE pins then only
+                              preselect, the other values stay on offer
       --NAME VALUE [...]      pin a {placeholder}'s values instead of
                               globbing for them (template/wildcard PATH
                               only, must come after PATH); repeatable per
@@ -199,8 +204,8 @@ def _print_help() -> None:
                               match (see {root}/{**plot}.png above)
       --no-watch              disable automatic file watching (local only)
       --watch-interval SEC    poll remote for changes every SEC seconds (default: 5, 0 to disable)
-      --axis-h NAME           lock ←/→ to this axis on startup
-      --axis-v NAME           lock ↑/↓ to this axis on startup
+      --axis-h NAME           make this the primary (←/→) axis on startup
+      --axis-v NAME           make this the secondary (↑/↓) axis on startup
       --squeeze               drop axes with only one value
       --name NAME             session name shown in window title (default: the template path
                               and any pinned values)
@@ -234,6 +239,7 @@ def _print_help() -> None:
     :pattern PATH  :reload  :watch true|false
     :remove-axis NAME  :remove-value AXIS VALUE
     :subset AXIS [VALUES]  edit an axis: delete, reorder, rename, add
+    :subset-interactive  :values AXIS  pick values from those on disk
     :change-key AXIS LETTER  :settings
     :copy-image  :copy-path  :write [PATH]  :quit""")
 
@@ -296,6 +302,7 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     p.add_argument("--name", metavar="NAME", default=None)
     p.add_argument("--full-path", action="store_true", default=False)
     p.add_argument("--list-axes", action="store_true", default=False)
+    p.add_argument("--subset-interactive", action="store_true", default=False)
     # Initial panel visibility; both are still toggleable at runtime.
     # These are declared here so parse_known_args recognises them; an
     # unrecognised --flag after PATH is read as an axis pin instead.
@@ -346,7 +353,7 @@ def _resolve_config(
                           keys=_auto_keys(axes), remote=remote_cfg)
         if pins:
             raise ValueError(
-                "--<axis> VALUE pinning requires a {placeholder} template, "
+                "--NAME VALUE pinning requires a {placeholder} template, "
                 "not a plain remote directory"
             )
         config, sep, n_remote = detect_config_remote(
@@ -355,7 +362,7 @@ def _resolve_config(
     if Path(raw).is_dir():
         if pins:
             raise ValueError(
-                "--<axis> VALUE pinning requires a {placeholder} template, not a directory"
+                "--NAME VALUE pinning requires a {placeholder} template, not a directory"
             )
         p = Path(raw)
         files = _iter_images(p, args.max_depth)
@@ -364,7 +371,7 @@ def _resolve_config(
     if raw.lower().endswith((".yaml", ".yml")):
         if pins:
             raise ValueError(
-                "--<axis> VALUE pinning requires a {placeholder} template, not a YAML config"
+                "--NAME VALUE pinning requires a {placeholder} template, not a YAML config"
             )
         return load_config(raw)
     if has_bare_wildcard(raw):
@@ -376,6 +383,119 @@ def _resolve_config(
     raise ValueError(
         f"{raw!r} is not a directory, YAML config, template pattern, or remote path"
     )
+
+
+def _may_prompt(args: argparse.Namespace) -> bool:
+    """Whether resolving PATH may ask in the terminal to name the axes (a
+    plain directory scan without `--auto`), see `_resolve_config`."""
+    if args.auto or not args.path:
+        return False
+    raw = expand_home(normalize_template(args.path))
+    if _is_remote_pattern(raw):
+        return '{' not in _parse_remote_pattern(raw)[1]
+    return Path(raw).is_dir()
+
+
+def _discover_with_busy(fn, ask_password, *, app_icon, screen, interrupted,
+                        label: str = "Collecting values…", delay_ms: int = 300):
+    """Run `fn(ask_password)` (discovery) in a worker thread and return its
+    result, raising what it raised.
+
+    Meanwhile a busy box with *label* shows once *delay_ms* have passed, so a
+    quick discovery shows nothing. Its Cancel, closing it and Ctrl+C (the
+    *interrupted* flag of `_quit_on_sigint`) quit juxt. A password request
+    from the worker is answered by *ask_password* on the main thread, with
+    the box hidden meanwhile.
+
+    The worker touches no Qt object: it talks to the main thread through a
+    queue, which a timer here drains.
+    """
+    import queue
+    import threading
+    from PySide6.QtWidgets import QProgressDialog
+
+    inbox: queue.Queue = queue.Queue()     # worker -> main: ("ask", label) / ("done", result)
+    answers: queue.Queue = queue.Queue()   # main -> worker: the password, or None
+    loop = QEventLoop()
+    outcome: list = []
+    cancelled = [False]
+
+    busy = QProgressDialog(label, "Cancel", 0, 0)
+    busy.setWindowTitle("juxt")
+    busy.setMinimumDuration(24 * 3600 * 1000)   # shown by the timer below, not by Qt
+    busy.setAutoClose(False)
+    busy.setAutoReset(False)
+    if not app_icon.isNull():
+        busy.setWindowIcon(app_icon)
+    busy.hide()
+
+    def _cancel():
+        cancelled[0] = True
+        loop.quit()
+
+    busy.canceled.connect(_cancel)   # the button, or closing the box
+    busy.rejected.connect(_cancel)   # Esc
+
+    def _show():
+        if outcome or cancelled[0] or interrupted[0]:
+            return
+        busy.show()
+        busy.move(screen.geometry().center() - busy.rect().center())
+        _force_focus(busy)
+
+    def _drain():
+        if interrupted[0]:   # Ctrl+C's handler can't end a plain QEventLoop
+            loop.quit()
+            return
+        while True:
+            try:
+                kind, value = inbox.get_nowait()
+            except queue.Empty:
+                return
+            if kind == "done":
+                outcome.append(value)
+                loop.quit()
+                return
+            was_visible = busy.isVisible()
+            busy.hide()
+            try:
+                answers.put(ask_password(value))
+            except BaseException:
+                answers.put(None)
+                raise
+            if was_visible:
+                _show()
+
+    def _ask_from_worker(text: str) -> str | None:
+        inbox.put(("ask", text))
+        return answers.get()
+
+    def _work():
+        try:
+            result = fn(_ask_from_worker)
+        except BaseException as e:   # noqa: BLE001, re-raised on the main thread
+            result = e
+        inbox.put(("done", result))
+
+    show_timer = QTimer()
+    show_timer.setSingleShot(True)
+    show_timer.timeout.connect(_show)
+    poll = QTimer()
+    poll.timeout.connect(_drain)
+
+    threading.Thread(target=_work, name="juxt-discovery", daemon=True).start()
+    show_timer.start(delay_ms)
+    poll.start(30)
+    loop.exec()
+    show_timer.stop()
+    poll.stop()
+    busy.close()
+    busy.deleteLater()
+    if not outcome:   # cancelled or interrupted; the daemon worker dies with us
+        sys.exit(0)
+    if isinstance(outcome[0], BaseException):
+        raise outcome[0]
+    return outcome[0]
 
 
 def _format_axes(config: Config) -> str:
@@ -423,6 +543,107 @@ def _list_axes(args: argparse.Namespace, pins: dict[str, list[str]]) -> int:
     return 0
 
 
+def _resolve_for_picker(
+    args: argparse.Namespace,
+    pins: dict[str, list[str]],
+    ask_password,
+) -> tuple[Config, dict[str, list[str]]]:
+    """Discovery for `--subset-interactive`, where pins preselect instead of
+    narrowing: returns the config with every value found on disk, and the
+    pinned values to start out ticked.
+
+    A pin that discovery cannot do without keeps narrowing it: values with a
+    '/' in them (a glob never crosses one), a `{**name}` axis (its values are
+    taken literally, not pruned). And if discovery fails without the pins
+    (say, a placeholder before a '*' wildcard), it runs with all of them, as
+    without the flag, and nothing is preselected.
+    """
+    if not pins:
+        return _resolve_config(args, pins, ask_password), {}
+    from .detect import _parse_template_names
+    try:
+        _names, _raw, recursive = _parse_template_names(args.path or "")
+    except ValueError:
+        recursive = None
+    needed = {n: vs for n, vs in pins.items()
+              if n == recursive or any("/" in v for v in vs)}
+    if len(needed) < len(pins):
+        try:
+            config = _resolve_config(args, needed, ask_password)
+        except Exception as e:
+            log.info("Discovery without the pins failed (%s); keeping them", e)
+        else:
+            return config, {n: vs for n, vs in pins.items()
+                            if n not in needed and n in config.axes}
+    return _resolve_config(args, pins, ask_password), {}
+
+
+def _pick_startup_values(config: Config, app_icon, screen,
+                         preselect: dict[str, list[str]] | None = None) -> Config:
+    """`--subset-interactive`: tick the values to load, before any image is read.
+
+    *preselect* maps an axis to the values that start out ticked (the
+    `--NAME VALUE` pins); the axis's other values are offered unticked. Every
+    value of the other axes starts ticked. Cancel quits.
+    """
+    from .dialogs import ValuesDialog
+
+    preselect = preselect or {}
+    ticked = {name: list(preselect.get(name, vals)) for name, vals in config.axes.items()}
+    dlg = ValuesDialog(ticked, dict(config.axes),
+                       title="juxt: choose the values to load", apply_text="Load")
+    if not app_icon.isNull():
+        dlg.setWindowIcon(app_icon)
+    # With the dialogue as context, the timers die with it if it is gone first.
+    QTimer.singleShot(0, dlg, lambda: dlg.move(screen.geometry().center() - dlg.rect().center()))
+    QTimer.singleShot(0, dlg, lambda: _force_focus(dlg))
+    log.debug("startup value picker open")
+    accepted = dlg.exec() == QDialog.DialogCode.Accepted
+    chosen = dlg.values()
+    dlg.deleteLater()
+    if not accepted:
+        sys.exit(0)
+    return Config(template=config.template, axes=chosen, keys=config.keys,
+                  mode=config.mode, remote=config.remote)
+
+
+def _quit_on_sigint(app: QApplication) -> list[bool]:
+    """Make Ctrl+C quit juxt from any Qt event loop, a dialogue's included.
+
+    set_wakeup_fd writes a byte to a socket when SIGINT arrives, and a
+    QSocketNotifier turns that into an event, so the handler runs at once
+    even while Qt (not Python) holds the thread, without a polling timer.
+
+    quit() only ends the main event loop, so open modal dialogues (each
+    running a nested loop) are rejected first, innermost out; the code that
+    opened them treats that as Cancel. Where no loop runs at all (images
+    loading via processEvents) quit() has nothing to end, so the handler
+    also sets the returned one-item flag for such code to check.
+    """
+    interrupted = [False]
+
+    def _on_sigint(*_):
+        interrupted[0] = True
+        for _i in range(32):   # a bound, should a dialogue refuse to close
+            modal = app.activeModalWidget()
+            if modal is None:
+                break
+            if isinstance(modal, QDialog):
+                modal.reject()
+            else:
+                modal.close()
+        app.quit()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    rsock, wsock = socket.socketpair()
+    wsock.setblocking(False)
+    signal.set_wakeup_fd(wsock.fileno())
+    notifier = QSocketNotifier(rsock.fileno(), QSocketNotifier.Type.Read, app)
+    notifier.activated.connect(lambda *_: (rsock.recv(4096), _on_sigint()))
+    app._juxt_sigint = (rsock, wsock, notifier)   # keep them alive with the app
+    return interrupted
+
+
 def main():
     args, pins = _parse_args()
     import os
@@ -446,6 +667,9 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("juxt")
+    # First thing, so Ctrl+C also ends the dialogues before the viewer: the
+    # startup window, the password prompt, the --subset-interactive picker.
+    interrupted = _quit_on_sigint(app)
     theme.apply(settings.theme)   # before the startup window, so it matches
     _startup_screen = app.screenAt(QCursor.pos()) or app.primaryScreen()
     _logo = Path(__file__).parent / "assets" / "logo_transparent.ico"
@@ -490,11 +714,26 @@ def main():
             sys.exit(0)
         args.path = chosen
 
+    def _discover(ask_password):
+        if args.subset_interactive:
+            return _resolve_for_picker(args, pins, ask_password)
+        return _resolve_config(args, pins, ask_password), {}
+
     try:
-        config = _resolve_config(args, pins, _ask_password)
+        if _may_prompt(args):   # the terminal shows progress, and asks
+            config, preselect = _discover(_ask_password)
+        else:
+            config, preselect = _discover_with_busy(
+                _discover, _ask_password, app_icon=app_icon,
+                screen=_startup_screen, interrupted=interrupted)
     except Exception as e:
+        if interrupted[0]:   # Ctrl+C at the password prompt
+            sys.exit(0)
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if args.subset_interactive:
+        config = _pick_startup_values(config, app_icon, _startup_screen, preselect)
 
     if args.squeeze:
         squeezed = {k: v for k, v in config.axes.items() if len(v) > 1}
@@ -524,17 +763,6 @@ def main():
     total_steps = n_images * 2 if is_remote else n_images
     first_label = f"Downloading {n_images} image{'s' if n_images != 1 else ''}…" if is_remote else f"Loading {n_images} image{'s' if n_images != 1 else ''}…"
 
-    # Reliable Ctrl+C in any nested Qt event loop (loading, dialogs, etc.).
-    # set_wakeup_fd writes a byte to wsock when SIGINT arrives; QSocketNotifier
-    # delivers it as a socket event so Python runs the handler immediately
-    # without needing a polling timer.
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
-    _rsock, _wsock = socket.socketpair()
-    _wsock.setblocking(False)
-    signal.set_wakeup_fd(_wsock.fileno())
-    _signotifier = QSocketNotifier(_rsock.fileno(), QSocketNotifier.Type.Read)
-    _signotifier.activated.connect(lambda *_: (_rsock.recv(4096), app.quit()))
-
     progress = QProgressDialog(first_label, "Cancel", 0, total_steps)
     progress.setWindowTitle("juxt")
     progress.setWindowModality(Qt.ApplicationModal)
@@ -549,7 +777,7 @@ def main():
     _force_focus(progress)
 
     def on_progress(i: int, n: int):
-        if progress.wasCanceled():
+        if progress.wasCanceled() or interrupted[0]:
             sys.exit(0)
         if is_remote and i == n_images:
             progress.setLabelText(f"Loading {n_images} image{'s' if n_images != 1 else ''}…")
@@ -655,7 +883,8 @@ def main():
     _force_focus(window)
     window.view.fit_image()     # start app with image fit to screen
 
-    # QTimer import kept for other uses; no polling timer needed for SIGINT.
+    if interrupted[0]:   # Ctrl+C after loading, before the event loop ran
+        sys.exit(0)
     sys.exit(app.exec())
 
 

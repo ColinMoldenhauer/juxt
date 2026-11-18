@@ -797,6 +797,29 @@ def _axes_from_sftp_template(
     return axes
 
 
+def axis_values_on_disk(
+    template: str,
+    axes: dict[str, list[str]],
+    axis: str,
+    sftp=None,
+) -> list[str]:
+    """Values of *axis* that have a file for some combination of the other axes.
+
+    Every other axis is pinned to the values it has now, so only *axis* is
+    searched for: the walk stays as narrow as the current session (cheap over
+    SFTP, where each listing is a round trip), axes pinned on the command line
+    keep their values, and a value turns up only if it would show at least one
+    image. Searches the local filesystem, or the remote host when *sftp* (an
+    open client) is given.
+    """
+    pinned = {n: list(vs) for n, vs in axes.items() if n != axis}
+    if sftp is None:
+        _, found = _axes_from_local_template(template, pinned)
+    else:
+        found = _axes_from_sftp_template(template, sftp, pinned)
+    return list(found.get(axis, []))
+
+
 def _axes_from_remote_template(
     template: str,
     remote: RemoteConfig,

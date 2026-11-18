@@ -27,7 +27,7 @@ A quick tour of the juxt interface and its interactive elements.
 | 1 | **Mode** | `[tap]`, `[seek]`, or `[pin]` — the active navigation mode. |
 | 2 | **Watch indicator** | `●` when live file-watching is active; absent otherwise. |
 | 3 | **Axis values** | Current position in the hypercube, e.g. `sensor=ASCAT  date=2024-03-16`. |
-| 4 | **Arrow bindings** | Which axes are mapped to `←/→` and `↑/↓`, updated as you focus different axes. |
+| 4 | **Arrow bindings** | The primary (`←/→`) and secondary (`↑/↓`) axes, updated as you focus different axes. |
 | 5 | **Letter assignments** | Which letter key navigates which axis. Axes without an available letter are shown in red. |
 
 ### Command mode
@@ -62,6 +62,8 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 
 Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted. The current path at the top always reserves as many lines as the longest path this config could ever show, so the axis list below it never shifts as you navigate — even though the actual path's own wrapped height varies from combination to combination.
 
+Each axis header carries a `[+]`: click it to add or remove values of that axis from those found on disk, without restarting (see [`:values`](navigation.md#picking-values-from-disk-subset-interactive-values)).
+
 It starts closed; pass `--info` to open it right away. The status bar is the mirror case — shown by default, hidden at startup with `--no-status-bar`.
 
 ---
@@ -82,7 +84,7 @@ Chords sit in their own column, coloured apart from their descriptions, so a des
 
 Saving `~/.juxt/settings.yaml` redraws the panel, so a rebound chord shows up without a restart.
 
-Every value is clickable: a left click jumps straight to it, focuses that axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
+Every value is clickable: a left click jumps straight to it, makes it the primary axis (so `←`/`→` cycle it) and records the previous position, so `Spacebar` flips back. Clicking the value that is already active only focuses the axis.
 
 Values are packed into as many rows as the sidebar is wide, separated by two spaces. A value is never broken across two lines: it moves to the next row whole. A value too long for even a row of its own is cut short with `…` until you widen the sidebar, and hovering it shows the full text.
 
@@ -120,7 +122,7 @@ Open with `Ctrl+Shift+G` or `:grid-dialog` — a point-and-click front end for t
 
 | Field | Description |
 |---|---|
-| **Axis** | The axis to tile across the grid. Pre-selected to the current grid axis, or the `←`/`→` axis when not yet in grid view. |
+| **Axis** | The axis to tile across the grid. Pre-selected to the current grid axis, or the primary axis when not yet in grid view. |
 | **Values** | One checkbox per value; only the ticked ones become cells. `All`, `None` and `Invert` set them in bulk. |
 | **Layout** | With `auto` ticked the spin boxes preview the layout fitted to the viewport aspect ratio. Stepping either spin box unticks `auto` and hands you rows × cols; re-tick it to return to the fitted layout. Rows × cols is a hard cap — pick fewer panes than values and the leftovers stay reachable through the focused pane. |
 | **Sync pan/zoom** | The per-axis equivalents of `:grid-sharex` and `:grid-sharey`. |
@@ -155,11 +157,11 @@ The images themselves are never recoloured: a plot keeps the background it was d
 
 ## Highlight format
 
-Three places show the current selection in colour: the active value in the info sidebar, the active axis in the status-bar coordinates, and the selected entry in a candidate list. All three are configurable in `~/.juxt/settings.yaml`:
+Three places show the current selection in colour: the active value in the info sidebar, the last-moved axis in the status-bar coordinates (for a second after each step), and the selected entry in a candidate list. All three are configurable in `~/.juxt/settings.yaml`:
 
 ```yaml
 highlight:
-  selected: "accent:{}"     # info sidebar / active axis
+  selected: "accent:{}"     # info sidebar / last-moved axis
   candidates: "accent:[{}]" # status-bar candidate lists
 ```
 

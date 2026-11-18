@@ -14,6 +14,7 @@ from juxt.detect import (
     _iter_images,
     _parse_remote_pattern,
     _split_with_seps,
+    axis_values_on_disk,
     detect_config,
     has_bare_wildcard,
     resolve_wildcard_template,
@@ -548,3 +549,41 @@ class TestRemoteTemplateWalk:
         )
         assert axes == {"sensor": ["A", "B"], "date": ["d1", "d2"]}
         assert sorted(set(sftp.listed)) == sorted(sftp.listed)
+
+
+class TestAxisValuesOnDisk:
+    """The value picker searches one axis, with the others pinned to the
+    values the session has, locally and over SFTP alike."""
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        root = tmp_path / "plots"
+        root.mkdir()
+        for sensor, date in [("A", "d1"), ("A", "d2"), ("B", "d1"), ("C", "d2"), ("D", "d9")]:
+            (root / f"{sensor}_{date}.png").write_bytes(b"")
+        return f"{root.as_posix()}/{{sensor}}_{{date}}.png"
+
+    def test_local_lists_values_for_the_loaded_combinations(self, tree):
+        axes = {"sensor": ["A"], "date": ["d1", "d2"]}
+        assert axis_values_on_disk(tree, axes, "sensor") == ["A", "B", "C"]
+
+    def test_value_only_with_unloaded_combinations_is_left_out(self, tree):
+        """D only exists for d9, which the session does not show."""
+        axes = {"sensor": ["A"], "date": ["d1"]}
+        assert axis_values_on_disk(tree, axes, "sensor") == ["A", "B"]
+
+    def test_remote_matches_local(self, tree):
+        axes = {"sensor": ["A"], "date": ["d1", "d2"]}
+        assert axis_values_on_disk(tree, axes, "sensor", _OsSFTP()) == ["A", "B", "C"]
+
+    def test_remote_walk_stays_within_the_pinned_values(self, tmp_path):
+        root = tmp_path / "plots"
+        for sensor, date in [("A", "d1"), ("B", "d1"), ("B", "d2")]:
+            (root / date).mkdir(parents=True, exist_ok=True)
+            (root / date / f"{sensor}.png").write_bytes(b"")
+        sftp = _OsSFTP()
+        axes = {"date": ["d1"], "sensor": ["A"]}
+        found = axis_values_on_disk(
+            f"{root.as_posix()}/{{date}}/{{sensor}}.png", axes, "sensor", sftp)
+        assert found == ["A", "B"]
+        assert not any(p.endswith("/d2") for p in sftp.listed)

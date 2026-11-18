@@ -2,7 +2,10 @@
 placeholder-pinning flags (see juxt.detect._axes_from_local_template)."""
 from __future__ import annotations
 
+import sys
+
 import pytest
+from PySide6.QtCore import Qt
 
 from juxt.__main__ import _parse_args, _parse_axis_pins
 
@@ -265,3 +268,296 @@ class TestListAxes:
         r = self._run(str(tmp_path), "--list-axes")
         assert r.returncode == 1
         assert "No image files found" in r.stderr
+
+
+class TestSubsetInteractive:
+    """--subset-interactive: tick the values to load before any image is read."""
+
+    def test_flag_is_parsed_and_defaults_off(self, monkeypatch):
+        from juxt.__main__ import _parse_args
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/"])
+        assert _parse_args()[0].subset_interactive is False
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/{sensor}.png", "--subset-interactive", "--sensor", "A"])
+        args, pins = _parse_args()
+        assert args.subset_interactive is True
+        assert pins == {"sensor": ["A"]}
+
+    def test_flag_is_in_help_and_completion(self, capsys):
+        from juxt.__main__ import _print_help
+        from juxt.complete import CLI_OPTIONS
+        _print_help()
+        assert "--subset-interactive" in capsys.readouterr().out
+        assert "--subset-interactive" in CLI_OPTIONS
+
+    def _pick(self, qtbot, monkeypatch, ticked):
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWidgets import QApplication, QDialog
+        from juxt.__main__ import _pick_startup_values
+        from juxt.config import Config
+        from juxt.dialogs import ValuesDialog
+        seen = {}
+
+        def fake_exec(self):
+            seen["title"] = self.windowTitle()
+            seen["loading"] = self.loading
+            seen["ticked_at_open"] = self.values()
+            if ticked is None:
+                return QDialog.DialogCode.Rejected
+            for p in self.panels:
+                for i in range(p.value_list.count()):
+                    it = p.value_list.item(i)
+                    on = it.data(Qt.ItemDataRole.UserRole) in ticked
+                    it.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+            return QDialog.DialogCode.Accepted
+        monkeypatch.setattr(ValuesDialog, "exec", fake_exec)
+        cfg = Config(template="p/{s}_{d}.png", axes={"s": ["A", "B"], "d": ["1", "2"]},
+                     keys={"s": "s", "d": "d"})
+        out = _pick_startup_values(cfg, QIcon(), QApplication.primaryScreen())
+        return out, seen
+
+    def test_picker_starts_all_ticked_and_narrows_the_config(self, qtbot, monkeypatch):
+        out, seen = self._pick(qtbot, monkeypatch, ticked={"B", "1", "2"})
+        assert seen["ticked_at_open"] == {"s": ["A", "B"], "d": ["1", "2"]}
+        assert seen["loading"] is False          # discovery already listed everything
+        assert out.axes == {"s": ["B"], "d": ["1", "2"]}
+        assert out.keys == {"s": "s", "d": "d"}
+        assert out.template == "p/{s}_{d}.png"
+
+    def test_cancel_quits(self, qtbot, monkeypatch):
+        with pytest.raises(SystemExit) as exc:
+            self._pick(qtbot, monkeypatch, ticked=None)
+        assert exc.value.code == 0
+
+
+class TestPinsPreselectInThePicker:
+    """With --subset-interactive, --NAME VALUE ticks values instead of hiding the rest."""
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        d = tmp_path / "plots"
+        d.mkdir()
+        for s in ("A", "B", "C"):
+            for t in ("d1", "d2"):
+                (d / f"{s}_{t}.png").write_bytes(b"")
+        return d
+
+    def _args(self, path):
+        import argparse
+        return argparse.Namespace(path=path, auto=True, separator=None,
+                                  max_depth=None, full_path=False)
+
+    def test_pins_become_the_preselection(self, tree):
+        from juxt.__main__ import _resolve_for_picker
+        cfg, pre = _resolve_for_picker(
+            self._args(f"{tree.as_posix()}/{{sensor}}_{{date}}.png"),
+            {"sensor": ["A", "C"]}, None)
+        assert cfg.axes == {"sensor": ["A", "B", "C"], "date": ["d1", "d2"]}
+        assert pre == {"sensor": ["A", "C"]}
+
+    def test_no_pins_no_preselection(self, tree):
+        from juxt.__main__ import _resolve_for_picker
+        cfg, pre = _resolve_for_picker(
+            self._args(f"{tree.as_posix()}/{{sensor}}_{{date}}.png"), {}, None)
+        assert cfg.axes["sensor"] == ["A", "B", "C"]
+        assert pre == {}
+
+    def test_pins_with_a_slash_keep_narrowing(self, tree, tmp_path):
+        from juxt.__main__ import _resolve_for_picker
+        root = tree.as_posix()
+        cfg, pre = _resolve_for_picker(
+            self._args("{root}/{sensor}_{date}.png"),
+            {"root": [root], "sensor": ["B"]}, None)
+        assert cfg.axes["root"] == [root]
+        assert cfg.axes["sensor"] == ["A", "B", "C"]
+        assert pre == {"sensor": ["B"]}
+
+    def test_falls_back_to_pinned_discovery(self, tree):
+        """A placeholder before a '*' cannot be discovered without its pin."""
+        from juxt.__main__ import _resolve_for_picker
+        cfg, pre = _resolve_for_picker(
+            self._args("{root}/*.png"), {"root": [tree.as_posix()]}, None)
+        assert cfg.axes["root"] == [tree.as_posix()]
+        assert pre == {}
+
+    def test_picker_ticks_the_pins_and_offers_the_rest(self, qtbot, monkeypatch):
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWidgets import QApplication, QDialog
+        from juxt.__main__ import _pick_startup_values
+        from juxt.config import Config
+        from juxt.dialogs import ValuesDialog
+        seen = {}
+
+        def fake_exec(self):
+            seen["ticked"] = self.values()
+            p = self.panel("s")
+            seen["rows"] = [p.value_list.item(i).data(Qt.ItemDataRole.UserRole)
+                            for i in range(p.value_list.count())]
+            return QDialog.DialogCode.Accepted
+        monkeypatch.setattr(ValuesDialog, "exec", fake_exec)
+        cfg = Config(template="p/{s}_{d}.png",
+                     axes={"s": ["A", "B", "C"], "d": ["1", "2"]}, keys={})
+        out = _pick_startup_values(cfg, QIcon(), QApplication.primaryScreen(),
+                                   {"s": ["A", "C"]})
+        assert seen["rows"] == ["A", "B", "C"]
+        assert seen["ticked"] == {"s": ["A", "C"], "d": ["1", "2"]}
+        assert out.axes == {"s": ["A", "C"], "d": ["1", "2"]}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGINT delivery is POSIX-only")
+class TestCtrlC:
+    """Ctrl+C quits juxt from a dialogue too, not only from the viewer: the
+    hook is in before the first dialogue opens, and it closes modal ones."""
+
+    def test_quits_from_the_startup_value_picker(self, tmp_path):
+        import os
+        import signal as _signal
+        import subprocess
+        import time
+        from conftest import make_png
+
+        for s in ("A", "B"):
+            (tmp_path / f"{s}.png").write_bytes(make_png())
+        log = tmp_path / "juxt.log"
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "juxt", f"{tmp_path.as_posix()}/{{s}}.png",
+             "--subset-interactive"],
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen",
+                 "JUXT_LOG_LEVEL": "DEBUG", "JUXT_LOG_FILE": str(log)},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if log.exists() and "startup value picker open" in log.read_text():
+                    break
+                assert proc.poll() is None, "juxt exited before the picker opened"
+                time.sleep(0.05)
+            else:
+                pytest.fail("the value picker never opened")
+            time.sleep(0.2)   # let exec() enter its event loop
+            proc.send_signal(_signal.SIGINT)
+            assert proc.wait(timeout=10) == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+
+class TestDiscoveryBusyBox:
+    """Startup discovery runs in a worker, with a busy box once it takes a while."""
+
+    class _Screen:
+        @staticmethod
+        def geometry():
+            from PySide6.QtCore import QRect
+            return QRect(0, 0, 800, 600)
+
+    def _run(self, fn, ask=lambda label: None, delay_ms=300, interrupted=None):
+        from PySide6.QtGui import QIcon
+        from juxt.__main__ import _discover_with_busy
+        return _discover_with_busy(
+            fn, ask, app_icon=QIcon(), screen=self._Screen(),
+            interrupted=interrupted or [False], delay_ms=delay_ms)
+
+    @staticmethod
+    def _busy_boxes():
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+        return [w for w in QApplication.topLevelWidgets()
+                if isinstance(w, QProgressDialog) and w.isVisible()]
+
+    def test_returns_the_result_without_a_box_when_quick(self, qtbot):
+        import threading
+        seen = {}
+
+        def fn(_ask):
+            seen["thread"] = threading.current_thread()
+            return "config"
+        assert self._run(fn) == "config"
+        assert seen["thread"] is not threading.main_thread()
+        assert self._busy_boxes() == []
+
+    def test_box_shows_while_slow_and_closes_after(self, qtbot):
+        import time
+        shown = []
+
+        def fn(_ask):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not shown:
+                time.sleep(0.02)
+            return 42
+        from PySide6.QtCore import QTimer
+        poll = QTimer()
+        poll.timeout.connect(lambda: shown.extend(
+            b.labelText() for b in self._busy_boxes()))
+        poll.start(20)
+        assert self._run(fn, delay_ms=50) == 42
+        poll.stop()
+        assert shown and shown[0] == "Collecting values…"
+        qtbot.waitUntil(lambda: self._busy_boxes() == [])
+
+    def test_errors_are_raised_on_the_main_thread(self, qtbot):
+        def fn(_ask):
+            raise ValueError("no files")
+        with pytest.raises(ValueError, match="no files"):
+            self._run(fn)
+
+    def test_password_is_asked_on_the_main_thread(self, qtbot):
+        import threading
+        asked = []
+
+        def ask(label):
+            asked.append((label, threading.current_thread() is threading.main_thread()))
+            return "secret"
+        assert self._run(lambda a: a("me@host"), ask) == "secret"
+        assert asked == [("me@host", True)]
+
+    @pytest.mark.parametrize("how", ["button", "escape"])
+    def test_cancel_quits(self, qtbot, how):
+        import threading
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QPushButton
+        release = threading.Event()
+
+        def cancel():
+            boxes = self._busy_boxes()
+            if not boxes:
+                QTimer.singleShot(20, cancel)
+            elif how == "button":
+                boxes[0].findChild(QPushButton).click()
+            else:
+                qtbot.keyClick(boxes[0], Qt.Key.Key_Escape)
+        QTimer.singleShot(20, cancel)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                self._run(lambda _a: release.wait(5), delay_ms=0)
+            assert exc.value.code == 0
+        finally:
+            release.set()
+
+    def test_ctrl_c_flag_quits(self, qtbot):
+        import threading
+        from PySide6.QtCore import QTimer
+        release = threading.Event()
+        interrupted = [False]
+        QTimer.singleShot(50, lambda: interrupted.__setitem__(0, True))
+        try:
+            with pytest.raises(SystemExit):
+                self._run(lambda _a: release.wait(5), interrupted=interrupted)
+        finally:
+            release.set()
+
+
+class TestMayPrompt:
+    def _args(self, path, auto=False):
+        import argparse
+        return argparse.Namespace(path=path, auto=auto)
+
+    def test_plain_directory_may_prompt(self, tmp_path):
+        from juxt.__main__ import _may_prompt
+        assert _may_prompt(self._args(str(tmp_path)))
+        assert not _may_prompt(self._args(str(tmp_path), auto=True))
+
+    def test_templates_and_remote_templates_do_not(self, tmp_path):
+        from juxt.__main__ import _may_prompt
+        assert not _may_prompt(self._args(f"{tmp_path}/{{s}}.png"))
+        assert not _may_prompt(self._args("host:/data/{s}.png"))
+        assert _may_prompt(self._args("host:/data"))
