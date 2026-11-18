@@ -528,6 +528,7 @@ CLI_OPTIONS = [
     "--info", "--no-info",
     "--keys", "--no-keys",
     "--list-axes",
+    "--subset-interactive",
     "--max-depth",
     "--name",
     "--no-sharex", "--no-sharey", "--no-watch",

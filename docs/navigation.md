@@ -201,7 +201,8 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:write [PATH]` / `:w [PATH]` | Write the current config to a YAML file; opens a file dialog if PATH is omitted |
 | `:pattern PATH` | Change the template / source path without restarting (see below) |
 | `:subset AXIS [VALUES]` | Edit the values of an axis: delete, reorder, rename or add (see below) |
-| `:values AXIS` | Pick the values of an axis from those found on disk: add or remove (see below) |
+| `:subset-interactive` | Pick the values of every axis from those found on disk, one column per axis (see below) |
+| `:values AXIS` | Pick the values of one axis from those found on disk: add or remove (see below) |
 | `:watch` / `:watch true` | Enable live file watching / polling |
 | `:watch false` | Disable live file watching / polling |
 | `:watch N` | Set remote poll interval to N seconds |
@@ -286,9 +287,9 @@ Edit the line and press `Enter`; the line becomes the axis, in the order written
 
 The whole edit can be given in one go, e.g. `:subset sensor SMAP ASCAT`. In a remote session the images of added values are downloaded over the session's SSH connection, with a progress dialogue; Tab completion of values on disk is local only.
 
-### Picking values from disk (:values)
+### Picking values from disk (:subset-interactive, :values)
 
-`:values AXIS`, or a click on the `[+]` next to an axis in the [info sidebar](ui.md#info-sidebar), lists the values of that axis found on disk and opens them as a checklist:
+`:subset-interactive` opens a checklist of the values found on disk for every axis, one column per axis. `:values AXIS`, or a click on the `[+]` next to an axis in the [info sidebar](ui.md#info-sidebar), opens the same checklist for that one axis:
 
 ```
 filter: ____
@@ -300,12 +301,14 @@ filter: ____
 All  None              Apply  Cancel
 ```
 
-The dialogue opens at once with the current values and a spinner while the disk is searched; the values found then join the list, keeping any ticks you already changed. Current values are ticked, values on disk the axis does not have yet are unticked and shown in the accent colour. Tick to add, untick to remove, then `Apply`: only the images of the added values are loaded (with the same progress dialogue as on startup), everything already loaded stays. This is the quick way to pull in a new run or sensor without restarting juxt.
+The dialogue opens at once with the current values and a spinner while the disk is searched; the values found then join each column as its axis is done, keeping any ticks you already changed. Current values are ticked, values on disk the axis does not have yet are unticked and shown in the accent colour. Tick to add, untick to remove, then `Apply`: only the images of the added values are loaded (with the same progress dialogue as on startup), everything already loaded stays. This is the quick way to pull in a new run or sensor without restarting juxt.
 
 - The search pins every other axis to the values it has now, so a value is listed only if it has at least one image among the combinations you are looking at. This keeps the search fast, also over SSH.
 - New values slot into place when the axis is sorted; an axis you reordered keeps its order and the new values follow it.
 - The filter field narrows the list as you type; `All` and `None` act on the rows it shows. `↓` moves from the filter into the list, where `Space` toggles a row; a double-click on a row toggles it too.
 - A current value with no file on disk is marked `no files`.
+- Changes on several axes apply in one go: every combination involving an added value is loaded, and an added value that has no image among the combinations you end up with is refused, which catches a value that only exists next to one you dropped.
+- To pick the values before anything is loaded, start juxt with [`--subset-interactive`](configuration.md#picking-values-at-startup).
 
 Remote sessions reuse their SSH connection (and the password already entered), so neither the listing nor the download asks again.
 

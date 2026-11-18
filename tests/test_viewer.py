@@ -2718,7 +2718,8 @@ class _LocalSFTP:
 
 
 def _tick_all(monkeypatch, ticked=None):
-    """Make the value picker tick *ticked* (default: everything) and apply."""
+    """Make the value picker tick *ticked* (default: everything, on every
+    axis) and apply. `seen["rows"]` records the first column's values."""
     from PySide6.QtWidgets import QDialog
     from juxt.dialogs import ValuesDialog
 
@@ -2732,14 +2733,17 @@ def _tick_all(monkeypatch, ticked=None):
         while self.loading and time.monotonic() < deadline:   # as a user would wait
             QApplication.processEvents()
             time.sleep(0.005)
-        seen["rows"] = [self.value_list.item(i).data(Qt.ItemDataRole.UserRole)
-                        for i in range(self.value_list.count())]
-        seen["hint"] = self.hint.text()
-        for i in range(self.value_list.count()):
-            item = self.value_list.item(i)
-            val = item.data(Qt.ItemDataRole.UserRole)
-            on = ticked is None or val in ticked
-            item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        seen["columns"] = list(self.axis_names)
+        first = self.panels[0].value_list
+        seen["rows"] = [first.item(i).data(Qt.ItemDataRole.UserRole)
+                        for i in range(first.count())]
+        for panel in self.panels:
+            lst = panel.value_list
+            for i in range(lst.count()):
+                item = lst.item(i)
+                val = item.data(Qt.ItemDataRole.UserRole)
+                on = ticked is None or val in ticked
+                item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
         return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(ValuesDialog, "exec", fake_exec)
@@ -2767,7 +2771,8 @@ class TestValuesPicker:
         qtbot.waitUntil(lambda: view.axis_values[0] == ["A", "B", "C"])
         assert seen["rows"] == ["A", "B", "C"]
         assert not isinstance(view.pixmaps[(2, 1)], MissingPixmap)
-        assert not view._reload_in_progress
+        assert seen["columns"] == ["sensor"]
+        qtbot.waitUntil(lambda: not view._listing_in_progress)
 
     def test_unticking_removes(self, view, qtbot, monkeypatch):
         _tick_all(monkeypatch, ticked={"B"})
@@ -2798,6 +2803,12 @@ class TestValuesPicker:
         view.open_values_dialog(0)
         assert "busy" in view._flash_msg
 
+    def test_reload_waits_for_the_listing(self, view):
+        view._listing_in_progress = True
+        view._do_reload()
+        assert not view._reload_in_progress
+        view._listing_in_progress = False
+
     def test_dialog_opens_before_the_listing(self, view, monkeypatch):
         seen = _tick_all(monkeypatch)
         view.open_values_dialog(0)
@@ -2805,19 +2816,20 @@ class TestValuesPicker:
         assert seen["rows"] == ["A", "B", "C"]
 
     def test_listing_arriving_after_close_is_ignored(self, view):
-        view._reload_in_progress = True
+        view._listing_in_progress = True
         view._on_values_found(("sensor", ["A", "B", "C"]))
-        assert not view._reload_in_progress
         assert view.axis_values[0] == ["A", "B"]
+        view._on_values_found((None, None))   # end of the search
+        assert not view._listing_in_progress
 
     def test_listing_error_shows_in_the_open_dialog(self, view, qtbot):
         from juxt.dialogs import ValuesDialog
-        dlg = ValuesDialog("sensor", ["A", "B"])
+        dlg = ValuesDialog({"sensor": ["A", "B"]})
         qtbot.addWidget(dlg)
         view._values_dlg = dlg
         view._on_values_found(("sensor", ValueError("boom")))
         assert not dlg.loading
-        assert "boom" in dlg.hint.text()
+        assert "boom" in dlg.panels[0].hint.text()
         view._values_dlg = None
 
     def test_axes_changing_while_open_drops_the_edit(self, view, monkeypatch):
@@ -2828,7 +2840,7 @@ class TestValuesPicker:
             view._axes_gen += 1
             return QDialog.DialogCode.Accepted
         monkeypatch.setattr(ValuesDialog, "exec", exec_and_change_axes)
-        monkeypatch.setattr(ValuesDialog, "values", lambda self: ["A"])
+        monkeypatch.setattr(ValuesDialog, "values", lambda self: {"sensor": ["A"]})
         view.open_values_dialog(0)
         assert view.axis_values[0] == ["A", "B"]
         assert "changed meanwhile" in view._flash_msg
@@ -2853,6 +2865,18 @@ class TestValuesPicker:
         view._do_subset(0, ["A", "B", "C"])
         assert view.axis_values[0] == ["A", "B"]
         assert "cancelled" in view._flash_msg
+
+    def test_subset_interactive_offers_every_axis(self, view, qtbot, monkeypatch):
+        seen = _tick_all(monkeypatch)
+        view._cmd_execute("subset-interactive")
+        qtbot.waitUntil(lambda: view.axis_values[0] == ["A", "B", "C"])
+        assert seen["columns"] == ["sensor", "date"]
+
+    def test_joint_edit_changes_several_axes_at_once(self, view, qtbot, monkeypatch):
+        _tick_all(monkeypatch, ticked={"B", "C", "d2"})
+        view._cmd_execute("subset-interactive")
+        qtbot.waitUntil(lambda: view.axis_values == [["B", "C"], ["d2"]])
+        assert "sensor +1 −1" in view._flash_msg and "date +0 −1" in view._flash_msg
 
     def test_picked_values_keep_their_case(self, view, flat_plot_dir):
         """Unlike typed :subset values, picked ones are exact file names."""
@@ -2988,9 +3012,58 @@ class TestSidebarValuesButton:
         assert "listing sensor values…" in main_window._status_label._full_plain
         v._reload_in_progress = False
 
-    def test_status_bar_quiet_for_the_value_picker(self, main_window):
+    def test_status_bar_quiet_while_the_picker_searches(self, main_window):
         v = main_window.view
-        v._reload_in_progress, v._busy_label = True, ""
+        v._listing_in_progress = True
         main_window._update_status()
         assert "…" not in main_window._status_label._full_plain
-        v._reload_in_progress, v._busy_label = False, None
+        v._listing_in_progress = False
+
+
+class TestSetValuesAcrossAxes:
+    """_set_values edits several axes in one pass, loading only new combinations."""
+
+    @pytest.fixture
+    def view(self, flat_config, flat_plot_dir, qtbot):
+        from conftest import make_png
+        from juxt.loader import preload
+        for sensor, date in [("C", "d1"), ("C", "d3"), ("A", "d3")]:
+            (flat_plot_dir / f"{sensor}_{date}.png").write_bytes(make_png())
+        v = ImageView(flat_config, preload(flat_config.template, flat_config.axes))
+        qtbot.addWidget(v)
+        v.show()
+        return v
+
+    def test_adds_on_two_axes_loads_the_cross_combinations(self, view, monkeypatch):
+        from juxt.loader import MissingPixmap
+        loaded = []
+        monkeypatch.setattr("juxt.viewer.QPixmap",
+                            lambda *a: loaded.append(a) or QPixmap(*a))
+        keep = view.pixmaps[(0, 0)]
+        view._set_values({0: ["A", "B", "C"], 1: ["d1", "d2", "d3"]})
+        assert view.axis_values == [["A", "B", "C"], ["d1", "d2", "d3"]]
+        assert view.pixmaps[(0, 0)] is keep
+        assert len(view.pixmaps) == 9
+        assert len([a for a in loaded if a]) == 5     # 9 combinations, 4 kept
+        assert not isinstance(view.pixmaps[(2, 2)], MissingPixmap)   # C_d3
+        assert isinstance(view.pixmaps[(1, 2)], MissingPixmap)       # no B_d3
+
+    def test_remove_on_one_add_on_another(self, view):
+        view._set_values({0: ["A"], 1: ["d1", "d3"]})
+        assert view.axis_values == [["A"], ["d1", "d3"]]
+        assert len(view.pixmaps) == 2
+
+    def test_value_only_found_with_dropped_values_is_refused(self, view):
+        """d3 exists for A and C, but neither stays."""
+        view._set_values({0: ["B"], 1: ["d1", "d3"]})
+        assert view.axis_values == [["A", "B"], ["d1", "d2"]]
+        assert "no files for date=d3" in view._flash_msg
+
+    def test_added_value_without_any_file_is_refused(self, view):
+        view._set_values({0: ["A", "B", "Z"], 1: ["d1", "d3"]})
+        assert view.axis_values == [["A", "B"], ["d1", "d2"]]
+        assert "no files for sensor=Z" in view._flash_msg
+
+    def test_empty_axis_is_refused(self, view):
+        view._set_values({0: ["A"], 1: []})
+        assert view.axis_values == [["A", "B"], ["d1", "d2"]]

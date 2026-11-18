@@ -393,6 +393,7 @@ _COMMANDS = [
     "skip-missing",
     "remove-value",
     "subset",
+    "subset-interactive",
     "ungrid",
     "values",
     "version",
@@ -502,7 +503,8 @@ _COMMAND_HELP: dict[str, str] = {
     "remove-value": "remove a value from an axis  (e.g. remove-value sensor SMAP)",
     "subset":       "edit the values of an axis: delete, reorder, rename, add  (e.g. subset sensor)",
     "ungrid":       "return to single-image view",
-    "values":       "pick the values of an axis from those on disk: add, remove  (e.g. values sensor)",
+    "subset-interactive": "pick the values of every axis from those on disk: add, remove",
+    "values":       "pick the values of one axis from those on disk: add, remove  (e.g. values sensor)",
     "version":      "show the juxt version",
     "write":        "write current config to a YAML file",
     "swap-axes":    "swap the ←/→ and ↑/↓ axis bindings",
@@ -946,7 +948,7 @@ class ImageView(QGraphicsView):
     _reload_result = Signal(object)     # emitted from reload worker; carries tuple or Exception
     _pattern_result = Signal(object)    # emitted from pattern worker; carries dict or Exception
     _pattern_progress = Signal(int, int, str)  # value, total, label
-    _values_found = Signal(object)      # value-picker listing: (axis, found | Exception)
+    _values_found = Signal(object)      # value-picker listing: (axis, found | Exception); (None, None) = done
     _values_loaded = Signal(object)     # remote subset download: dict | Exception | None
 
     def __init__(
@@ -1039,9 +1041,10 @@ class ImageView(QGraphicsView):
         self._poll_interval: int = poll_interval if poll_interval > 0 else 5
         self._poll_in_progress: bool = False
         self._reload_in_progress: bool = False
-        # Status-bar text while _reload_in_progress; "" keeps the bar quiet
-        # (the value picker shows its own spinner).
-        self._busy_label: str | None = None
+        self._busy_label: str | None = None       # status-bar text while _reload_in_progress
+        # The value picker's search of the disk is running (it shows its own
+        # spinner); :reload and :pattern wait for it.
+        self._listing_in_progress: bool = False
         self._remote_conn: list = [None, None]   # [ssh_client, sftp_client], worker-thread only
         # Serialises workers that share _remote_conn (poll, value picker, subset
         # download): an SFTP session runs one request sequence at a time.
@@ -1999,6 +2002,8 @@ class ImageView(QGraphicsView):
                 self._do_subset(axis_idx, parse_values(rest))
             else:
                 self._cmd_open_subset(axis_idx)
+        elif verb == "subset-interactive":
+            self.open_values_dialog()
         elif verb == "values":
             raw = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
             axis_name = next((n for n in self.axis_names if n == raw), None) or next(
@@ -2310,7 +2315,7 @@ class ImageView(QGraphicsView):
 
     def _do_reload(self):
         """Re-detect axes and download new files, then rebuild viewer state."""
-        if self._reload_in_progress:
+        if self._reload_in_progress or self._listing_in_progress:
             return
         self._reload_in_progress = True
         self.state_changed.emit()
@@ -2550,28 +2555,27 @@ class ImageView(QGraphicsView):
         self._apply_axes_change(new_config, new_pixmaps)
         self._flash(f"removed {axis_name}={removed_val}")
 
-    # ── value picker (:values, the sidebar's [+]) ────────────────────────────
+    # ── value picker (:subset-interactive, :values, the sidebar's [+]) ───────
 
-    def open_values_dialog(self, axis_idx: int):
-        """Let the user tick the values an axis should have, out of those
-        found on disk (:values / the [+] in the info sidebar).
+    def open_values_dialog(self, axis_idx: int | None = None):
+        """Let the user tick the values of one axis (*axis_idx*) or of every
+        axis (None), out of those found on disk.
 
-        The dialogue opens at once with the current values and a spinner;
-        the disk is searched in a worker meanwhile (over the session's own
-        SFTP connection when remote, so the password asked at startup is
-        reused) and the values found join the open dialogue.
+        The dialogue opens at once with the current values and a spinner per
+        column; the disk is searched in a worker meanwhile (over the session's
+        own SFTP connection when remote, so the password asked at startup is
+        reused), one axis after the other, and each listing joins its column
+        as it comes in.
         """
-        if not 0 <= axis_idx < self.n_axes:
+        if axis_idx is not None and not 0 <= axis_idx < self.n_axes:
             return
-        if self._reload_in_progress:
+        if self._reload_in_progress or self._listing_in_progress:
             self._flash("busy, try again in a moment")
             return
-        axis = self.axis_names[axis_idx]
-        current = list(self.axis_values[axis_idx])
-        # Busy (no reload or :pattern may swap the connection under the
-        # worker), but quiet: the spinner is in the dialogue.
-        self._reload_in_progress = True
-        self._busy_label = ""
+        names = list(self.axis_names) if axis_idx is None else [self.axis_names[axis_idx]]
+        current = {n: list(self.axis_values[self.axis_names.index(n)]) for n in names}
+        # Keeps :reload and :pattern from swapping the connection under the worker.
+        self._listing_in_progress = True
 
         config = self.config
         gen = self._axes_gen
@@ -2579,20 +2583,29 @@ class ImageView(QGraphicsView):
 
         def _worker():
             from .detect import axis_values_on_disk
+
+            def _list(sftp):
+                for name in names:
+                    try:
+                        found = axis_values_on_disk(config.template, config.axes, name, sftp)
+                    except Exception as e:
+                        found = e
+                    self._values_found.emit((name, found))
+
             try:
                 if config.remote is None:
-                    found = axis_values_on_disk(config.template, config.axes, axis)
+                    _list(None)
                 else:
                     with lock:
-                        sftp = _shared_sftp(conn, config.remote, get_pw)
-                        found = axis_values_on_disk(
-                            config.template, config.axes, axis, sftp)
-                self._values_found.emit((axis, found))
-            except Exception as e:
-                self._values_found.emit((axis, e))
+                        _list(_shared_sftp(conn, config.remote, get_pw))
+            except Exception as e:   # could not connect
+                for name in names:
+                    self._values_found.emit((name, e))
+            finally:
+                self._values_found.emit((None, None))
 
         from .dialogs import ValuesDialog
-        dlg = ValuesDialog(axis, current, parent=self.window())
+        dlg = ValuesDialog(current, parent=self.window())
         self._values_dlg = dlg
         threading.Thread(target=_worker, daemon=True).start()
         try:
@@ -2602,88 +2615,95 @@ class ImageView(QGraphicsView):
             self._values_dlg = None
             _dispose(dlg)
         self.setFocus()
-        if not accepted or chosen == current:
+        changed = {n: v for n, v in chosen.items() if v != current[n]}
+        if not accepted or not changed:
             return
-        if gen != self._axes_gen or self.axis_names[axis_idx:axis_idx + 1] != [axis]:
+        if gen != self._axes_gen or any(n not in self.axis_names for n in changed):
             self._flash("the axes changed meanwhile; open the value picker again")
             return
-        self._do_subset(axis_idx, chosen, snap_case=False)
+        self._set_values({self.axis_names.index(n): v for n, v in changed.items()},
+                         snap_case=False)
 
     def _on_values_found(self, result: object):
-        """The listing is in: hand it to the value picker, if still open."""
+        """One axis's listing is in: hand it to the value picker, if open.
+        `(None, None)` marks the end of the search."""
         axis, found = result
-        self._reload_in_progress = False
-        self._busy_label = None
-        self.state_changed.emit()
+        if axis is None:
+            self._listing_in_progress = False
+            return
         dlg = self._values_dlg
-        if dlg is None or dlg.axis_name != axis:
+        if dlg is None or axis not in dlg.axis_names:
             return   # closed before the listing came in
         if isinstance(found, Exception):
             log.warning("Listing %s values failed: %s", axis, found)
-            dlg.set_found([], error=str(found))
+            dlg.set_found(axis, [], error=str(found))
         else:
-            dlg.set_found(found)
+            dlg.set_found(axis, found)
 
     # ── subset edit ──────────────────────────────────────────────────────────
 
     def _do_subset(self, axis_idx: int, wanted: list[str], *, snap_case: bool = True):
-        """Make *wanted* the values of an axis, in that order.
+        """Make *wanted* the values of one axis, in that order (see _set_values)."""
+        self._set_values({axis_idx: wanted}, snap_case=snap_case)
 
-        Kept values carry their images along, values not in the axis yet are
-        loaded from the template (downloaded in a worker when remote), and the
-        rest are dropped. With *snap_case*, a typed value that differs from an
-        existing one only in case is taken to be that value.
+    def _set_values(self, wanted: dict[int, list[str]], *, snap_case: bool = True):
+        """Make `wanted[j]` the values of axis *j*, in that order, for every
+        axis given, in one go.
+
+        Images whose values all stay are carried along, the combinations that
+        involve an added value are loaded from the template (downloaded in a
+        worker when remote), and the rest are dropped. With *snap_case*, a
+        typed value that differs from an existing one only in case is taken
+        to be that value.
         """
-        j = axis_idx
-        axis_name = self.axis_names[j]
-        old_vals = self.axis_values[j]
+        new_axis_values = [list(vals) for vals in self.axis_values]
+        for j, w in wanted.items():
+            old_vals = self.axis_values[j]
+            lowered: dict[str, list[str]] = {}
+            for v in old_vals:
+                lowered.setdefault(v.lower(), []).append(v)
+            new_vals: list[str] = []
+            for v in w:
+                if snap_case and v not in old_vals and len(lowered.get(v.lower(), [])) == 1:
+                    v = lowered[v.lower()][0]
+                if v not in new_vals:
+                    new_vals.append(v)
+            if not new_vals:
+                self._flash("an axis needs at least one value")
+                return
+            new_axis_values[j] = new_vals
 
-        lowered: dict[str, list[str]] = {}
-        for v in old_vals:
-            lowered.setdefault(v.lower(), []).append(v)
-        new_vals: list[str] = []
-        for w in wanted:
-            if snap_case and w not in old_vals and len(lowered.get(w.lower(), [])) == 1:
-                w = lowered[w.lower()][0]
-            if w not in new_vals:
-                new_vals.append(w)
-        if not new_vals:
-            self._flash("an axis needs at least one value")
-            return
-
-        added = [v for v in new_vals if v not in old_vals]
-        new_idx = {v: i for i, v in enumerate(new_vals)}
-        remap = {i: new_idx[v] for i, v in enumerate(old_vals) if v in new_idx}
-        if not added:
-            self._finish_subset(j, new_vals, remap, {}, {})
+        # Per axis: old value index -> new value index, for the values kept.
+        remaps = []
+        for old_vals, new_vals in zip(self.axis_values, new_axis_values):
+            idx = {v: i for i, v in enumerate(new_vals)}
+            remaps.append({i: idx[v] for i, v in enumerate(old_vals) if v in idx})
+        jobs = self._added_jobs(new_axis_values, remaps)
+        if not jobs:
+            self._finish_subset(new_axis_values, remaps, {}, {})
         elif self.config.remote is None:
-            files = [(key, path, val, path)
-                     for key, path, val in self._added_jobs(j, new_vals, added)]
+            files = [(key, path, path) for key, path in jobs]
             dlg = self._load_dialog(_images_label("Loading", len(files)), len(files))
-            loaded = self._decode_added(j, files, dlg)
+            loaded = self._decode_added(new_axis_values, files, dlg)
             _dispose(dlg)
             if loaded is not None:
-                self._finish_subset(j, new_vals, remap, loaded, {})
+                self._finish_subset(new_axis_values, remaps, loaded, {})
         else:
-            self._download_added_remote(j, new_vals, remap, added)
+            self._download_added_remote(new_axis_values, remaps, jobs)
 
-    def _added_jobs(self, j: int, new_vals: list[str],
-                    added: list[str]) -> list[tuple[tuple, str, str]]:
-        """`(key, path, value)` for every image the *added* values of axis *j*
-        bring in: one per combination of the other axes, keyed in the index
-        space of *new_vals*."""
+    def _added_jobs(self, new_axis_values: list[list[str]],
+                    remaps: list[dict[int, int]]) -> list[tuple[tuple, str]]:
+        """`(key, path)` for every image the edit brings in: each combination
+        of *new_axis_values* with at least one value the axes do not have
+        yet, keyed in the new index space."""
         from itertools import product
-        others = [range(len(vals)) for vals in self.axis_values]
-        others[j] = range(1)
-        new_idx = {v: i for i, v in enumerate(new_vals)}
+        kept = [set(r.values()) for r in remaps]
         jobs = []
-        for val in added:
-            for combo in product(*others):
-                mapping = {n: self.axis_values[i][combo[i]]
-                           for i, n in enumerate(self.axis_names)}
-                mapping[self.axis_names[j]] = val
-                key = combo[:j] + (new_idx[val],) + combo[j + 1:]
-                jobs.append((key, self.config.template.format(**mapping), val))
+        for key in product(*(range(len(vals)) for vals in new_axis_values)):
+            if all(k in kept[j] for j, k in enumerate(key)):
+                continue
+            mapping = {n: new_axis_values[j][key[j]] for j, n in enumerate(self.axis_names)}
+            jobs.append((key, self.config.template.format(**mapping)))
         return jobs
 
     def _load_dialog(self, label: str, total: int):
@@ -2698,49 +2718,52 @@ class ImageView(QGraphicsView):
         dlg.setValue(0)
         return dlg
 
-    def _decode_added(self, j: int, files: list[tuple[tuple, str | None, str, str]],
+    def _decode_added(self, new_axis_values: list[list[str]],
+                      files: list[tuple[tuple, str | None, str]],
                       dlg=None, offset: int = 0) -> dict[tuple, QPixmap] | None:
-        """Pixmaps of `(key, local_path, value, shown_path)` *files*, or None
-        (and a flash) when some value has no file at all, which is how a typo
+        """Pixmaps of `(key, local_path, shown_path)` *files*, or None (and a
+        flash) when some added value has no file at all, which is how a typo
         shows. A missing file (`local_path` None or unreadable) gets the usual
         placeholder naming *shown_path*. Progress goes to the progress
         dialogue *dlg*, counted from *offset*; cancelling it returns None."""
         from .loader import _error_pixmap
+        added = {(j, v) for j, vals in enumerate(new_axis_values)
+                 for v in vals if v not in self.axis_values[j]}
         loaded: dict[tuple, QPixmap] = {}
-        found: set[str] = set()
-        for i, (key, local, val, shown) in enumerate(files):
+        found: set[tuple[int, str]] = set()
+        for i, (key, local, shown) in enumerate(files):
             if dlg is not None:
                 dlg.setValue(offset + i)   # window-modal: keeps the UI painting
                 if dlg.wasCanceled():
-                    self._flash("cancelled; the axis is unchanged")
+                    self._flash("cancelled; the axes are unchanged")
                     return None
             pm = QPixmap(local) if local else QPixmap()
             if pm.isNull():
                 pm = _error_pixmap(shown)
             else:
-                found.add(val)
+                found.update((j, new_axis_values[j][k]) for j, k in enumerate(key))
             loaded[key] = pm
-        for val in dict.fromkeys(f[2] for f in files):
-            if val not in found:
-                self._flash(f"no files for {self.axis_names[j]}={val}")
-                return None
+        for j, vals in enumerate(new_axis_values):
+            for v in vals:
+                if (j, v) in added and (j, v) not in found:
+                    self._flash(f"no files for {self.axis_names[j]}={v}")
+                    return None
         return loaded
 
-    def _download_added_remote(self, j: int, new_vals: list[str],
-                               remap: dict[int, int], added: list[str]):
-        """Fetch the images of the *added* values in a worker, over the
-        session's SFTP connection, then finish the edit on the main thread."""
+    def _download_added_remote(self, new_axis_values: list[list[str]],
+                               remaps: list[dict[int, int]],
+                               jobs: list[tuple[tuple, str]]):
+        """Fetch the images *jobs* brings in, in a worker over the session's
+        SFTP connection, then finish the edit on the main thread."""
         if self._reload_in_progress:
             self._flash("busy, try again in a moment")
             return
         if self._remote_tmpdir is None:
             self._flash("this remote session has no download cache; use :pattern")
             return
-        jobs = self._added_jobs(j, new_vals, added)
         n = len(jobs)
-        axis = self.axis_names[j]
         self._reload_in_progress = True
-        self._busy_label = f"downloading {axis} values…"
+        self._busy_label = "downloading new values…"
         if self._watching:
             self._poll_timer.stop()
         self.state_changed.emit()
@@ -2770,13 +2793,11 @@ class ImageView(QGraphicsView):
                 mtimes: dict = {}
                 with lock:
                     sftp = _shared_sftp(conn, remote, get_pw)
-                    got = download_remote_files(
-                        [(key, path) for key, path, _v in jobs],
-                        tmpdir, sftp, mtimes, _progress)
-                files = [(key, local, val, path)
-                         for (key, local), (_k, path, val) in zip(got, jobs)]
+                    got = download_remote_files(jobs, tmpdir, sftp, mtimes, _progress)
+                files = [(key, local, path)
+                         for (key, local), (_k, path) in zip(got, jobs)]
                 self._values_loaded.emit({
-                    "gen": gen, "axis": j, "new_vals": new_vals, "remap": remap,
+                    "gen": gen, "values": new_axis_values, "remaps": remaps,
                     "files": files, "mtimes": mtimes,
                 })
             except _Cancelled:
@@ -2794,62 +2815,74 @@ class ImageView(QGraphicsView):
             self._poll_timer.start(self._poll_interval * 1000)
         try:
             if result is None:
-                self._flash("cancelled; the axis is unchanged")
+                self._flash("cancelled; the axes are unchanged")
             elif isinstance(result, Exception):
                 log.warning("Downloading new values failed: %s", result)
                 self._flash(f"download failed: {result}")
             elif result["gen"] != self._axes_gen:
                 self._flash("the axes changed meanwhile; nothing was added")
             else:
-                j, files = result["axis"], result["files"]
+                files = result["files"]
                 if dlg is not None:
                     dlg.setLabelText(_images_label("Loading", len(files)))
-                loaded = self._decode_added(j, files, dlg, offset=len(files))
+                loaded = self._decode_added(result["values"], files, dlg, offset=len(files))
                 if loaded is not None:
-                    self._finish_subset(j, result["new_vals"], result["remap"],
+                    self._finish_subset(result["values"], result["remaps"],
                                         loaded, result["mtimes"])
         finally:
             if dlg is not None:
                 _dispose(dlg)
             self.state_changed.emit()
 
-    def _finish_subset(self, j: int, new_vals: list[str], remap: dict[int, int],
+    def _finish_subset(self, new_axis_values: list[list[str]],
+                       remaps: list[dict[int, int]],
                        loaded: dict[tuple, QPixmap], new_mtimes: dict):
         """Apply a subset edit: re-index the kept images, add the *loaded* ones."""
-        axis_name = self.axis_names[j]
-        old_n = len(self.axis_values[j])
+        def moved(key):
+            if all(k in remaps[j] for j, k in enumerate(key)):
+                return tuple(remaps[j][k] for j, k in enumerate(key))
+            return None
+
         new_pixmaps: dict[tuple, QPixmap] = {}
         for key, pm in self.pixmaps.items():
-            if key[j] in remap:
-                new_pixmaps[key[:j] + (remap[key[j]],) + key[j + 1:]] = pm
+            new_key = moved(key)
+            if new_key is not None:
+                new_pixmaps[new_key] = pm
         new_pixmaps.update(loaded)
 
         if self.config.remote is not None:
             # A fresh dict rather than an in-place edit: a poll still running
             # on the old axes writes into the old one, and its result is
             # dropped once the axes generation moves on.
-            moved = {}
+            mtimes = {}
             for key, mtime in dict(self._remote_mtimes).items():
-                if key[j] in remap:
-                    moved[key[:j] + (remap[key[j]],) + key[j + 1:]] = mtime
-            moved.update(new_mtimes)
-            self._remote_mtimes = moved
+                new_key = moved(key)
+                if new_key is not None:
+                    mtimes[new_key] = mtime
+            mtimes.update(new_mtimes)
+            self._remote_mtimes = mtimes
 
-        new_axes = dict(self.config.axes)
-        new_axes[axis_name] = new_vals
+        changes = []
+        for name, old_vals, new_vals, remap in zip(
+                self.axis_names, self.axis_values, new_axis_values, remaps):
+            if new_vals != old_vals:
+                changes.append((name, len(new_vals), len(new_vals) - len(remap),
+                                len(old_vals) - len(remap)))
+
         from .config import Config
         new_config = Config(
             template=self.config.template,
-            axes=new_axes,
+            axes=dict(zip(self.axis_names, new_axis_values)),
             keys=self.config.keys,
             mode=self.config.mode,
             remote=self.config.remote,
         )
         self._apply_axes_change(new_config, new_pixmaps)
-        added = len(new_vals) - len(remap)
-        dropped = old_n - len(remap)
-        self._flash(f"{axis_name}: {len(new_vals)} values"
-                    f" ({added} added, {dropped} removed)")
+        if len(changes) == 1:
+            name, n, added, dropped = changes[0]
+            self._flash(f"{name}: {n} values ({added} added, {dropped} removed)")
+        elif changes:
+            self._flash("  ".join(f"{name} +{a} −{d}" for name, _n, a, d in changes))
 
     def _do_change_key(self, axis_name: str, letter: str | None):
         new_keys = {k: n for k, n in self.config.keys.items()
@@ -2932,7 +2965,7 @@ class ImageView(QGraphicsView):
 
     def _do_pattern(self, raw: str):
         """Change the template/source entirely without restarting juxt."""
-        if self._reload_in_progress:
+        if self._reload_in_progress or self._listing_in_progress:
             self._flash("reload already in progress")
             return
         raw = expand_home(normalize_template(raw))  # anonymous {} → {axis_1}, …; ~ → home
@@ -4250,7 +4283,7 @@ class MainWindow(QMainWindow):
             self._bar_hide_timer.start()
         self._help_label.setText("")
 
-        if v._reload_in_progress and v._busy_label != "":
+        if v._reload_in_progress:
             if not self._spinner_timer.isActive():
                 self._spinner_timer.start()
             self._status_label.setText(

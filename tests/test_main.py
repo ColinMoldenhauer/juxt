@@ -3,6 +3,7 @@ placeholder-pinning flags (see juxt.detect._axes_from_local_template)."""
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import Qt
 
 from juxt.__main__ import _parse_args, _parse_axis_pins
 
@@ -265,3 +266,62 @@ class TestListAxes:
         r = self._run(str(tmp_path), "--list-axes")
         assert r.returncode == 1
         assert "No image files found" in r.stderr
+
+
+class TestSubsetInteractive:
+    """--subset-interactive: tick the values to load before any image is read."""
+
+    def test_flag_is_parsed_and_defaults_off(self, monkeypatch):
+        from juxt.__main__ import _parse_args
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/"])
+        assert _parse_args()[0].subset_interactive is False
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/{sensor}.png", "--subset-interactive", "--sensor", "A"])
+        args, pins = _parse_args()
+        assert args.subset_interactive is True
+        assert pins == {"sensor": ["A"]}
+
+    def test_flag_is_in_help_and_completion(self, capsys):
+        from juxt.__main__ import _print_help
+        from juxt.complete import CLI_OPTIONS
+        _print_help()
+        assert "--subset-interactive" in capsys.readouterr().out
+        assert "--subset-interactive" in CLI_OPTIONS
+
+    def _pick(self, qtbot, monkeypatch, ticked):
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWidgets import QApplication, QDialog
+        from juxt.__main__ import _pick_startup_values
+        from juxt.config import Config
+        from juxt.dialogs import ValuesDialog
+        seen = {}
+
+        def fake_exec(self):
+            seen["title"] = self.windowTitle()
+            seen["loading"] = self.loading
+            seen["ticked_at_open"] = self.values()
+            if ticked is None:
+                return QDialog.DialogCode.Rejected
+            for p in self.panels:
+                for i in range(p.value_list.count()):
+                    it = p.value_list.item(i)
+                    on = it.data(Qt.ItemDataRole.UserRole) in ticked
+                    it.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+            return QDialog.DialogCode.Accepted
+        monkeypatch.setattr(ValuesDialog, "exec", fake_exec)
+        cfg = Config(template="p/{s}_{d}.png", axes={"s": ["A", "B"], "d": ["1", "2"]},
+                     keys={"s": "s", "d": "d"})
+        out = _pick_startup_values(cfg, QIcon(), QApplication.primaryScreen())
+        return out, seen
+
+    def test_picker_starts_all_ticked_and_narrows_the_config(self, qtbot, monkeypatch):
+        out, seen = self._pick(qtbot, monkeypatch, ticked={"B", "1", "2"})
+        assert seen["ticked_at_open"] == {"s": ["A", "B"], "d": ["1", "2"]}
+        assert seen["loading"] is False          # discovery already listed everything
+        assert out.axes == {"s": ["B"], "d": ["1", "2"]}
+        assert out.keys == {"s": "s", "d": "d"}
+        assert out.template == "p/{s}_{d}.png"
+
+    def test_cancel_quits(self, qtbot, monkeypatch):
+        with pytest.raises(SystemExit) as exc:
+            self._pick(qtbot, monkeypatch, ticked=None)
+        assert exc.value.code == 0

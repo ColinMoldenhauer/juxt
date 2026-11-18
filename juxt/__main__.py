@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, QSocketNotifier, QTimer  # noqa: E402
 from PySide6.QtGui import QCursor, QIcon  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
+    QDialog,
     QInputDialog,
     QLineEdit,
     QProgressDialog,
@@ -189,6 +190,9 @@ def _print_help() -> None:
       --save PATH             save resolved config to PATH after detection
       --list-axes             run axis discovery, print each axis with all its
                               values, and exit; no window, no naming prompt
+      --subset-interactive    after discovery, tick the values to load in a
+                              dialogue (one column per axis) before any
+                              image is read
       --NAME VALUE [...]      pin a {placeholder}'s values instead of
                               globbing for them (template/wildcard PATH
                               only, must come after PATH); repeatable per
@@ -234,6 +238,7 @@ def _print_help() -> None:
     :pattern PATH  :reload  :watch true|false
     :remove-axis NAME  :remove-value AXIS VALUE
     :subset AXIS [VALUES]  edit an axis: delete, reorder, rename, add
+    :subset-interactive  :values AXIS  pick values from those on disk
     :change-key AXIS LETTER  :settings
     :copy-image  :copy-path  :write [PATH]  :quit""")
 
@@ -296,6 +301,7 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     p.add_argument("--name", metavar="NAME", default=None)
     p.add_argument("--full-path", action="store_true", default=False)
     p.add_argument("--list-axes", action="store_true", default=False)
+    p.add_argument("--subset-interactive", action="store_true", default=False)
     # Initial panel visibility; both are still toggleable at runtime.
     # These are declared here so parse_known_args recognises them; an
     # unrecognised --flag after PATH is read as an axis pin instead.
@@ -423,6 +429,29 @@ def _list_axes(args: argparse.Namespace, pins: dict[str, list[str]]) -> int:
     return 0
 
 
+def _pick_startup_values(config: Config, app_icon, screen) -> Config:
+    """`--subset-interactive`: tick the values to load, before any image is read.
+
+    Every discovered value starts ticked; Cancel quits.
+    """
+    from .dialogs import ValuesDialog
+
+    dlg = ValuesDialog(dict(config.axes), dict(config.axes),
+                       title="juxt: choose the values to load", apply_text="Load")
+    if not app_icon.isNull():
+        dlg.setWindowIcon(app_icon)
+    # With the dialogue as context, the timers die with it if it is gone first.
+    QTimer.singleShot(0, dlg, lambda: dlg.move(screen.geometry().center() - dlg.rect().center()))
+    QTimer.singleShot(0, dlg, lambda: _force_focus(dlg))
+    accepted = dlg.exec() == QDialog.DialogCode.Accepted
+    chosen = dlg.values()
+    dlg.deleteLater()
+    if not accepted:
+        sys.exit(0)
+    return Config(template=config.template, axes=chosen, keys=config.keys,
+                  mode=config.mode, remote=config.remote)
+
+
 def main():
     args, pins = _parse_args()
     import os
@@ -495,6 +524,9 @@ def main():
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if args.subset_interactive:
+        config = _pick_startup_values(config, app_icon, _startup_screen)
 
     if args.squeeze:
         squeezed = {k: v for k, v in config.axes.items() if len(v) > 1}

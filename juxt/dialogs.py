@@ -1,9 +1,9 @@
 """Modal dialogues driven from the viewer's key bindings.
 
 The grid builder (``Ctrl+Shift+G`` / ``:grid-dialog``), a point-and-click front
-end for the ``:grid`` command family, and the value picker (``:values`` / the
-``[+]`` next to an axis in the info sidebar), which adds and removes the values
-of one axis.
+end for the ``:grid`` command family, and the value picker
+(``:subset-interactive``, ``--subset-interactive``, the ``[+]`` next to an axis
+in the info sidebar), which adds and removes the values of one or all axes.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import math
 import string
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -21,12 +21,14 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStyle,
     QStyleOptionSpinBox,
@@ -435,27 +437,14 @@ def merge_values(current: list[str], found: list[str]) -> list[str]:
     return union
 
 
-class ValuesDialog(QDialog):
-    """Tick the values one axis should have, out of those found on disk.
+class _AxisPanel(QWidget):
+    """One axis of the value picker: a filter, the checklist, All / None,
+    and a line for the pending change or the search spinner."""
 
-    Lists the axis's current values (ticked) and the values found on disk
-    that it does not have yet (unticked, in the accent colour). With *found* None the
-    dialogue opens while the disk is still being searched: it shows the
-    current values with a spinner, and :meth:`set_found` adds the rest once
-    the listing is in. After ``exec()`` returns :data:`Accepted`,
-    :meth:`values` holds the ticked values in list order, ready for the
-    viewer's subset edit.
-    """
+    changed = Signal()
 
-    def __init__(
-        self,
-        axis_name: str,
-        current: list[str],
-        found: list[str] | None = None,
-        *,
-        error: str | None = None,
-        parent: QWidget | None = None,
-    ):
+    def __init__(self, axis_name: str, current: list[str], *, title: bool,
+                 parent: QWidget | None = None):
         super().__init__(parent)
         self.axis_name = axis_name
         self._current = list(current)
@@ -466,10 +455,6 @@ class ValuesDialog(QDialog):
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(80)
         self._spin_timer.timeout.connect(self._spin)
-
-        self.setWindowTitle(f"Values of {axis_name}")
-        self.setModal(True)
-        self.setStyleSheet(_STYLE.substitute(vars(_theme.current())))
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("filter")
@@ -490,44 +475,38 @@ class ValuesDialog(QDialog):
 
         self.hint = QLabel()
         self.hint.setObjectName("hint")
-        self.hint.setWordWrap(True)
+        # Always one line high, empty or not, so side-by-side columns keep
+        # their lists and buttons level.
+        self.hint.setFixedHeight(self.hint.fontMetrics().height() + 2)
 
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Apply")
-
-        root = QVBoxLayout(self)
-        root.setSpacing(8)
-        root.addWidget(self.filter_edit)
-        root.addWidget(self.value_list, 1)   # the list takes any spare height
-        root.addLayout(sel_row)
-        root.addWidget(self.hint)
-        root.addWidget(self.buttons)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(8)
+        if title:
+            head = QLabel(axis_name)
+            head.setStyleSheet(f"color: {_theme.current().header};")
+            col.addWidget(head)
+        col.addWidget(self.filter_edit)
+        col.addWidget(self.value_list, 1)   # the list takes any spare height
+        col.addLayout(sel_row)
+        col.addWidget(self.hint)
 
         self._populate({})
-        if found is not None or error is not None:
-            self.set_found(found or [], error)
-        else:
-            self._spin_timer.start()
-        self._size_to_list()
-
         self.filter_edit.textChanged.connect(self._apply_filter)
-        self.value_list.itemChanged.connect(self._update_hint)
+        self.value_list.itemChanged.connect(self._on_item_changed)
         btn_all.clicked.connect(lambda: self._set_visible(True))
         btn_none.clicked.connect(lambda: self._set_visible(False))
-        self.buttons.accepted.connect(self._accept)
-        self.buttons.rejected.connect(self.reject)
 
-        self._update_hint()
-        self.filter_edit.setFocus()
-
-    # ── list ─────────────────────────────────────────────────────────────────
+    # ── listing ──────────────────────────────────────────────────────────────
 
     @property
     def loading(self) -> bool:
         """Whether the listing of the values on disk is still outstanding."""
         return self._found is None and self._error is None
+
+    def start_spinner(self) -> None:
+        self._spin_timer.start()
+        self._update_hint()
 
     def set_found(self, found: list[str], error: str | None = None) -> None:
         """Take in the values found on disk (or why listing them failed).
@@ -547,12 +526,13 @@ class ValuesDialog(QDialog):
         self._populate(ticks)
         self.value_list.blockSignals(False)
         self._apply_filter(self.filter_edit.text())
-        self._grow_to_list()
         self._update_hint()
 
     def _spin(self):
         self._spin_frame += 1
         self._update_hint()
+
+    # ── list ─────────────────────────────────────────────────────────────────
 
     def _populate(self, ticks: dict[str, bool]):
         """Fill the list; *ticks* keeps the user's choice per value, the rest
@@ -578,28 +558,16 @@ class ValuesDialog(QDialog):
             )
             self.value_list.addItem(item)
 
-    def _size_to_list(self):
-        """Open tall enough for the values (up to a screenful of rows) and
-        wide enough for the longest one; the list is never pinned to that
-        height, so the layout cannot squeeze the buttons onto it."""
-        self.ensurePolished()
+    def row_height(self) -> int:
         self.value_list.ensurePolished()
         n = self.value_list.count()
-        row_h = max(self.value_list.sizeHintForRow(0) if n else 0,
-                    self.value_list.fontMetrics().height() + 6)
-        rows = max(6, min(n, _MAX_VALUE_ROWS))
-        self.value_list.setMinimumHeight(4 * row_h)
-        list_h = rows * row_h + 2 * self.value_list.frameWidth() + 8
-        width = max(360, self.value_list.sizeHintForColumn(0) + 60)
-        chrome = self.sizeHint().height() - self.value_list.sizeHint().height()
-        self.resize(width, chrome + list_h)
+        return max(self.value_list.sizeHintForRow(0) if n else 0,
+                   self.value_list.fontMetrics().height() + 6)
 
-    def _grow_to_list(self):
-        """After the listing came in: grow to fit the added rows, never shrink
-        a dialogue the user is looking at (or has resized)."""
-        w, h = self.width(), self.height()
-        self._size_to_list()
-        self.resize(max(w, self.width()), max(h, self.height()))
+    def content_width(self) -> int:
+        """Width the column wants: its longest value, with room for the box."""
+        self.value_list.ensurePolished()
+        return max(180, self.value_list.sizeHintForColumn(0) + 50)
 
     def _items(self):
         return [self.value_list.item(i) for i in range(self.value_list.count())]
@@ -618,7 +586,11 @@ class ValuesDialog(QDialog):
             if not item.isHidden():
                 item.setCheckState(state)
         self.value_list.blockSignals(False)
+        self._on_item_changed()
+
+    def _on_item_changed(self, *_):
         self._update_hint()
+        self.changed.emit()
 
     def _on_indicator(self, item: QListWidgetItem, x: int) -> bool:
         """Whether *x* (viewport coordinates) falls on *item*'s check box."""
@@ -628,8 +600,8 @@ class ValuesDialog(QDialog):
         return x - self.value_list.visualItemRect(item).left() < zone
 
     def eventFilter(self, obj, event):
-        # A double-click on a row's text ticks it. On the box itself Qt's own
-        # handling stays: the first click toggles, the second is swallowed.
+        # A double-click on a row's text toggles it. On the box itself Qt's
+        # own handling stays: the first click toggles, the second is swallowed.
         if (obj is self.value_list.viewport()
                 and event.type() == event.Type.MouseButtonDblClick
                 and event.button() == Qt.MouseButton.LeftButton):
@@ -663,10 +635,8 @@ class ValuesDialog(QDialog):
             if item.checkState() == Qt.CheckState.Checked
         ]
 
-    def _update_hint(self, *_):
+    def _update_hint(self):
         chosen = self.values()
-        ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
-        ok.setEnabled(bool(chosen))
         current = set(self._current)
         added = sum(v not in current for v in chosen)
         removed = len(current - set(chosen))
@@ -678,14 +648,145 @@ class ValuesDialog(QDialog):
             text = "tick at least one value"
         else:
             text = change
-        if self.loading:
+        if self.loading and self._spin_timer.isActive():
             spin = f"{_SPINNER[self._spin_frame % len(_SPINNER)]}  searching disk…"
             text = f"{spin}   {text}" if text else spin
         self.hint.setText(text)
-        self.hint.setVisible(bool(text))
+
+
+class ValuesDialog(QDialog):
+    """Tick the values each axis should have, out of those found on disk.
+
+    *axes* maps each axis to offer to its current values, one column per
+    axis (a single axis gets no column title; the window title names it).
+    Each column lists the current values (ticked) and the values found on
+    disk that the axis does not have yet (unticked, in the accent colour).
+
+    *found* maps an axis to the values on disk. An axis missing from it is
+    still being searched: its column shows a spinner until :meth:`set_found`
+    brings the listing in. After ``exec()`` returns :data:`Accepted`,
+    :meth:`values` maps every axis to its ticked values, in list order.
+    """
+
+    def __init__(
+        self,
+        axes: dict[str, list[str]],
+        found: dict[str, list[str]] | None = None,
+        *,
+        title: str | None = None,
+        apply_text: str = "Apply",
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        found = found or {}
+        names = list(axes)
+        self.setWindowTitle(title or (f"Values of {names[0]}" if len(names) == 1
+                                      else "Values"))
+        self.setModal(True)
+        self.setStyleSheet(_STYLE.substitute(vars(_theme.current())))
+
+        self.panels: list[_AxisPanel] = []
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(16)
+        for name in names:
+            panel = _AxisPanel(name, axes[name], title=len(names) > 1)
+            panel.changed.connect(self._update_ok)
+            if name in found:
+                panel.set_found(found[name])
+            else:
+                panel.start_spinner()
+            self.panels.append(panel)
+            row.addWidget(panel, 1)
+
+        holder = QWidget()
+        holder.setLayout(row)
+        self._scroll = QScrollArea()
+        self._scroll.setWidget(holder)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(apply_text)
+        self.buttons.accepted.connect(self._accept)
+        self.buttons.rejected.connect(self.reject)
+
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+        root.addWidget(self._scroll, 1)
+        root.addWidget(self.buttons)
+
+        self._size_to_lists()
+        self._update_ok()
+        self.panels[0].filter_edit.setFocus()
+
+    @property
+    def axis_names(self) -> list[str]:
+        return [p.axis_name for p in self.panels]
+
+    def panel(self, axis: str) -> _AxisPanel:
+        return next(p for p in self.panels if p.axis_name == axis)
+
+    @property
+    def loading(self) -> bool:
+        """Whether some column is still waiting for its listing."""
+        return any(p.loading for p in self.panels)
+
+    def set_found(self, axis: str, found: list[str], error: str | None = None) -> None:
+        """Bring in the listing of one axis; see :meth:`_AxisPanel.set_found`."""
+        self.panel(axis).set_found(found, error)
+        self._grow_to_lists()
+        self._update_ok()
+
+    def values(self) -> dict[str, list[str]]:
+        """Every axis's ticked values, in list order."""
+        return {p.axis_name: p.values() for p in self.panels}
+
+    # ── size ─────────────────────────────────────────────────────────────────
+
+    def _size_to_lists(self):
+        """Open tall enough for the longest list (up to a screenful of rows)
+        and wide enough for every column, scrolling sideways past the screen.
+        No list is pinned to that height, so the layout cannot squeeze the
+        buttons onto one."""
+        self.ensurePolished()
+        row_h = max(p.row_height() for p in self.panels)
+        n = max(p.value_list.count() for p in self.panels)
+        rows = max(6, min(n, _MAX_VALUE_ROWS))
+        for p in self.panels:
+            p.value_list.setMinimumHeight(4 * row_h)
+            p.setMinimumWidth(min(p.content_width(), 260))
+        frame = 2 * self.panels[0].value_list.frameWidth() + 8
+        list_h = rows * row_h + frame
+        chrome = (self.sizeHint().height()
+                  - max(p.value_list.sizeHint().height() for p in self.panels))
+        width = sum(p.content_width() for p in self.panels) + 16 * (len(self.panels) - 1) + 24
+        screen = self.screen().availableGeometry() if self.screen() else None
+        if screen is not None:
+            width = min(width, int(screen.width() * 0.9))
+            height = min(chrome + list_h, int(screen.height() * 0.9))
+        else:
+            height = chrome + list_h
+        self.resize(max(360, width), height)
+
+    def _grow_to_lists(self):
+        """After a listing came in: grow to fit the added rows, never shrink
+        a dialogue the user is looking at (or has resized)."""
+        w, h = self.width(), self.height()
+        self._size_to_lists()
+        self.resize(max(w, self.width()), max(h, self.height()))
+
+    # ── result ───────────────────────────────────────────────────────────────
+
+    def _update_ok(self, *_):
+        ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setEnabled(all(p.values() for p in self.panels))
 
     def _accept(self):
-        if not self.values():
+        if not all(p.values() for p in self.panels):
             return
-        log.debug("values dialog: %s → %s", self.axis_name, self.values())
+        log.debug("values dialog: %s", self.values())
         self.accept()
