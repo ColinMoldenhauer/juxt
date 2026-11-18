@@ -14,6 +14,8 @@
 
 *juxt* comes from *juxtapose* — placing things side by side to compare. That's the whole idea: flip through congruent plots fast enough to visually identify differences.
 
+To check out the concept, [try the demo here](https://colinmoldenhauer.github.io/juxt/), no install needed.
+
 ## Install
 
 ```
@@ -141,6 +143,12 @@ Matching is fuzzy: the characters you type only have to appear in order, so `:fh
 
 Path arguments complete with `{placeholders}` in place: `:pattern plots/{sensor}/2⇥` lists what every sensor directory holds, so a template is built top-down instead of completing a concrete path and deleting the parts that should vary. `{` + `Tab` completes an existing axis name, and anonymous `{}` placeholders are numbered automatically.
 
+## Adding and removing values
+
+`:subset-interactive` opens a checklist of the values on disk for every axis, so a new run or sensor joins the session without restarting juxt. Values not loaded yet are offered unticked in the accent colour; tick to add, untick to remove, and only the images of added values are loaded. `:values AXIS`, or the `[+]` next to an axis in the info sidebar, opens it for one axis. `juxt PATH --subset-interactive` opens it at startup, before any image is read.
+
+<img src="https://raw.githubusercontent.com/ColinMoldenhauer/juxt/main/docs/assets/screenshots/value-picker.png" width="790" alt="Value picker with one column per axis">
+
 ## Shell completion
 
 The same completion works at the shell prompt. Add one line to `~/.bashrc`:
@@ -192,6 +200,8 @@ Placeholders standing for a known kind of value complete only as far as that val
 | `:grid-layout NxM` | change grid layout without exiting |
 | `:grid-off` / `:ungrid` | return to single-image view |
 | `:grid-sharex` / `:grid-sharey` | toggle synchronized pan/zoom |
+| `:subset-interactive` | add or remove values of every axis in a checklist |
+| `:values AXIS` | the same checklist for one axis |
 
 ## Controls
 

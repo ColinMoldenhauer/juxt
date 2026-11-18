@@ -62,7 +62,7 @@ Triggered by pressing any letter in seek mode. The same incremental search runs 
 
 Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewport and lists all axes with their values; the active value on each axis is highlighted. The current path at the top always reserves as many lines as the longest path this config could ever show, so the axis list below it never shifts as you navigate — even though the actual path's own wrapped height varies from combination to combination.
 
-Each axis header carries a `[+]`: click it to add or remove values of that axis from those found on disk, without restarting (see [`:values`](navigation.md#picking-values-from-disk-values)).
+Each axis header carries a `[+]`: click it to add or remove values of that axis from those found on disk, without restarting (see [`:values`](navigation.md#picking-values-from-disk-subset-interactive-values)).
 
 It starts closed; pass `--info` to open it right away. The status bar is the mirror case — shown by default, hidden at startup with `--no-status-bar`.
 

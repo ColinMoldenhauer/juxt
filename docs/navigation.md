@@ -291,15 +291,7 @@ The whole edit can be given in one go, e.g. `:subset sensor SMAP ASCAT`. In a re
 
 `:subset-interactive` opens a checklist of the values found on disk for every axis, one column per axis. `:values AXIS`, or a click on the `[+]` next to an axis in the [info sidebar](ui.md#info-sidebar), opens the same checklist for that one axis:
 
-```
-filter: ____
-[ ] AMSR2
-[x] ASCAT
-[x] SMAP
-[x] SMOS
-[ ] SMOS_v2
-All  None              Apply  Cancel
-```
+![Value picker: SMOS ticked to add, one date unticked to remove, L3 on offer](assets/screenshots/value-picker.png)
 
 The dialogue opens at once with the current values and a spinner while the disk is searched; the values found then join each column as its axis is done, keeping any ticks you already changed. Current values are ticked, values on disk the axis does not have yet are unticked and shown in the accent colour. Tick to add, untick to remove, then `Apply`: only the images of the added values are loaded (with the same progress dialogue as on startup), everything already loaded stays. This is the quick way to pull in a new run or sensor without restarting juxt.
 
