@@ -462,8 +462,17 @@ class _AxisPanel(QWidget):
         self.filter_edit.installEventFilter(self)
 
         self.value_list = QListWidget()
-        self.value_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        # Click, Shift+click, Ctrl+click and dragging over row text select
+        # rows; Space or a double-click then toggles the whole selection.
+        self.value_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.value_list.viewport().installEventFilter(self)
+        self.value_list.installEventFilter(self)
+        # While a press on a box (or a double-click) is dragged across rows:
+        # the state each row passed over is given.
+        self._paint: Qt.CheckState | None = None
+        # The selection as it was before the latest press on row text: the
+        # first click of a double-click narrows it to one row on release.
+        self._sel_before: list[QListWidgetItem] = []
 
         btn_all = QPushButton("All")
         btn_none = QPushButton("None")
@@ -599,21 +608,79 @@ class _AxisPanel(QWidget):
                 + 2 * style.pixelMetric(QStyle.PixelMetric.PM_FocusFrameHMargin) + 4)
         return x - self.value_list.visualItemRect(item).left() < zone
 
-    def eventFilter(self, obj, event):
-        # A double-click on a row's text toggles it. On the box itself Qt's
-        # own handling stays: the first click toggles, the second is swallowed.
-        if (obj is self.value_list.viewport()
-                and event.type() == event.Type.MouseButtonDblClick
-                and event.button() == Qt.MouseButton.LeftButton):
+    def _selected(self) -> list[QListWidgetItem]:
+        """The selected rows the filter shows (a Shift+click range may span hidden ones)."""
+        return [it for it in self.value_list.selectedItems() if not it.isHidden()]
+
+    def _set_states(self, items: list[QListWidgetItem], state: Qt.CheckState):
+        """Give every row in *items* *state*, with one hint update for all."""
+        self.value_list.blockSignals(True)
+        for it in items:
+            it.setCheckState(state)
+        self.value_list.blockSignals(False)
+        self._on_item_changed()
+
+    @staticmethod
+    def _flipped(item: QListWidgetItem) -> Qt.CheckState:
+        return (Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked
+                else Qt.CheckState.Checked)
+
+    def _toggle_with_selection(self, item: QListWidgetItem) -> Qt.CheckState:
+        """Flip *item*, and with it the rest of the selection it was part of
+        before this double-click began; returns the state given."""
+        state = self._flipped(item)
+        group = self._sel_before if item in self._sel_before else [item]
+        self._set_states(group, state)
+        if len(group) > 1:   # put back the selection the first click narrowed
+            for it in group:
+                it.setSelected(True)
+        return state
+
+    def _viewport_event(self, event) -> bool:
+        """Mouse handling on the list; True when the event is used up."""
+        t = event.type()
+        left = getattr(event, "button", lambda: None)() == Qt.MouseButton.LeftButton
+        if t in (event.Type.MouseButtonPress, event.Type.MouseButtonDblClick) and left:
             pos = event.position().toPoint()
             item = self.value_list.itemAt(pos)
-            if item is not None and not self._on_indicator(item, pos.x()):
-                item.setCheckState(
-                    Qt.CheckState.Unchecked
-                    if item.checkState() == Qt.CheckState.Checked
-                    else Qt.CheckState.Checked
-                )
+            if item is None:
+                return False
+            on_box = self._on_indicator(item, pos.x())
+            if on_box:
+                # Every press on a box toggles it, the second of a
+                # double-click too, and a drag carries that state along.
+                self._paint = self._flipped(item)
+                self._set_states([item], self._paint)
                 return True
+            if t == event.Type.MouseButtonDblClick:
+                self._paint = self._toggle_with_selection(item)
+                return True
+            self._sel_before = self._selected()
+            return False   # a press on the text: Qt selects
+        if t == event.Type.MouseMove and self._paint is not None:
+            item = self.value_list.itemAt(event.position().toPoint())
+            if item is not None and not item.isHidden() and item.checkState() != self._paint:
+                self._set_states([item], self._paint)
+            return True
+        if t == event.Type.MouseButtonRelease and self._paint is not None:
+            self._paint = None
+            return True
+        return False
+
+    def eventFilter(self, obj, event):
+        if obj is self.value_list.viewport() and self._viewport_event(event):
+            return True
+        # Space toggles the selected rows together (all on unless all are on).
+        if (obj is self.value_list and event.type() == event.Type.KeyPress
+                and event.key() == Qt.Key.Key_Space):
+            selected = self._selected()
+            if not selected and self.value_list.currentItem() is not None:
+                selected = [self.value_list.currentItem()]
+            if selected:
+                all_on = all(it.checkState() == Qt.CheckState.Checked for it in selected)
+                self._set_states(selected, Qt.CheckState.Unchecked if all_on
+                                 else Qt.CheckState.Checked)
+            return True
         # Down from the filter field steps into the list, onto the first row
         # the filter left, where Space toggles it.
         if (obj is self.filter_edit and event.type() == event.Type.KeyPress

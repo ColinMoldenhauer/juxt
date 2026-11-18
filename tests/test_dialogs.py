@@ -400,29 +400,116 @@ class TestValuesDialogLoading:
         assert (d.width(), d.height()) == (600, 500)
 
 
-class TestValuesDialogDoubleClick:
-    def _dialog(self, qtbot):
-        d, p = _one(qtbot, current=["A"], found=["A", "B"])
+class TestValuesDialogMouse:
+    """Toggling several rows: selection + Space / double-click, and dragging
+    from a box (or a double-click) across rows."""
+
+    def _dialog(self, qtbot, current=("A",), found=("A", "B", "C", "D")):
+        d, p = _one(qtbot, current=list(current), found=list(found))
         d.show()
         qtbot.waitExposed(d)
         return d, p
 
-    def _point(self, p, row, dx):
+    def _pt(self, p, row, on_box=False):
         rect = p.value_list.visualItemRect(p.value_list.item(row))
-        return rect.topLeft() + type(rect.topLeft())(dx, rect.height() // 2)
+        x = 4 if on_box else 60
+        return rect.topLeft() + type(rect.topLeft())(x, rect.height() // 2)
+
+    def _vp(self, p):
+        return p.value_list.viewport()
+
+    def _dclick(self, qtbot, p, row):
+        """A real double-click: QTest's mouseDClick sends only the double-click
+        event, without the press and release of the first click."""
+        qtbot.mouseClick(self._vp(p), Qt.MouseButton.LeftButton, pos=self._pt(p, row))
+        qtbot.mouseDClick(self._vp(p), Qt.MouseButton.LeftButton, pos=self._pt(p, row))
 
     def test_double_click_on_text_toggles(self, qtbot):
-        d, p = self._dialog(qtbot)
-        qtbot.mouseDClick(p.value_list.viewport(), Qt.MouseButton.LeftButton,
-                          pos=self._point(p, 1, 60))
+        _d, p = self._dialog(qtbot)
+        self._dclick(qtbot, p, 1)
         assert p.values() == ["A", "B"]
         assert p.hint.text() == "+1"
-        qtbot.mouseDClick(p.value_list.viewport(), Qt.MouseButton.LeftButton,
-                          pos=self._point(p, 1, 60))
+        self._dclick(qtbot, p, 1)
         assert p.values() == ["A"]
 
-    def test_box_is_left_to_qt(self, qtbot):
-        """A double-click on the box itself is Qt's (one toggle), not ours too."""
+    def test_click_on_box_toggles_once(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        qtbot.mouseClick(self._vp(p), Qt.MouseButton.LeftButton, pos=self._pt(p, 2, True))
+        assert p.values() == ["A", "C"]
+
+    def test_drag_from_a_box_paints_its_new_state(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mousePress(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1, True))
+        for row in (2, 3):
+            qtbot.mouseMove(vp, self._pt(p, row))
+        qtbot.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 3))
+        assert p.values() == ["A", "B", "C", "D"]
+        assert p.hint.text() == "+3"
+
+    def test_drag_unticks_when_the_first_box_was_ticked(self, qtbot):
+        _d, p = self._dialog(qtbot, current=("A", "B", "C"))
+        vp = self._vp(p)
+        qtbot.mousePress(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 0, True))
+        qtbot.mouseMove(vp, self._pt(p, 1))
+        qtbot.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1))
+        assert p.values() == ["C"]
+
+    def test_moving_after_release_paints_nothing(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1, True))
+        qtbot.mouseMove(vp, self._pt(p, 3))
+        assert p.values() == ["A", "B"]
+
+    def test_shift_click_range_then_space(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1))
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier, self._pt(p, 3))
+        assert len(p._selected()) == 3
+        qtbot.keyClick(p.value_list, Qt.Key.Key_Space)
+        assert p.values() == ["A", "B", "C", "D"]
+        qtbot.keyClick(p.value_list, Qt.Key.Key_Space)   # all on -> all off
+        assert p.values() == ["A"]
+
+    def test_ctrl_click_then_double_click_toggles_the_selection(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1))
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ControlModifier, self._pt(p, 3))
+        self._dclick(qtbot, p, 3)
+        assert p.values() == ["A", "B", "D"]
+        assert {it.data(Qt.ItemDataRole.UserRole) for it in p._selected()} == {"B", "D"}
+
+    def test_double_click_outside_the_selection_toggles_one_row(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 1))
+        qtbot.mouseClick(vp, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ControlModifier, self._pt(p, 2))
+        self._dclick(qtbot, p, 3)
+        assert p.values() == ["A", "D"]
+
+    def test_space_skips_rows_the_filter_hides(self, qtbot):
+        _d, p = self._dialog(qtbot, found=("A", "B1", "B2", "C"))
+        p.value_list.selectAll()
+        p.filter_edit.setText("b")
+        qtbot.keyClick(p.value_list, Qt.Key.Key_Space)
+        assert p.values() == ["A", "B1", "B2"]
+
+    def test_double_click_then_drag_paints(self, qtbot):
+        _d, p = self._dialog(qtbot)
+        vp = self._vp(p)
+        self._dclick(qtbot, p, 1)                  # B on, painting on
+        qtbot.mouseMove(vp, self._pt(p, 2))
+        qtbot.mouseMove(vp, self._pt(p, 3))
+        qtbot.mouseRelease(vp, Qt.MouseButton.LeftButton, pos=self._pt(p, 3))
+        assert p.values() == ["A", "B", "C", "D"]
+
+    def test_box_zone(self, qtbot):
         _d, p = self._dialog(qtbot)
         item = p.value_list.item(1)
         x = p.value_list.visualItemRect(item).left() + 4

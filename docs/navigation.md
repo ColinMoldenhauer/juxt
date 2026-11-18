@@ -305,7 +305,9 @@ The dialogue opens at once with the current values and a spinner while the disk 
 
 - The search pins every other axis to the values it has now, so a value is listed only if it has at least one image among the combinations you are looking at. This keeps the search fast, also over SSH.
 - New values slot into place when the axis is sorted; an axis you reordered keeps its order and the new values follow it.
-- The filter field narrows the list as you type; `All` and `None` act on the rows it shows. `↓` moves from the filter into the list, where `Space` toggles a row; a double-click on a row toggles it too.
+- The filter field narrows the list as you type; `All` and `None` act on the rows it shows. `↓` moves from the filter into the list.
+- Several rows at once: select them (click, `Shift`+click for a range, `Ctrl`+click to add one, or drag over the row text), then press `Space` or double-click one of them. `Space` ticks them all, or unticks them all if they all were ticked; a double-click gives them all the opposite of the clicked row's state. Rows the filter hides are left alone.
+- Or paint: press on a check box and drag across rows; each row passed over takes the state that first box got. A double-click followed by a drag paints the same way.
 - A current value with no file on disk is marked `no files`.
 - Changes on several axes apply in one go: every combination involving an added value is loaded, and an added value that has no image among the combinations you end up with is refused, which catches a value that only exists next to one you dropped.
 - To pick the values before anything is loaded, start juxt with [`--subset-interactive`](configuration.md#picking-values-at-startup).
