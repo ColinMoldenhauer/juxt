@@ -16,6 +16,16 @@ from .complete import main as _complete_main
 if len(sys.argv) > 1 and sys.argv[1] in (*SCRIPT_FLAGS, WORDS_FLAG):
     sys.exit(_complete_main(sys.argv[1:]))
 
+try:
+    import PySide6  # noqa: E402, F401
+except ImportError:
+    # juxt-notebook installs this package without Qt.
+    sys.exit(
+        "The juxt desktop app needs PySide6, which is not installed.\n"
+        "Install the full package with:  pip install juxt\n"
+        "(In a notebook, use:  from juxt.notebook import Viewer)"
+    )
+
 from PySide6.QtCore import Qt, QSocketNotifier, QTimer  # noqa: E402
 from PySide6.QtGui import QCursor, QIcon  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402

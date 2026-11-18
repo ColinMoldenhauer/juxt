@@ -21,12 +21,23 @@ import sys
 import tempfile
 import time
 import urllib.request
+from itertools import product
 from pathlib import Path
 
 import nbformat
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+
+# Same plot set as bench_desktop.py (kept in sync by hand so that importing
+# it, and with it PySide6, is only needed to generate missing PNGs).
+AXES = {
+    "sensor": ["ASCAT", "SMAP", "SMOS"],
+    "date": ["2024-03-15", "2024-03-16", "2024-03-17"],
+    "overpass": ["AM", "PM"],
+    "source": ["L2", "L3", "L4", "L5", "L6", "L7"],
+}
+TEMPLATE = "{sensor}_{date}_{overpass}_{source}.png"
 
 
 def _free_port() -> int:
@@ -58,11 +69,17 @@ def main(argv=None) -> int:
     ap.add_argument("--screenshot", type=Path, help="save a screenshot of the widget here")
     args = ap.parse_args(argv)
 
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from bench_desktop import AXES, make_plots  # Qt is only used to draw the PNGs
-    from PySide6.QtWidgets import QApplication
-    _app = QApplication.instance() or QApplication([])
-    template = make_plots(args.plots)
+    template = (args.plots / TEMPLATE).as_posix()
+    names = list(AXES)
+    if not all((args.plots / TEMPLATE.format(**dict(zip(names, c)))).exists()
+               for c in product(*AXES.values())):
+        # Drawing the synthetic PNGs needs Qt; once they exist the benchmark
+        # also runs in a Qt-free (juxt-notebook) environment.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from bench_desktop import make_plots
+        from PySide6.QtWidgets import QApplication
+        _app = QApplication.instance() or QApplication([])
+        template = make_plots(args.plots)
 
     work = Path(tempfile.mkdtemp(prefix="juxt-nb-"))
     write_notebook(work / "bench.ipynb", template, AXES)

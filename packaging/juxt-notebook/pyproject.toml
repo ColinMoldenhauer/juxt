@@ -1,0 +1,63 @@
+# juxt-notebook: the juxt package without Qt, for Jupyter-only installs.
+#
+#     pip install juxt            # desktop app (PySide6) — the default
+#     pip install juxt-notebook   # notebook widget only, no PySide6
+#
+# Python extras can only add dependencies, never remove them, so the Qt-free
+# install has to be a separate distribution.  It is built from the same
+# juxt/ sources as the main package (see hatch_build.py); only the
+# metadata differs.  Build it with:
+#
+#     cd packaging/juxt-notebook && hatch build -t wheel      # → dist/ here
+#
+# Both distributions install the same `juxt` import package, so install one
+# or the other, not both (with `juxt` installed, use `pip install juxt[notebook]`).
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "juxt-notebook"
+dynamic = ["version"]
+description = "juxt's Jupyter widget for navigating N-dimensional hypercubes of plots, without the Qt desktop app"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Colin Moldenhauer", email = "colin.moldenhauer@posteo.de" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Jupyter",
+    "Framework :: Jupyter :: JupyterLab",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "PyYAML",
+    "anywidget>=0.9",
+]
+
+[project.urls]
+Homepage = "https://github.com/ColinMoldenhauer/juxt"
+Documentation = "https://juxt.readthedocs.io"
+Repository = "https://github.com/ColinMoldenhauer/juxt"
+
+# No console scripts: the `juxt` command is the Qt desktop app.
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { root = "../.." }
+
+[tool.hatch.build.hooks.vcs]
+version-file = "_version.py"
+
+[tool.hatch.build.targets.wheel]
+# Nothing in this folder is packaged; hatch_build.py adds ../../juxt.
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.hooks.custom]

@@ -148,7 +148,8 @@ Launch: `juxt config.yaml`
 
 - `juxt/core.py` — Qt-free navigation core (`Navigator`: position, history, focus stack, axis locks, skip-missing stepping; `combo_paths`, `build_key_map`). Must never import PySide6.
 - `juxt/viewer.py` — desktop UI. `ImageView.nav` is a `Navigator`; `pos`, `prev`, `focus_stack`, `axis_names`, `axis_values`, `_locked_h/_v`, `_skip_missing` are delegating properties onto it.
-- `juxt/notebook.py` + `juxt/static/{nav.js,widget.js,widget.css}` — anywidget-based Jupyter widget (`pip install juxt[notebook]`). Navigation runs client-side in `nav.js`, a port of `Navigator`; `tests/test_core.py::test_js_parity` replays random op sequences through both and must stay green when either changes. Images go to the browser once as binary comm messages (not synced state).
+- `juxt/notebook.py` + `juxt/static/{nav.js,widget.js,widget.css}` — anywidget-based Jupyter widget (`pip install juxt[notebook]`, or Qt-free `pip install juxt-notebook`). Navigation runs client-side in `nav.js`, a port of `Navigator`; `tests/test_core.py::test_js_parity` replays random op sequences through both and must stay green when either changes. Images go to the browser once as binary comm messages (not synced state).
+- `packaging/juxt-notebook/` — second distribution, `juxt-notebook`, built from the same `juxt/` sources (its `hatch_build.py` picks the files) with PyYAML + anywidget and **no PySide6**. Python extras can't remove dependencies, so `pip install juxt` stays the full Qt install and the Qt-free route needs its own name. Anything imported by `juxt.notebook` must therefore stay Qt-free; the `notebook-only` CI job installs the wheel in a clean venv and runs `tests/test_core.py` + `tests/test_notebook.py` against it.
 - `benchmarks/` — `bench_desktop.py` + `compare.py` for regression checks against another revision (see `benchmarks/README.md`); `bench_notebook.py` runs the widget in headless JupyterLab via Playwright.
 
 ## Open questions

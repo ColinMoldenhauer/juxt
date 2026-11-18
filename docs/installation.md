@@ -44,6 +44,24 @@ pip install juxt[ssh]
 
 This adds **paramiko**, the pure-Python SSH library juxt uses for remote connections. See [Remote (SSH)](remote.md) for usage.
 
+## Jupyter notebooks
+
+Two options give you the [notebook widget](notebook.md):
+
+```bash
+pip install "juxt[notebook]"    # desktop app plus the widget (adds anywidget)
+```
+
+```bash
+pip install juxt-notebook       # widget only, without PySide6/Qt
+```
+
+`juxt-notebook` installs the same `juxt` package as `pip install juxt`, but
+with **PyYAML** and **anywidget** as its only dependencies. It doesn't include
+the `juxt` desktop command. Use it when Qt isn't wanted or can't run, for
+example on JupyterHub, Colab or a headless server. Both packages install the
+same `juxt` module, so install one or the other, not both.
+
 ## Development install
 
 Clone the repo and install in editable mode:

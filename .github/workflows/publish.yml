@@ -24,6 +24,12 @@ jobs:
       - name: Build sdist and wheel
         run: hatch build
 
+      # Qt-free distribution of the same sources (wheel only; see
+      # packaging/juxt-notebook/pyproject.toml).
+      - name: Build juxt-notebook wheel
+        working-directory: packaging/juxt-notebook
+        run: hatch build -t wheel ../../dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist

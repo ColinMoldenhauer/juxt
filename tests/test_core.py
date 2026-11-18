@@ -14,7 +14,8 @@ from juxt.core import Navigator, build_key_map, combo_paths, key_to_path
 from juxt.fuzzy import fuzzy_filter, prefix_filter
 
 ROOT = Path(__file__).resolve().parent.parent
-NAV_JS = ROOT / "juxt" / "static" / "nav.js"
+# via the imported package, so the test also runs against an installed wheel
+NAV_JS = Path(__import__("juxt").__file__).parent / "static" / "nav.js"
 
 
 def nav3(**kw) -> Navigator:

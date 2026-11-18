@@ -144,7 +144,8 @@ Path arguments complete with `{placeholders}` in place: `:pattern plots/{sensor}
 ## Jupyter notebooks (prototype)
 
 ```bash
-pip install "juxt[notebook]"
+pip install juxt-notebook       # widget only, no Qt
+pip install "juxt[notebook]"    # or: desktop app + widget
 ```
 
 ```python

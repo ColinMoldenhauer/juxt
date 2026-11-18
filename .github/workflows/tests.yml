@@ -46,7 +46,7 @@ jobs:
             libfontconfig1
 
       - name: Install package with all extras
-        run: pip install -e ".[ssh,test]"
+        run: pip install -e ".[ssh,notebook,test]"
 
       # Generate a throwaway key pair, authorise it, and start a temporary sshd
       # on port 2222.  No credentials are stored or exposed — the key pair is
@@ -87,3 +87,46 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest -v
+
+  # The juxt-notebook distribution must install and work without Qt.
+  notebook-only:
+    name: "juxt-notebook (no Qt) / Python ${{ matrix.python-version }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build the juxt-notebook wheel
+        working-directory: packaging/juxt-notebook
+        run: |
+          pip install hatch hatch-vcs
+          hatch build -t wheel
+
+      - name: Install it into a clean venv
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install packaging/juxt-notebook/dist/*.whl pytest
+
+      - name: Check that Qt was not installed
+        run: |
+          if "$RUNNER_TEMP/venv/bin/pip" list | grep -iE "pyside|shiboken"; then
+            echo "::error::juxt-notebook pulled in Qt"; exit 1
+          fi
+
+      # Run outside the checkout so `import juxt` resolves to the installed wheel.
+      - name: Run the Qt-free tests against the installed wheel
+        run: |
+          cp -r tests "$RUNNER_TEMP/tests"
+          cd "$RUNNER_TEMP"
+          venv/bin/python -c "import juxt, sys; assert 'site-packages' in juxt.__file__, juxt.__file__"
+          venv/bin/pytest -v -p no:cacheprovider tests/test_core.py tests/test_notebook.py

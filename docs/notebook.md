@@ -8,9 +8,19 @@
 juxt also runs as a widget inside Jupyter (JupyterLab, Notebook 7, and other
 front ends that support [anywidget](https://anywidget.dev)).
 
+Choose the install that fits how you'll use juxt:
+
 ```bash
-pip install "juxt[notebook]"
+pip install juxt-notebook       # notebook widget only, without Qt
 ```
+
+```bash
+pip install "juxt[notebook]"    # desktop app and notebook widget
+```
+
+`juxt-notebook` installs the same `juxt` package, but without PySide6 (about
+200 MB). This suits JupyterHub, Colab and servers without a display. The `juxt`
+desktop command is not included. Install one of the two packages, not both.
 
 ## Usage
 

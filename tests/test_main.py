@@ -130,3 +130,15 @@ class TestPanelFlags:
         args, pins = _parse_args()
         assert args.info is True
         assert pins == {"sensor": ["A"]}
+
+
+def test_missing_qt_gives_install_hint():
+    """Without PySide6 (the juxt-notebook install) the CLI explains itself."""
+    import subprocess
+    import sys
+    code = ("import sys; sys.modules['PySide6'] = None; sys.argv = ['juxt', 'x.yaml']; "
+            "import runpy; runpy.run_module('juxt', run_name='__main__')")
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode == 1
+    assert "pip install juxt" in proc.stderr
+    assert "Traceback" not in proc.stderr
