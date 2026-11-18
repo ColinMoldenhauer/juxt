@@ -19,9 +19,21 @@ theme:
   name: material
   logo: assets/logo_transparent.png
   favicon: assets/logo_transparent.png
+  # Light and dark, following the OS until the reader picks one with the
+  # header toggle. Images ending in #only-light / #only-dark show in one only.
   palette:
-    scheme: slate
-    primary: teal
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
 
 plugins:
   - search

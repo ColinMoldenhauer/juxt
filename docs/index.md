@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="assets/logo_large_transparent.png" width="160" alt="juxt logo">
+  <img src="assets/logo_large_transparent.png#only-light" width="160" alt="juxt logo">
+  <img src="assets/logo_large_transparent_dark.png#only-dark" width="160" alt="juxt logo">
 </p>
 
 # juxt

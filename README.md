@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ColinMoldenhauer/juxt/main/docs/assets/logo_bg.png" width="240" alt="juxt logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ColinMoldenhauer/juxt/main/docs/assets/logo_large_transparent_dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ColinMoldenhauer/juxt/main/docs/assets/logo_large_transparent.png">
+    <img src="https://raw.githubusercontent.com/ColinMoldenhauer/juxt/main/docs/assets/logo_bg.png" width="240" alt="juxt logo">
+  </picture>
 </p>
 
 # juxt
