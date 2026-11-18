@@ -17,7 +17,7 @@ from .complete import main as _complete_main
 if len(sys.argv) > 1 and sys.argv[1] in (*SCRIPT_FLAGS, WORDS_FLAG):
     sys.exit(_complete_main(sys.argv[1:]))
 
-from PySide6.QtCore import Qt, QSocketNotifier, QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, Qt, QSocketNotifier, QTimer  # noqa: E402
 from PySide6.QtGui import QCursor, QIcon  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -385,6 +385,119 @@ def _resolve_config(
     )
 
 
+def _may_prompt(args: argparse.Namespace) -> bool:
+    """Whether resolving PATH may ask in the terminal to name the axes (a
+    plain directory scan without `--auto`), see `_resolve_config`."""
+    if args.auto or not args.path:
+        return False
+    raw = expand_home(normalize_template(args.path))
+    if _is_remote_pattern(raw):
+        return '{' not in _parse_remote_pattern(raw)[1]
+    return Path(raw).is_dir()
+
+
+def _discover_with_busy(fn, ask_password, *, app_icon, screen, interrupted,
+                        label: str = "Collecting values…", delay_ms: int = 300):
+    """Run `fn(ask_password)` (discovery) in a worker thread and return its
+    result, raising what it raised.
+
+    Meanwhile a busy box with *label* shows once *delay_ms* have passed, so a
+    quick discovery shows nothing. Its Cancel, closing it and Ctrl+C (the
+    *interrupted* flag of `_quit_on_sigint`) quit juxt. A password request
+    from the worker is answered by *ask_password* on the main thread, with
+    the box hidden meanwhile.
+
+    The worker touches no Qt object: it talks to the main thread through a
+    queue, which a timer here drains.
+    """
+    import queue
+    import threading
+    from PySide6.QtWidgets import QProgressDialog
+
+    inbox: queue.Queue = queue.Queue()     # worker -> main: ("ask", label) / ("done", result)
+    answers: queue.Queue = queue.Queue()   # main -> worker: the password, or None
+    loop = QEventLoop()
+    outcome: list = []
+    cancelled = [False]
+
+    busy = QProgressDialog(label, "Cancel", 0, 0)
+    busy.setWindowTitle("juxt")
+    busy.setMinimumDuration(24 * 3600 * 1000)   # shown by the timer below, not by Qt
+    busy.setAutoClose(False)
+    busy.setAutoReset(False)
+    if not app_icon.isNull():
+        busy.setWindowIcon(app_icon)
+    busy.hide()
+
+    def _cancel():
+        cancelled[0] = True
+        loop.quit()
+
+    busy.canceled.connect(_cancel)   # the button, or closing the box
+    busy.rejected.connect(_cancel)   # Esc
+
+    def _show():
+        if outcome or cancelled[0] or interrupted[0]:
+            return
+        busy.show()
+        busy.move(screen.geometry().center() - busy.rect().center())
+        _force_focus(busy)
+
+    def _drain():
+        if interrupted[0]:   # Ctrl+C's handler can't end a plain QEventLoop
+            loop.quit()
+            return
+        while True:
+            try:
+                kind, value = inbox.get_nowait()
+            except queue.Empty:
+                return
+            if kind == "done":
+                outcome.append(value)
+                loop.quit()
+                return
+            was_visible = busy.isVisible()
+            busy.hide()
+            try:
+                answers.put(ask_password(value))
+            except BaseException:
+                answers.put(None)
+                raise
+            if was_visible:
+                _show()
+
+    def _ask_from_worker(text: str) -> str | None:
+        inbox.put(("ask", text))
+        return answers.get()
+
+    def _work():
+        try:
+            result = fn(_ask_from_worker)
+        except BaseException as e:   # noqa: BLE001, re-raised on the main thread
+            result = e
+        inbox.put(("done", result))
+
+    show_timer = QTimer()
+    show_timer.setSingleShot(True)
+    show_timer.timeout.connect(_show)
+    poll = QTimer()
+    poll.timeout.connect(_drain)
+
+    threading.Thread(target=_work, name="juxt-discovery", daemon=True).start()
+    show_timer.start(delay_ms)
+    poll.start(30)
+    loop.exec()
+    show_timer.stop()
+    poll.stop()
+    busy.close()
+    busy.deleteLater()
+    if not outcome:   # cancelled or interrupted; the daemon worker dies with us
+        sys.exit(0)
+    if isinstance(outcome[0], BaseException):
+        raise outcome[0]
+    return outcome[0]
+
+
 def _format_axes(config: Config) -> str:
     """The resolved template followed by one line per axis, listing every value."""
     labels = [f"{name} ({len(values)}):" for name, values in config.axes.items()]
@@ -601,12 +714,18 @@ def main():
             sys.exit(0)
         args.path = chosen
 
-    preselect: dict[str, list[str]] = {}
-    try:
+    def _discover(ask_password):
         if args.subset_interactive:
-            config, preselect = _resolve_for_picker(args, pins, _ask_password)
+            return _resolve_for_picker(args, pins, ask_password)
+        return _resolve_config(args, pins, ask_password), {}
+
+    try:
+        if _may_prompt(args):   # the terminal shows progress, and asks
+            config, preselect = _discover(_ask_password)
         else:
-            config = _resolve_config(args, pins, _ask_password)
+            config, preselect = _discover_with_busy(
+                _discover, _ask_password, app_icon=app_icon,
+                screen=_startup_screen, interrupted=interrupted)
     except Exception as e:
         if interrupted[0]:   # Ctrl+C at the password prompt
             sys.exit(0)

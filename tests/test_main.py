@@ -440,3 +440,124 @@ class TestCtrlC:
         finally:
             if proc.poll() is None:
                 proc.kill()
+
+
+class TestDiscoveryBusyBox:
+    """Startup discovery runs in a worker, with a busy box once it takes a while."""
+
+    class _Screen:
+        @staticmethod
+        def geometry():
+            from PySide6.QtCore import QRect
+            return QRect(0, 0, 800, 600)
+
+    def _run(self, fn, ask=lambda label: None, delay_ms=300, interrupted=None):
+        from PySide6.QtGui import QIcon
+        from juxt.__main__ import _discover_with_busy
+        return _discover_with_busy(
+            fn, ask, app_icon=QIcon(), screen=self._Screen(),
+            interrupted=interrupted or [False], delay_ms=delay_ms)
+
+    @staticmethod
+    def _busy_boxes():
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+        return [w for w in QApplication.topLevelWidgets()
+                if isinstance(w, QProgressDialog) and w.isVisible()]
+
+    def test_returns_the_result_without_a_box_when_quick(self, qtbot):
+        import threading
+        seen = {}
+
+        def fn(_ask):
+            seen["thread"] = threading.current_thread()
+            return "config"
+        assert self._run(fn) == "config"
+        assert seen["thread"] is not threading.main_thread()
+        assert self._busy_boxes() == []
+
+    def test_box_shows_while_slow_and_closes_after(self, qtbot):
+        import time
+        shown = []
+
+        def fn(_ask):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not shown:
+                time.sleep(0.02)
+            return 42
+        from PySide6.QtCore import QTimer
+        poll = QTimer()
+        poll.timeout.connect(lambda: shown.extend(
+            b.labelText() for b in self._busy_boxes()))
+        poll.start(20)
+        assert self._run(fn, delay_ms=50) == 42
+        poll.stop()
+        assert shown and shown[0] == "Collecting values…"
+        qtbot.waitUntil(lambda: self._busy_boxes() == [])
+
+    def test_errors_are_raised_on_the_main_thread(self, qtbot):
+        def fn(_ask):
+            raise ValueError("no files")
+        with pytest.raises(ValueError, match="no files"):
+            self._run(fn)
+
+    def test_password_is_asked_on_the_main_thread(self, qtbot):
+        import threading
+        asked = []
+
+        def ask(label):
+            asked.append((label, threading.current_thread() is threading.main_thread()))
+            return "secret"
+        assert self._run(lambda a: a("me@host"), ask) == "secret"
+        assert asked == [("me@host", True)]
+
+    @pytest.mark.parametrize("how", ["button", "escape"])
+    def test_cancel_quits(self, qtbot, how):
+        import threading
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QPushButton
+        release = threading.Event()
+
+        def cancel():
+            boxes = self._busy_boxes()
+            if not boxes:
+                QTimer.singleShot(20, cancel)
+            elif how == "button":
+                boxes[0].findChild(QPushButton).click()
+            else:
+                qtbot.keyClick(boxes[0], Qt.Key.Key_Escape)
+        QTimer.singleShot(20, cancel)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                self._run(lambda _a: release.wait(5), delay_ms=0)
+            assert exc.value.code == 0
+        finally:
+            release.set()
+
+    def test_ctrl_c_flag_quits(self, qtbot):
+        import threading
+        from PySide6.QtCore import QTimer
+        release = threading.Event()
+        interrupted = [False]
+        QTimer.singleShot(50, lambda: interrupted.__setitem__(0, True))
+        try:
+            with pytest.raises(SystemExit):
+                self._run(lambda _a: release.wait(5), interrupted=interrupted)
+        finally:
+            release.set()
+
+
+class TestMayPrompt:
+    def _args(self, path, auto=False):
+        import argparse
+        return argparse.Namespace(path=path, auto=auto)
+
+    def test_plain_directory_may_prompt(self, tmp_path):
+        from juxt.__main__ import _may_prompt
+        assert _may_prompt(self._args(str(tmp_path)))
+        assert not _may_prompt(self._args(str(tmp_path), auto=True))
+
+    def test_templates_and_remote_templates_do_not(self, tmp_path):
+        from juxt.__main__ import _may_prompt
+        assert not _may_prompt(self._args(f"{tmp_path}/{{s}}.png"))
+        assert not _may_prompt(self._args("host:/data/{s}.png"))
+        assert _may_prompt(self._args("host:/data"))
