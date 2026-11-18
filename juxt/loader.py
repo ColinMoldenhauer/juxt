@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import shutil
 import tempfile
 from itertools import product
@@ -57,6 +58,25 @@ def preload(
     if progress:
         progress(len(combos), len(combos))
     return pixmaps
+
+
+def local_cache_path(tmpdir: str, remote_path: str) -> Path:
+    """Where the local copy of *remote_path* goes: under *tmpdir*, always.
+
+    The remote path's parts are joined one by one, so an absolute one never
+    replaces *tmpdir*: Python 3.12's pathlib reads `C:/x`, which a Windows
+    SSH server reports as `/C:/x`, as a drive path of its own. `..` parts
+    are dropped, and on Windows ':' and '\\' (not allowed in a file name
+    there, or a separator) become '_'.
+    """
+    parts = []
+    for part in PurePosixPath(remote_path).parts:
+        if part in ("/", ".", ".."):
+            continue
+        if os.name == "nt":
+            part = part.replace(":", "_").replace("\\", "_")
+        parts.append(part)
+    return Path(tmpdir).joinpath(*parts)
 
 
 def _connect_sftp(
@@ -136,13 +156,15 @@ def preload_remote(
     client, sftp = _connect_sftp(remote, get_password)
 
     mtimes: dict[tuple[int, ...], float] = {}
+    local_paths: list[tuple[tuple[int, ...], Path]] = []
     for i, combo in enumerate(combos):
         if progress:
             progress(i, n * 2)
         mapping = dict(zip(axis_names, combo))
         remote_path = template.format(**mapping)
         key = tuple(values.index(v) for values, v in zip(axis_values, combo))
-        local_path = Path(tmpdir) / PurePosixPath(remote_path.lstrip("/"))
+        local_path = local_cache_path(tmpdir, remote_path)
+        local_paths.append((key, local_path))
         local_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             attr = sftp.stat(remote_path)
@@ -154,13 +176,15 @@ def preload_remote(
     sftp.close()
     client.close()
 
-    local_template = str(Path(tmpdir) / PurePosixPath(template.lstrip("/")))
-
-    def _offset_progress(i: int, _n: int):
+    pixmaps: dict[tuple[int, ...], QPixmap] = {}
+    for i, (key, local_path) in enumerate(local_paths):
         if progress:
             progress(n + i, n * 2)
-
-    return preload(local_template, axes, _offset_progress), tmpdir, mtimes
+        pm = QPixmap(str(local_path))
+        pixmaps[key] = pm if not pm.isNull() else _error_pixmap(str(local_path))
+    if progress:
+        progress(n * 2, n * 2)
+    return pixmaps, tmpdir, mtimes
 
 
 def download_remote_files(
@@ -181,7 +205,7 @@ def download_remote_files(
     for i, (key, remote_path) in enumerate(jobs):
         if on_progress:
             on_progress(i, len(jobs))
-        local_path = Path(tmpdir) / PurePosixPath(remote_path.lstrip("/"))
+        local_path = local_cache_path(tmpdir, remote_path)
         try:
             mtime = sftp.stat(remote_path).st_mtime
             local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,7 +258,7 @@ def poll_remote_with_sftp(
         if mtimes.get(key) == new_mtime:
             continue  # unchanged — skip download entirely
 
-        local_path = Path(tmpdir) / PurePosixPath(remote_path.lstrip("/"))
+        local_path = local_cache_path(tmpdir, remote_path)
         local_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             sftp.get(remote_path, str(local_path))

@@ -2354,14 +2354,14 @@ class ImageView(QGraphicsView):
                         config.template, new_axes, tmpdir, conn[1], mtimes)
                     # Build key→local-path map for main-thread pixmap decoding
                     from itertools import product as _product
-                    from pathlib import Path, PurePosixPath
+                    from .loader import local_cache_path
                     axis_names = list(new_axes.keys())
                     axis_values = list(new_axes.values())
                     key_to_path = {}
                     for combo in _product(*axis_values):
                         mapping = dict(zip(axis_names, combo))
                         rpath = config.template.format(**mapping)
-                        lpath = str(Path(tmpdir) / PurePosixPath(rpath.lstrip("/")))
+                        lpath = str(local_cache_path(tmpdir, rpath))
                         key = tuple(vals.index(v) for vals, v in zip(axis_values, combo))
                         key_to_path[key] = lpath
                 else:
@@ -2993,8 +2993,9 @@ class ImageView(QGraphicsView):
                     raise _Cancelled()
 
             try:
-                from pathlib import Path, PurePosixPath
+                from pathlib import Path
                 from itertools import product as _product
+                from .loader import local_cache_path
                 from .detect import (
                     _is_remote_pattern, _parse_remote_pattern,
                     _axes_from_sftp_template, _axes_from_local_template,
@@ -3048,7 +3049,7 @@ class ImageView(QGraphicsView):
                     for combo in _product(*axis_values):
                         mapping = dict(zip(axis_names, combo))
                         rpath = remote_tmpl.format(**mapping)
-                        lpath = str(Path(new_tmpdir) / PurePosixPath(rpath.lstrip("/")))
+                        lpath = str(local_cache_path(new_tmpdir, rpath))
                         key_to_path[tuple(vals.index(v) for vals, v in zip(axis_values, combo))] = lpath
 
                 elif Path(raw).is_dir():
