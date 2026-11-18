@@ -2,6 +2,8 @@
 placeholder-pinning flags (see juxt.detect._axes_from_local_template)."""
 from __future__ import annotations
 
+import sys
+
 import pytest
 from PySide6.QtCore import Qt
 
@@ -399,3 +401,42 @@ class TestPinsPreselectInThePicker:
         assert seen["rows"] == ["A", "B", "C"]
         assert seen["ticked"] == {"s": ["A", "C"], "d": ["1", "2"]}
         assert out.axes == {"s": ["A", "C"], "d": ["1", "2"]}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGINT delivery is POSIX-only")
+class TestCtrlC:
+    """Ctrl+C quits juxt from a dialogue too, not only from the viewer: the
+    hook is in before the first dialogue opens, and it closes modal ones."""
+
+    def test_quits_from_the_startup_value_picker(self, tmp_path):
+        import os
+        import signal as _signal
+        import subprocess
+        import time
+        from conftest import make_png
+
+        for s in ("A", "B"):
+            (tmp_path / f"{s}.png").write_bytes(make_png())
+        log = tmp_path / "juxt.log"
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "juxt", f"{tmp_path.as_posix()}/{{s}}.png",
+             "--subset-interactive"],
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen",
+                 "JUXT_LOG_LEVEL": "DEBUG", "JUXT_LOG_FILE": str(log)},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if log.exists() and "startup value picker open" in log.read_text():
+                    break
+                assert proc.poll() is None, "juxt exited before the picker opened"
+                time.sleep(0.05)
+            else:
+                pytest.fail("the value picker never opened")
+            time.sleep(0.2)   # let exec() enter its event loop
+            proc.send_signal(_signal.SIGINT)
+            assert proc.wait(timeout=10) == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()

@@ -484,6 +484,7 @@ def _pick_startup_values(config: Config, app_icon, screen,
     # With the dialogue as context, the timers die with it if it is gone first.
     QTimer.singleShot(0, dlg, lambda: dlg.move(screen.geometry().center() - dlg.rect().center()))
     QTimer.singleShot(0, dlg, lambda: _force_focus(dlg))
+    log.debug("startup value picker open")
     accepted = dlg.exec() == QDialog.DialogCode.Accepted
     chosen = dlg.values()
     dlg.deleteLater()
@@ -491,6 +492,43 @@ def _pick_startup_values(config: Config, app_icon, screen,
         sys.exit(0)
     return Config(template=config.template, axes=chosen, keys=config.keys,
                   mode=config.mode, remote=config.remote)
+
+
+def _quit_on_sigint(app: QApplication) -> list[bool]:
+    """Make Ctrl+C quit juxt from any Qt event loop, a dialogue's included.
+
+    set_wakeup_fd writes a byte to a socket when SIGINT arrives, and a
+    QSocketNotifier turns that into an event, so the handler runs at once
+    even while Qt (not Python) holds the thread, without a polling timer.
+
+    quit() only ends the main event loop, so open modal dialogues (each
+    running a nested loop) are rejected first, innermost out; the code that
+    opened them treats that as Cancel. Where no loop runs at all (images
+    loading via processEvents) quit() has nothing to end, so the handler
+    also sets the returned one-item flag for such code to check.
+    """
+    interrupted = [False]
+
+    def _on_sigint(*_):
+        interrupted[0] = True
+        for _i in range(32):   # a bound, should a dialogue refuse to close
+            modal = app.activeModalWidget()
+            if modal is None:
+                break
+            if isinstance(modal, QDialog):
+                modal.reject()
+            else:
+                modal.close()
+        app.quit()
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    rsock, wsock = socket.socketpair()
+    wsock.setblocking(False)
+    signal.set_wakeup_fd(wsock.fileno())
+    notifier = QSocketNotifier(rsock.fileno(), QSocketNotifier.Type.Read, app)
+    notifier.activated.connect(lambda *_: (rsock.recv(4096), _on_sigint()))
+    app._juxt_sigint = (rsock, wsock, notifier)   # keep them alive with the app
+    return interrupted
 
 
 def main():
@@ -516,6 +554,9 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("juxt")
+    # First thing, so Ctrl+C also ends the dialogues before the viewer: the
+    # startup window, the password prompt, the --subset-interactive picker.
+    interrupted = _quit_on_sigint(app)
     theme.apply(settings.theme)   # before the startup window, so it matches
     _startup_screen = app.screenAt(QCursor.pos()) or app.primaryScreen()
     _logo = Path(__file__).parent / "assets" / "logo_transparent.ico"
@@ -567,6 +608,8 @@ def main():
         else:
             config = _resolve_config(args, pins, _ask_password)
     except Exception as e:
+        if interrupted[0]:   # Ctrl+C at the password prompt
+            sys.exit(0)
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -601,17 +644,6 @@ def main():
     total_steps = n_images * 2 if is_remote else n_images
     first_label = f"Downloading {n_images} image{'s' if n_images != 1 else ''}…" if is_remote else f"Loading {n_images} image{'s' if n_images != 1 else ''}…"
 
-    # Reliable Ctrl+C in any nested Qt event loop (loading, dialogs, etc.).
-    # set_wakeup_fd writes a byte to wsock when SIGINT arrives; QSocketNotifier
-    # delivers it as a socket event so Python runs the handler immediately
-    # without needing a polling timer.
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
-    _rsock, _wsock = socket.socketpair()
-    _wsock.setblocking(False)
-    signal.set_wakeup_fd(_wsock.fileno())
-    _signotifier = QSocketNotifier(_rsock.fileno(), QSocketNotifier.Type.Read)
-    _signotifier.activated.connect(lambda *_: (_rsock.recv(4096), app.quit()))
-
     progress = QProgressDialog(first_label, "Cancel", 0, total_steps)
     progress.setWindowTitle("juxt")
     progress.setWindowModality(Qt.ApplicationModal)
@@ -626,7 +658,7 @@ def main():
     _force_focus(progress)
 
     def on_progress(i: int, n: int):
-        if progress.wasCanceled():
+        if progress.wasCanceled() or interrupted[0]:
             sys.exit(0)
         if is_remote and i == n_images:
             progress.setLabelText(f"Loading {n_images} image{'s' if n_images != 1 else ''}…")
@@ -732,7 +764,8 @@ def main():
     _force_focus(window)
     window.view.fit_image()     # start app with image fit to screen
 
-    # QTimer import kept for other uses; no polling timer needed for SIGINT.
+    if interrupted[0]:   # Ctrl+C after loading, before the event loop ran
+        sys.exit(0)
     sys.exit(app.exec())
 
 
