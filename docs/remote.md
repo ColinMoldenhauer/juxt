@@ -4,13 +4,7 @@ juxt can browse image directories on a remote server over SFTP. Images are downl
 
 ## Requirements
 
-Install the `ssh` extra:
-
-```bash
-pip install juxt[ssh]
-```
-
-This adds **paramiko**, the pure-Python SSH library used for the SFTP connection.
+Nothing beyond `pip install juxt`: **paramiko**, the SSH library used for the SFTP connection, comes with it.
 
 ---
 

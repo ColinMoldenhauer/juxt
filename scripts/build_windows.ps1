@@ -12,7 +12,7 @@ try {
 
     Write-Host ""
     Write-Host "==> Installing package and PyInstaller..."
-    conda run --no-capture-output -n $ENV_NAME pip install pyinstaller ".[ssh]"
+    conda run --no-capture-output -n $ENV_NAME pip install pyinstaller .
 
     Write-Host ""
     Write-Host "==> Building with PyInstaller..."

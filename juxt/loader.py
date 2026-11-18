@@ -66,15 +66,8 @@ def _connect_sftp(
     """Open an authenticated SSH+SFTP session, optionally prompting for a password.
 
     Resolves host aliases and keys via ~/.ssh/config.
-    Requires paramiko: pip install juxt[ssh]
     """
-    try:
-        import paramiko
-    except ImportError:
-        raise ImportError(
-            "paramiko is required for SSH support. Install it with:\n"
-            "    pip install juxt[ssh]"
-        )
+    import paramiko   # here, not at the top: only remote sessions pay its import time
 
     log.debug("Connecting to %s@%s:%s", remote.user or "", remote.host, remote.port)
     host, user, port, key = remote.host, remote.user, remote.port, remote.key_path
@@ -131,7 +124,6 @@ def preload_remote(
     Returns (pixmaps, tmpdir, mtimes) where mtimes maps each coordinate key to the
     remote file's mtime at download time — used by poll_remote_with_sftp to skip
     unchanged files on subsequent polls.
-    Requires paramiko: pip install juxt[ssh]
     """
     axis_names = list(axes.keys())
     axis_values = list(axes.values())

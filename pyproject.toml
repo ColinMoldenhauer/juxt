@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "PySide6",
     "PyYAML",
+    "paramiko>=3.0",
 ]
 
 [project.urls]
@@ -36,9 +37,6 @@ Repository = "https://github.com/ColinMoldenhauer/juxt"
 "Bug Tracker" = "https://github.com/ColinMoldenhauer/juxt/issues"
 
 [project.optional-dependencies]
-ssh = [
-    "paramiko>=3.0",
-]
 docs = [
     "mkdocs-material",
     "mkdocs-include-markdown-plugin",

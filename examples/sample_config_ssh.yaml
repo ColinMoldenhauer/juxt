@@ -1,7 +1,5 @@
 # ── Remote (SSH) config ────────────────────────────────────────────────────────
 #
-# Requires paramiko:  pip install juxt[ssh]
-#
 # Auth is attempted in order:
 #   1. SSH agent (e.g. ssh-agent / Pageant / 1Password SSH agent)
 #   2. Default key files (~/.ssh/id_ed25519, ~/.ssh/id_rsa, …)

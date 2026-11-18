@@ -22,11 +22,7 @@ To check out the concept, [try the demo here](https://colinmoldenhauer.github.io
 pip install juxt
 ```
 
-For SSH remote loading:
-
-```
-pip install juxt[ssh]
-```
+This includes SSH support for remote image directories.
 
 ## Quick start
 
@@ -112,8 +108,6 @@ Or pass the remote path directly on the command line — juxt will detect axes f
 ```bash
 juxt myhost:/data/plots/
 ```
-
-Requires the SSH extra: `pip install juxt[ssh]`
 
 
 

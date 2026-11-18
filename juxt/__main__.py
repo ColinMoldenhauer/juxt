@@ -178,8 +178,8 @@ def _print_help() -> None:
     {root}/*.png  --root A B  pin {root} then wildcard-match within each
     {root}/{**plot}.png       {**name} captures across '/', for one axis
                               spanning an arbitrarily deep subtree
-    host:/path/to/dir         remote directory over SSH  (requires juxt[ssh])
-    host:/path/{sensor}.png   remote template over SSH   (requires juxt[ssh])
+    host:/path/to/dir         remote directory over SSH
+    host:/path/{sensor}.png   remote template over SSH
     config.yaml               explicit YAML config file
     (default: opens a dialog to browse a directory or build a template)
 
