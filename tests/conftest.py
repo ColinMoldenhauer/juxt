@@ -11,6 +11,13 @@ from juxt.config import Config, _auto_keys
 
 
 @pytest.fixture(autouse=True)
+def _private_download_cache(tmp_path_factory, monkeypatch):
+    """Keep remote downloads of every test in a cache of its own, never in
+    the user's real one."""
+    monkeypatch.setenv("JUXT_CACHE_DIR", str(tmp_path_factory.mktemp("juxt-cache")))
+
+
+@pytest.fixture(autouse=True)
 def _restore_theme():
     """The active theme is process-wide; put back the default after a test
     that switched it, so later tests see the colours they expect."""

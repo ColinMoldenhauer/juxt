@@ -39,7 +39,7 @@ from .detect import (
     prompt_rename,
     resolve_wildcard_template,
 )
-from .loader import preload, preload_remote
+from .loader import preload, preload_remote, set_remote_cache_days, set_threads
 from . import theme
 from .settings import load_settings
 from .startup import StartupDialog
@@ -755,6 +755,8 @@ def main():
         except Exception as e:
             print(f"Warning: could not save config: {e}", file=sys.stderr)
 
+    set_threads(settings.loading_threads)
+    set_remote_cache_days(settings.remote_cache_days)
     n_images = 1
     for vs in config.axes.values():
         n_images *= len(vs)

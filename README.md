@@ -78,7 +78,7 @@ juxt comes with tab-completion, type `--sensor <TAB>` to see possible values for
 ### Remote access (SSH)
 
 juxt loads images from a remote host over SSH, transferring them with SFTP.
-They are downloaded at startup and cached locally; navigation afterwards is identical to local use.
+They are downloaded at startup and cached locally, so the next session only fetches what changed; navigation afterwards is identical to local use.
 You pay the one-time loading cost upfront and then compare as fast as locally even on a slow connection.
 Auth uses your SSH agent or `~/.ssh/config` key, with a password fallback.
 

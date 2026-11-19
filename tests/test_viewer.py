@@ -3074,9 +3074,11 @@ class TestSetValuesAcrossAxes:
 
     def test_adds_on_two_axes_loads_the_cross_combinations(self, view, monkeypatch):
         from juxt.loader import MissingPixmap
-        loaded = []
-        monkeypatch.setattr("juxt.viewer.QPixmap",
-                            lambda *a: loaded.append(a) or QPixmap(*a))
+        from PySide6.QtGui import QImage
+
+        loaded = []     # images are read as QImages, in the loader's threads
+        monkeypatch.setattr("juxt.loader.QImage",
+                            lambda *a: loaded.append(a) or QImage(*a))
         keep = view.pixmaps[(0, 0)]
         view._set_values({0: ["A", "B", "C"], 1: ["d1", "d2", "d3"]})
         assert view.axis_values == [["A", "B", "C"], ["d1", "d2", "d3"]]
@@ -3245,11 +3247,10 @@ class TestPatternSubset(_PatternTree):
 
     def test_images_on_show_are_not_read_again(self, view, qtbot, monkeypatch):
         old = {view._key_to_path(k): pm.cacheKey() for k, pm in view.pixmaps.items()}
-        read = []
-        real = __import__("juxt.viewer", fromlist=["QPixmap"]).QPixmap
-        monkeypatch.setattr("juxt.viewer.QPixmap",
-                            lambda *a: (read.append(a[0]) if a and isinstance(a[0], str) else None)
-                            or real(*a))
+        from PySide6.QtGui import QImage
+
+        read = []       # images are read as QImages, in the loader's threads
+        monkeypatch.setattr("juxt.loader.QImage", lambda path: read.append(path) or QImage(path))
         self._run(view, qtbot, "keep")
         reused = {view._key_to_path(k): pm.cacheKey() for k, pm in view.pixmaps.items()
                   if view._key_to_path(k) in old}

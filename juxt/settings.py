@@ -177,6 +177,13 @@ modifiers:
 navigation:
   skip_missing: false
 
+# Loading images.  Files are read and decoded in parallel, and downloads of
+# a remote (SSH) session are kept on disk, so the next session only fetches
+# the files that changed on the server.
+loading:
+  threads: 0                # images loaded at once; 0 = automatic (CPUs, at most 8)
+  remote_cache_days: 7      # drop downloads unused this long; 0 = keep none
+
 # What :pattern does with the values picked for axes the new pattern keeps
 # (placeholders of the same name), e.g. a subset from --subset-interactive:
 #   smart   keep them; if the new pattern finds values the old one did not
@@ -271,6 +278,14 @@ modifiers:
 navigation:
   skip_missing: false
 """,
+    "loading": """
+# Loading images.  Files are read and decoded in parallel, and downloads of
+# a remote (SSH) session are kept on disk, so the next session only fetches
+# the files that changed on the server.
+loading:
+  threads: 0                # images loaded at once; 0 = automatic (CPUs, at most 8)
+  remote_cache_days: 7      # drop downloads unused this long; 0 = keep none
+""",
     "pattern": """
 # What :pattern does with the values picked for axes the new pattern keeps
 # (placeholders of the same name), e.g. a subset from --subset-interactive:
@@ -340,6 +355,8 @@ class Settings:
     sidebar_copy: str = "selected"
     sidebar_open: bool = True
     pattern_subset: str = "smart"
+    loading_threads: int = 0
+    remote_cache_days: float = 7.0
     max_vals: int = 3
     max_vals_display: int = 10
     highlight: Highlight = field(
@@ -443,6 +460,12 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
                 s.highlight_candidates = parse_highlight(
                     hl["candidates"], DEFAULT_HIGHLIGHT_CANDIDATES
                 )
+        loading = data.get("loading") or {}
+        if isinstance(loading, dict):
+            if "threads" in loading:
+                s.loading_threads = max(0, int(loading["threads"]))
+            if "remote_cache_days" in loading:
+                s.remote_cache_days = max(0.0, float(loading["remote_cache_days"]))
         pattern = data.get("pattern") or {}
         if isinstance(pattern, dict) and "subset" in pattern:
             s.pattern_subset = _parse_pattern_subset(pattern["subset"])

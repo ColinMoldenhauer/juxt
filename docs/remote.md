@@ -1,6 +1,6 @@
 # Remote (SSH)
 
-juxt can browse image directories on a remote server over SFTP. Images are downloaded to a temporary local directory at startup, so navigation after loading is instant — identical to local use with no per-keypress latency.
+juxt can browse image directories on a remote server over SFTP. Images are downloaded to a local cache at startup, so navigation after loading is instant — identical to local use with no per-keypress latency — and the next session only fetches what changed on the server.
 
 ## Requirements
 
@@ -94,9 +94,28 @@ The `remote` field accepts several string formats:
 ## How it works
 
 1. juxt connects via SFTP and lists files under the remote directory (or matches files against the template pattern).
-2. All matching images are downloaded to a temporary directory (a progress dialog is shown).
-3. The temporary files are loaded as pixmaps and the viewer opens.
-4. The temporary directory is deleted automatically when juxt exits.
+2. The matching images are downloaded into the download cache (a progress dialog is shown), several at a time over the one SSH connection. A file the cache already holds with the server's size and modification time is not downloaded again.
+3. The images are decoded in parallel and the viewer opens.
+
+### Download cache
+
+Downloads are kept in a cache per `user@host_port`, so reopening the same plots, say a few minutes later, only fetches the files that changed on the server:
+
+| Platform | Location |
+|---|---|
+| Linux | `~/.cache/juxt/ssh/` (or `$XDG_CACHE_HOME/juxt/ssh/`) |
+| macOS | `~/Library/Caches/juxt/ssh/` |
+| Windows | `%LOCALAPPDATA%\juxt\Cache\ssh\` |
+
+Files not used for a week are removed at the next remote session. Both that and the parallelism are set in `~/.juxt/settings.yaml`:
+
+```yaml
+loading:
+  threads: 0                # images loaded at once; 0 = automatic (CPUs, at most 8)
+  remote_cache_days: 7      # drop downloads unused this long; 0 = keep none
+```
+
+With `remote_cache_days: 0`, each session downloads into a temporary directory that is deleted when juxt exits, as before the cache existed. Deleting the cache directory by hand is always safe.
 
 `remote` cannot be combined with `discover` in a YAML config — use a template instead, or pass the remote directory path directly on the command line.
 

@@ -202,6 +202,14 @@ class TestSidebarCopy:
         s = self._load(tmp_path, "sidebar:\n  copy: off\n  dim_missing: true\n")
         assert (s.sidebar_copy, s.dim_missing) == ("off", True)
 
+    def test_loading_defaults(self, tmp_path):
+        s = self._load(tmp_path, "seek:\n  greedy: true\n")
+        assert (s.loading_threads, s.remote_cache_days) == (0, 7.0)
+
+    def test_loading_settings(self, tmp_path):
+        s = self._load(tmp_path, "loading:\n  threads: 4\n  remote_cache_days: 0\n")
+        assert (s.loading_threads, s.remote_cache_days) == (4, 0.0)
+
     def test_pattern_subset_defaults_to_smart(self, tmp_path):
         assert self._load(tmp_path, "seek:\n  greedy: true\n").pattern_subset == "smart"
 
