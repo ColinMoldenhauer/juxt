@@ -169,3 +169,190 @@ class TestPreloadRemote:
         copies = [os.path.join(d, f) for d, _, fs in os.walk(tmpdir) for f in fs]
         assert len(copies) == 2
         assert steps[0] == (0, 6) and steps[-1] == (6, 6)
+
+
+# ---------------------------------------------------------------------------
+# Parallel loading
+# ---------------------------------------------------------------------------
+
+class TestLoadImages:
+    @pytest.fixture
+    def files(self, tmp_path):
+        from conftest import make_png
+
+        paths = []
+        for i in range(20):
+            p = tmp_path / f"{i}.png"
+            p.write_bytes(make_png(r=i))
+            paths.append(str(p))
+        return paths
+
+    def test_loads_every_job(self, qtbot, files):
+        from juxt.loader import MissingPixmap, load_images
+
+        out = load_images([((i,), p, p) for i, p in enumerate(files)])
+        assert sorted(out) == [(i,) for i in range(20)]
+        assert not any(isinstance(pm, MissingPixmap) for pm in out.values())
+
+    def test_missing_and_unreadable_get_the_placeholder(self, qtbot, tmp_path):
+        from juxt.loader import MissingPixmap, load_images
+
+        bad = tmp_path / "bad.png"
+        bad.write_bytes(b"not a png")
+        out = load_images([((0,), None, "gone.png"), ((1,), str(bad), str(bad))])
+        assert all(isinstance(pm, MissingPixmap) for pm in out.values())
+
+    @pytest.mark.parametrize("n_threads", [1, 4])
+    def test_progress_counts_up_to_the_total(self, qtbot, files, n_threads):
+        from juxt.loader import load_images, set_threads
+
+        set_threads(n_threads)
+        try:
+            calls = []
+            load_images([((i,), p, p) for i, p in enumerate(files)],
+                        lambda i, n: calls.append((i, n)), offset=5, total=40)
+        finally:
+            set_threads(0)
+        assert calls[0] == (5, 40) and calls[-1] == (25, 40)
+        assert [i for i, _ in calls] == sorted(i for i, _ in calls)
+
+    def test_raising_progress_abandons_the_load(self, qtbot, files):
+        from juxt.loader import load_images
+
+        class Stop(Exception):
+            pass
+
+        def progress(i, n):
+            if i >= 3:
+                raise Stop
+
+        with pytest.raises(Stop):
+            load_images([((i,), p, p) for i, p in enumerate(files)], progress)
+
+    def test_threads_setting(self):
+        from juxt.loader import set_threads, threads
+
+        set_threads(3)
+        assert threads() == 3
+        set_threads(0)
+        assert 1 <= threads() <= 8
+
+
+class TestRemoteCache:
+    """fetch_remote over a stand-in SFTP serving the local filesystem, with
+    sizes, so the download cache can tell a file it already has."""
+
+    class _SFTP:
+        def __init__(self):
+            self.fetched = []
+
+        def stat(self, path):
+            st = os.stat(path)
+            return type("A", (), {"st_mtime": int(st.st_mtime), "st_size": st.st_size})()
+
+        def get(self, remote, local):
+            import shutil
+            self.fetched.append(remote)
+            shutil.copy(remote, local)
+
+    @pytest.fixture
+    def remote(self, tmp_path):
+        from conftest import make_png
+
+        src = tmp_path / "remote"
+        src.mkdir()
+        for s in ("A", "B"):
+            (src / f"{s}.png").write_bytes(make_png())
+        return src
+
+    def _jobs(self, src, names=("A", "B", "C")):
+        return [((i,), (src / f"{n}.png").as_posix()) for i, n in enumerate(names)]
+
+    def test_second_fetch_comes_from_the_cache(self, remote, tmp_path):
+        from juxt.loader import fetch_remote
+
+        sftp, cache = self._SFTP(), str(tmp_path / "cache")
+        first = fetch_remote(self._jobs(remote), cache, sftp, {})
+        assert [first[(i,)][0] for i in range(3)] == ["fetched", "fetched", "missing"]
+        sftp.fetched.clear()
+        second = fetch_remote(self._jobs(remote), cache, sftp, {})
+        assert [second[(i,)][0] for i in range(3)] == ["cached", "cached", "missing"]
+        assert sftp.fetched == []
+        leftovers = [f for _d, _s, fs in os.walk(cache) for f in fs if f.endswith(".part")]
+        assert leftovers == []
+
+    def test_changed_file_is_fetched_again(self, remote, tmp_path):
+        from conftest import make_png
+        from juxt.loader import fetch_remote
+
+        sftp, cache = self._SFTP(), str(tmp_path / "cache")
+        fetch_remote(self._jobs(remote), cache, sftp, {})
+        (remote / "A.png").write_bytes(make_png(r=1) + b"\0")       # new size
+        sftp.fetched.clear()
+        fetch_remote(self._jobs(remote), cache, sftp, {})
+        assert sftp.fetched == [(remote / "A.png").as_posix()]
+
+    def test_skip_unchanged_reports_same(self, remote, tmp_path):
+        from juxt.loader import fetch_remote
+
+        sftp, cache, mtimes = self._SFTP(), str(tmp_path / "cache"), {}
+        fetch_remote(self._jobs(remote), cache, sftp, mtimes)
+        again = fetch_remote(self._jobs(remote), cache, sftp, mtimes, skip_unchanged=True)
+        assert again[(0,)][0] == again[(1,)][0] == "same"
+
+    def test_download_dir_outlives_the_session_unless_disabled(self, monkeypatch, tmp_path):
+        from juxt.config import RemoteConfig
+        from juxt.loader import remote_download_dir, set_remote_cache_days
+
+        r = RemoteConfig(host="box", user="me")
+        kept = remote_download_dir(r)
+        assert kept.startswith(os.environ["JUXT_CACHE_DIR"]) and kept.endswith("me@box_22")
+        set_remote_cache_days(0)
+        try:
+            assert not remote_download_dir(r).startswith(os.environ["JUXT_CACHE_DIR"])
+        finally:
+            set_remote_cache_days(7)
+
+    def test_prune_drops_files_unused_for_days(self, tmp_path):
+        import time
+
+        from juxt.loader import prune_remote_cache
+
+        old, new = tmp_path / "h" / "old.png", tmp_path / "h" / "new.png"
+        old.parent.mkdir()
+        old.write_bytes(b"x")
+        new.write_bytes(b"x")
+        week_ago = time.time() - 8 * 86400
+        os.utime(old, (week_ago, week_ago))
+        assert prune_remote_cache(7, tmp_path) == 1
+        assert not old.exists() and new.exists()
+
+    def test_prune_spares_a_fresh_empty_directory(self, tmp_path):
+        """A download may have just made it; its file is still to come."""
+        import time
+
+        from juxt.loader import prune_remote_cache
+
+        stale, fresh = tmp_path / "h" / "stale", tmp_path / "h" / "fresh"
+        stale.mkdir(parents=True)
+        fresh.mkdir()
+        week_ago = time.time() - 8 * 86400
+        os.utime(stale, (week_ago, week_ago))
+        prune_remote_cache(7, tmp_path)
+        assert fresh.is_dir() and not stale.exists()
+
+    def test_preload_remote_reuses_an_earlier_session(self, qtbot, remote, monkeypatch):
+        from juxt.config import RemoteConfig
+        from juxt.loader import MissingPixmap, preload_remote
+
+        sftp = self._SFTP()
+        client = type("C", (), {"close": lambda self: None})()
+        sftp.close = lambda: None
+        monkeypatch.setattr("juxt.loader._connect_sftp", lambda remote, pw=None: (client, sftp))
+        args = (remote.as_posix() + "/{s}.png", {"s": ["A", "B"]}, RemoteConfig(host="h"))
+        preload_remote(*args)
+        sftp.fetched.clear()
+        pixmaps, _dir, mtimes = preload_remote(*args)
+        assert sftp.fetched == []
+        assert not any(isinstance(pm, MissingPixmap) for pm in pixmaps.values())
+        assert set(mtimes) == {(0,), (1,)}

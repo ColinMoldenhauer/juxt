@@ -2401,6 +2401,9 @@ class ImageView(QGraphicsView):
         self._dim_missing = settings.dim_missing
         self._sidebar_copy = settings.sidebar_copy
         self._pattern_subset = settings.pattern_subset
+        from .loader import set_remote_cache_days, set_threads
+        set_threads(settings.loading_threads)
+        set_remote_cache_days(settings.remote_cache_days)
         new_kb: dict[tuple[int, int], str] = {}
         for ks, action in settings.keybindings.items():
             try:
@@ -2570,13 +2573,10 @@ class ImageView(QGraphicsView):
             return
         if changed:
             log.debug("Remote poll: %d file(s) changed", len(changed))
-        for key, local_path in changed:
-            if local_path is None:
-                from .loader import _error_pixmap
-                self.pixmaps[key] = _error_pixmap(self._key_to_path(key))
-            else:
-                pm = QPixmap(local_path)
-                self.pixmaps[key] = pm if not pm.isNull() else _error_pixmap(local_path)
+        from .loader import load_images
+        self.pixmaps.update(load_images(
+            (key, local_path, local_path or self._key_to_path(key))
+            for key, local_path in changed))
         if any(tuple(self.pos) == key for key, _ in changed):
             self._refresh()
 
@@ -2675,12 +2675,9 @@ class ImageView(QGraphicsView):
 
         new_config, key_to_path = result
 
-        # Decode pixmaps on the main thread (Qt requirement)
-        from .loader import _error_pixmap
-        new_pixmaps: dict[tuple, QPixmap] = {}
-        for key, local_path in key_to_path.items():
-            pm = QPixmap(local_path)
-            new_pixmaps[key] = pm if not pm.isNull() else _error_pixmap(local_path)
+        # Decoded in a pool; the pixmaps are made here, on the main thread.
+        from .loader import load_images
+        new_pixmaps = load_images((key, path, path) for key, path in key_to_path.items())
 
         # Preserve position by axis value name where possible
         old_names = self.axis_names
@@ -2995,23 +2992,25 @@ class ImageView(QGraphicsView):
         shows. A missing file (`local_path` None or unreadable) gets the usual
         placeholder naming *shown_path*. Progress goes to the progress
         dialogue *dlg*, counted from *offset*; cancelling it returns None."""
-        from .loader import _error_pixmap
+        from .loader import MissingPixmap, load_images
         added = {(j, v) for j, vals in enumerate(new_axis_values)
                  for v in vals if v not in self.axis_values[j]}
-        loaded: dict[tuple, QPixmap] = {}
-        found: set[tuple[int, str]] = set()
-        for i, (key, local, shown) in enumerate(files):
+
+        def _progress(done: int, _total: int):
             if dlg is not None:
-                dlg.setValue(offset + i)   # window-modal: keeps the UI painting
+                dlg.setValue(done)   # window-modal: keeps the UI painting
                 if dlg.wasCanceled():
-                    self._flash("cancelled; the axes are unchanged")
-                    return None
-            pm = QPixmap(local) if local else QPixmap()
-            if pm.isNull():
-                pm = _error_pixmap(shown)
-            else:
+                    raise _Cancelled()
+
+        try:
+            loaded = load_images(files, _progress, offset=offset)
+        except _Cancelled:
+            self._flash("cancelled; the axes are unchanged")
+            return None
+        found: set[tuple[int, str]] = set()
+        for key, pm in loaded.items():
+            if not isinstance(pm, MissingPixmap):
                 found.update((j, new_axis_values[j][k]) for j, k in enumerate(key))
-            loaded[key] = pm
         for j, vals in enumerate(new_axis_values):
             for v in vals:
                 if (j, v) in added and (j, v) not in found:
@@ -3625,8 +3624,7 @@ class ImageView(QGraphicsView):
         plural = "s" if n != 1 else ""
         check()
         if config.remote is not None:
-            import tempfile
-            from .loader import local_cache_path, poll_remote_with_sftp
+            from .loader import local_cache_path, poll_remote_with_sftp, remote_download_dir
             if reuse_remote is not None:
                 tmpdir, by_path = reuse_remote
                 for combo in _product(*axis_values):
@@ -3636,7 +3634,7 @@ class ImageView(QGraphicsView):
                         mtimes[key] = by_path[rpath]
                 self._pattern_progress.emit(0, n, f"Checking {n} image{plural}…")
             else:
-                tmpdir = tempfile.mkdtemp(prefix="juxt_")
+                tmpdir = remote_download_dir(config.remote)
                 self._pattern_progress.emit(0, n, f"Downloading {n} image{plural}…")
 
             def _dl_progress(i, _n):
@@ -3713,7 +3711,6 @@ class ImageView(QGraphicsView):
         new_mtimes: dict = payload["mtimes"]
         n_images: int = payload.get("n_images", len(key_to_path))
 
-        from .loader import _error_pixmap
         # Images already on show are reused rather than read again; after
         # "keep subset" that is most of them.
         loaded = self._loaded_pixmaps_by_path()
@@ -3730,15 +3727,20 @@ class ImageView(QGraphicsView):
             self._pattern_progress.emit(
                 0, n_images, f"Loading {n_images} new image{'s' if n_images != 1 else ''} "
                              f"({len(new_pixmaps)} already loaded)…")
-        for i, (key, local_path) in enumerate(todo):
+
+        def _progress(done: int, total: int):
             if self._pattern_dlg is not None and self._pattern_dlg.wasCanceled():
-                _close_dlg()
-                if self._watching and self.config.remote is not None:
-                    self._poll_timer.start(self._poll_interval * 1000)
-                return
-            self._pattern_progress.emit(i, n_images, "")
-            pm = QPixmap(local_path)
-            new_pixmaps[key] = pm if not pm.isNull() else _error_pixmap(local_path)
+                raise _Cancelled()
+            self._pattern_progress.emit(done, total, "")
+
+        from .loader import load_images
+        try:
+            new_pixmaps.update(load_images(((k, p, p) for k, p in todo), _progress))
+        except _Cancelled:
+            _close_dlg()
+            if self._watching and self.config.remote is not None:
+                self._poll_timer.start(self._poll_interval * 1000)
+            return
 
         _close_dlg()
 
