@@ -97,8 +97,8 @@ class TestPanelFlags:
         args, _pins = _parse_args()
         return args
 
-    def test_info_defaults_to_closed(self, monkeypatch):
-        assert self._args(monkeypatch, "plots/").info is False
+    def test_info_flag_unset_defers_to_settings(self, monkeypatch):
+        assert self._args(monkeypatch, "plots/").info is None
 
     def test_status_bar_defaults_to_shown(self, monkeypatch):
         assert self._args(monkeypatch, "plots/").status_bar is True
@@ -109,7 +109,7 @@ class TestPanelFlags:
     def test_info_flag_opens_the_sidebar(self, monkeypatch):
         assert self._args(monkeypatch, "plots/", "--info").info is True
 
-    def test_no_info_flag_keeps_it_closed(self, monkeypatch):
+    def test_no_info_flag_closes_it(self, monkeypatch):
         assert self._args(monkeypatch, "plots/", "--info", "--no-info").info is False
 
     def test_no_status_bar_flag_hides_it(self, monkeypatch):

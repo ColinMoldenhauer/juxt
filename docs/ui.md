@@ -29,6 +29,7 @@ A quick tour of the juxt interface and its interactive elements.
 | 3 | **Axis values** | Current position in the hypercube, e.g. `sensor=ASCAT  date=2024-03-16`. |
 | 4 | **Arrow bindings** | The primary (`←/→`) and secondary (`↑/↓`) axes, updated as you focus different axes. |
 | 5 | **Letter assignments** | Which letter key navigates which axis. Axes without an available letter are shown in red. |
+| 6 | **Image count** | On the right: how many images are loaded, e.g. `216 images`, or `210/216 images` while some combinations have no file. |
 
 ### Command mode
 
@@ -64,7 +65,16 @@ Toggle with `Ctrl+Shift+I` or `:info`. The panel docks to the right of the viewp
 
 Each axis header carries a `[+]`: click it to add or remove values of that axis from those found on disk, without restarting (see [`:values`](navigation.md#picking-values-from-disk-subset-interactive-values)).
 
-It starts closed; pass `--info` to open it right away. The status bar is the mirror case — shown by default, hidden at startup with `--no-status-bar`.
+Hovering the path shows what a click does. A click copies it to the clipboard (same as `:copy-path`); `Ctrl+click` (`Cmd+click` on macOS) shows the file in the system file manager (same as `:reveal`). Windows and macOS select the file in Explorer or Finder. On Linux the file is selected through the `org.freedesktop.FileManager1` D-Bus interface, which Nautilus, Dolphin, Nemo and Thunar offer; without it, the containing folder is opened instead. Remote (SSH) configs have no local file to reveal.
+
+The `copy CLI command` button at the bottom of the sidebar (or `:copy-cli-command`) copies a `juxt` command line that reopens the view as it is now. Every axis is pinned to its current values, so a selection made in the value picker, `:subset` or `:values` is repeated without any manual input next time; locked arrow axes and the grid view are included. The cursor position, custom key letters, the session name and an SSH port or key file cannot be expressed on the command line and are left out.
+
+The sidebar starts open. Set `sidebar.open: false` in `~/.juxt/settings.yaml` to start with it closed; `--info` and `--no-info` override the setting for one run. The status bar is the mirror case: shown by default, hidden at startup with `--no-status-bar`.
+
+```yaml
+sidebar:
+  open: true        # start with the info sidebar open
+```
 
 ---
 

@@ -211,7 +211,7 @@ def _print_help() -> None:
                               and any pinned values)
 
   panels (toggled at runtime with Ctrl+Shift+I / Ctrl+Shift+H / Ctrl+Shift+K)
-      --info                  start with the info sidebar open   (default: closed)
+      --info                  start with the info sidebar open   (default: sidebar.open in settings, initially open)
       --no-info               start with the info sidebar closed
       --status-bar            start with the status bar shown    (default: shown)
       --no-status-bar         start with the status bar hidden
@@ -241,7 +241,7 @@ def _print_help() -> None:
     :subset AXIS [VALUES]  edit an axis: delete, reorder, rename, add
     :subset-interactive  :values AXIS  pick values from those on disk
     :change-key AXIS LETTER  :settings
-    :copy-image  :copy-path  :write [PATH]  :quit""")
+    :copy-image  :copy-path  :copy-cli-command  :reveal  :write [PATH]  :quit""")
 
 
 def _parse_axis_pins(unknown: list[str]) -> dict[str, list[str]]:
@@ -306,7 +306,7 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     # Initial panel visibility; both are still toggleable at runtime.
     # These are declared here so parse_known_args recognises them; an
     # unrecognised --flag after PATH is read as an axis pin instead.
-    p.add_argument("--info", dest="info", action="store_true", default=False)
+    p.add_argument("--info", dest="info", action="store_true", default=None)
     p.add_argument("--no-info", dest="info", action="store_false")
     p.add_argument("--status-bar", dest="status_bar", action="store_true", default=True)
     p.add_argument("--no-status-bar", dest="status_bar", action="store_false")
@@ -860,6 +860,7 @@ def main():
         skip_missing=settings.skip_missing,
         dim_missing=settings.dim_missing,
         sidebar_copy=settings.sidebar_copy,
+        pattern_subset=settings.pattern_subset,
         keybindings=settings.keybindings,
         highlight=settings.highlight,
         highlight_candidates=settings.highlight_candidates,
@@ -870,7 +871,7 @@ def main():
         grid_layout=grid_layout,
         grid_sharex=not args.no_sharex,
         grid_sharey=not args.no_sharey,
-        show_info=args.info,
+        show_info=settings.sidebar_open if args.info is None else args.info,
         show_status_bar=args.status_bar,
         show_keys=args.keys,
         theme=settings.theme,

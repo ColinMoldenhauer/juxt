@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import html as _html
 import logging
+import os
 import re as _re
+import shlex
+import shutil
+import subprocess
+import sys
 import threading
 from collections.abc import Collection
 from enum import IntEnum
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
+    QDesktopServices,
     QFontMetrics,
     QKeyEvent,
     QPainter,
@@ -30,10 +36,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QPushButton,
     QSizePolicy,
     QStackedWidget,
     QTextEdit,
     QToolTip,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -188,6 +196,133 @@ def _parse_edit_href(href: str) -> int | None:
     """Inverse of :func:`_edit_href`; returns None for foreign hrefs."""
     m = _EDIT_HREF_RE.match(href)
     return int(m.group(1)) if m else None
+
+
+def _reveal_in_file_manager(path: str) -> bool:
+    """Show *path* selected in the platform's file manager; False if that failed.
+
+    Windows and macOS have a native "select this file" call.  Linux has none
+    in general: the FileManager1 D-Bus interface (Nautilus, Dolphin, Nemo,
+    Thunar, ...) does it where a session bus exists, and elsewhere the best
+    on offer is opening the containing folder.  A path that does not exist
+    falls back to its nearest existing parent folder.
+    """
+    path = os.path.abspath(path)
+    target = path
+    while not os.path.exists(target):
+        parent = os.path.dirname(target)
+        if parent == target:
+            return False
+        target = parent
+    is_file = os.path.isfile(target)
+    try:
+        if sys.platform == "win32":
+            # explorer reports exit status 1 even on success, so don't check it.
+            arg = f"/select,{target}" if is_file else target
+            subprocess.Popen(["explorer", arg])
+            return True
+        if sys.platform == "darwin":
+            subprocess.run(["open", "-R", target] if is_file else ["open", target],
+                           check=True, timeout=5)
+            return True
+        if is_file and shutil.which("dbus-send"):
+            uri = QUrl.fromLocalFile(target).toString()
+            done = subprocess.run(
+                ["dbus-send", "--session", "--print-reply",
+                 "--dest=org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                 "org.freedesktop.FileManager1.ShowItems", f"array:string:{uri}", "string:"],
+                capture_output=True, timeout=5,
+            )
+            if done.returncode == 0:
+                return True
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("Could not reveal %s: %s", target, e)
+    folder = target if os.path.isdir(target) else os.path.dirname(target)
+    return QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+
+# `:pattern` flags overriding the `pattern.subset` setting for one run.
+_PATTERN_FLAGS = {"--keep-subset": "keep", "--ignore-subset": "ignore"}
+
+
+def _split_pattern_flags(arg: str) -> tuple[str, str | None]:
+    """Split `:pattern` flags off either end of *arg*: (path, subset or None)."""
+    tokens = arg.split()
+    leading = trailing = None
+    while tokens and tokens[0] in _PATTERN_FLAGS:
+        leading = _PATTERN_FLAGS[tokens.pop(0)]
+    while tokens and tokens[-1] in _PATTERN_FLAGS:
+        trailing = trailing or _PATTERN_FLAGS[tokens[-1]]   # the last flag wins
+        tokens.pop()
+    return " ".join(tokens), trailing or leading
+
+
+def _n_combos(axes) -> int:
+    """Number of combinations (images) of *axes*: a dict or a list of value lists."""
+    n = 1
+    for vals in (axes.values() if isinstance(axes, dict) else axes):
+        n *= vals if isinstance(vals, int) else len(vals)
+    return n
+
+
+def _new_values(keep: dict[str, list[str]], fresh, known: dict[str, list[str]]
+                ) -> dict[str, list[str]]:
+    """Values of the axes in *keep* that a fresh scan (*fresh*, a Config or
+    an exception) finds but the old pattern did not have (*known*).
+
+    Axes new to the pattern are skipped: they come with all their values.
+    """
+    if isinstance(fresh, Exception) or fresh is None:
+        return {}
+    out = {}
+    for name, vals in keep.items():
+        if name not in known:
+            continue
+        extra = [v for v in fresh.axes.get(name, [])
+                 if v not in known[name] and v not in vals]
+        if extra:
+            out[name] = extra
+    return out
+
+
+def _same_values(a: dict[str, list[str]], b: dict[str, list[str]]) -> bool:
+    """Whether two axis dicts hold the same values, in whatever order."""
+    return a.keys() == b.keys() and all(set(a[n]) == set(b[n]) for n in a)
+
+
+def _images_with_factor(n: int, now: int) -> str:
+    """`432 images (×2)`: *n* and its ratio to the *now* images on show."""
+    text = f"{n} image{'s' if n != 1 else ''}"
+    if now and n != now:
+        text += f" (×{n / now:.3g})"
+    return text
+
+
+def _axis_count_changes(current: dict[str, int], new: dict[str, int]) -> list[str]:
+    """Per-axis value counts that differ between *current* and *new*, e.g.
+    `dmm 3→4`, `ref new (2)`, `date gone`."""
+    out = []
+    for name, n in new.items():
+        if name not in current:
+            out.append(f"{name} new ({n})")
+        elif current[name] != n:
+            out.append(f"{name} {current[name]}→{n}")
+    out += [f"{name} gone" for name in current if name not in new]
+    return out
+
+
+def _shell_quote(arg: str) -> str:
+    """Quote *arg* for pasting into the user's shell (POSIX shells, cmd, PowerShell).
+
+    On Windows anything beyond plain path characters is double-quoted: that
+    is the one quoting cmd and PowerShell agree on (PowerShell would read a
+    bare `'` as the start of a string and a bare `,` as an array).
+    """
+    if sys.platform != "win32":
+        return shlex.quote(arg)
+    if _re.fullmatch(r"[\w./\\:@+=-]+", arg):
+        return arg
+    return '"' + arg.replace('"', '\\"') + '"'
 
 
 def _dispose(dialog: QWidget) -> None:
@@ -368,6 +503,7 @@ _COMMANDS = [
     "axis-h",
     "axis-v",
     "change-key",
+    "copy-cli-command",
     "copy-image",
     "copy-path",
     "dim-missing",
@@ -392,6 +528,7 @@ _COMMANDS = [
     "settings",
     "skip-missing",
     "remove-value",
+    "reveal",
     "subset",
     "subset-interactive",
     "ungrid",
@@ -442,6 +579,10 @@ _ARG_FORMATS: dict[str, str] = {
 }
 
 # Commands whose argument is free-text — preserve case when the user types it.
+# Free-text commands whose argument starts with an axis name, and what
+# follows it ("value": one of its values, "key": a letter, "": nothing).
+_AXIS_FIRST_ARGS = {"remove-value": "value", "change-key": "key", "remove-axis": ""}
+
 _FREE_TEXT_ARGS = {"change-key", "pattern", "remove-axis", "remove-value", "write"}
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -478,6 +619,8 @@ _COMMAND_HELP: dict[str, str] = {
     "change-key":   "assign a key letter to an axis  (e.g. change-key sensor x)",
     "copy-image":   "copy current image to clipboard",
     "copy-path":    "copy current image file path to clipboard",
+    "copy-cli-command": "copy a juxt command line that reopens this view (axes, values, grid)",
+    "reveal":       "show the current image file in the system file manager",
     "dim-missing":  "dim sidebar values with no file on the last-moved axis  (on / off)",
     "axis-h":       "lock the primary (←/→) axis to a named axis",
     "axis-v":       "lock the secondary (↑/↓) axis to a named axis",
@@ -495,7 +638,7 @@ _COMMAND_HELP: dict[str, str] = {
     "info":         "toggle the info sidebar",
     "keys":         "toggle the keyboard shortcut sidebar  (Ctrl+Shift+K)",
     "mode":         "switch navigation mode  (tap / seek / pin)",
-    "pattern":      "change the template / source path without restarting",
+    "pattern":      "change the template / source path without restarting  (--keep-subset / --ignore-subset)",
     "quit":         "quit juxt",
     "reload":       "re-detect axes and reload images",
     "settings":     "open ~/.juxt/settings.yaml in the default editor",
@@ -516,20 +659,55 @@ _COMMAND_HELP: dict[str, str] = {
 }
 
 
+def _cmd_query_window(query: str, caret: int, max_visible: int = 55) -> tuple[int, int]:
+    """The `(start, end)` slice of *query* shown in at most *max_visible*
+    characters, scrolled to keep *caret* roughly centred."""
+    if len(query) <= max_visible:
+        return 0, len(query)
+    start = max(0, min(caret - max_visible // 2, len(query) - max_visible))
+    return start, start + max_visible
+
+
 def _cmd_query_display(query: str, caret: int, max_visible: int = 55) -> str:
     """Return a viewport into *query* with ▌ at *caret*, scrolling to keep it visible."""
-    if len(query) <= max_visible:
-        return query[:caret] + "▌" + query[caret:]
-    # Keep caret roughly centred in the window
-    start = max(0, min(caret - max_visible // 2, len(query) - max_visible))
-    end = start + max_visible
+    start, end = _cmd_query_window(query, caret, max_visible)
     prefix = "…" if start > 0 else ""
     suffix = "…" if end < len(query) else ""
     return f"{prefix}{query[start:caret]}▌{query[caret:end]}{suffix}"
 
 
+def _is_word_char(ch: str) -> bool:
+    """Characters Ctrl+Backspace / Ctrl+←/→ treat as one word (`sm_vs_peatclsm`)."""
+    return ch.isalnum() or ch == "_"
+
+
+def _word_left(text: str, pos: int) -> int:
+    """Start of the word before *pos*, skipping separators first."""
+    while pos > 0 and not _is_word_char(text[pos - 1]):
+        pos -= 1
+    while pos > 0 and _is_word_char(text[pos - 1]):
+        pos -= 1
+    return pos
+
+
+def _word_right(text: str, pos: int) -> int:
+    """End of the word after *pos*, skipping separators first."""
+    while pos < len(text) and not _is_word_char(text[pos]):
+        pos += 1
+    while pos < len(text) and _is_word_char(text[pos]):
+        pos += 1
+    return pos
+
+
 class _ElidingLabel(QLabel):
     """QLabel that elides its content (plain text or HTML) to fit the available width."""
+
+    clicked = Signal(float)   # x of a left click, from the start of the text
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(event.position().x() - self.contentsRect().left())
+        super().mousePressEvent(event)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -946,6 +1124,7 @@ class ImageView(QGraphicsView):
     grid_mode_changed = Signal(object)  # emits GridWidget on enter, None on exit
     _poll_result = Signal(object)       # emitted from poll worker; carries list or Exception
     _reload_result = Signal(object)     # emitted from reload worker; carries tuple or Exception
+    _pattern_found = Signal(object)     # pattern discovery: dict | Exception | None (cancelled)
     _pattern_result = Signal(object)    # emitted from pattern worker; carries dict or Exception
     _pattern_progress = Signal(int, int, str)  # value, total, label
     _values_found = Signal(object)      # value-picker listing: (axis, found | Exception); (None, None) = done
@@ -969,6 +1148,7 @@ class ImageView(QGraphicsView):
         skip_missing: bool = False,
         dim_missing: bool = False,
         sidebar_copy: str = "selected",
+        pattern_subset: str = "smart",
         keybindings: dict[str, str] | None = None,
         grid: str | None = None,
         grid_values: list[str] | None = None,
@@ -1057,7 +1237,11 @@ class ImageView(QGraphicsView):
         self._poll_timer.timeout.connect(self._start_poll_worker)
         self._poll_result.connect(self._apply_remote_poll)
         self._reload_result.connect(self._apply_reload)
+        self._pattern_found.connect(self._on_pattern_found)
         self._pattern_result.connect(self._apply_pattern)
+        # Pending `pattern.subset: cli` question: {"found": dict, "valid": dict}.
+        self._pattern_choice: dict | None = None
+        self._pattern_subset: str = pattern_subset
         self._pattern_progress.connect(self._on_pattern_progress)
         self._pattern_dlg = None
         self._values_found.connect(self._on_values_found)
@@ -1537,9 +1721,33 @@ class ImageView(QGraphicsView):
         """Handle input while command mode is active. Returns True if consumed."""
         k = event.key()
         is_free = _is_free_text(self._cmd)
+        ctrl = bool(event.modifiers() & Qt.ControlModifier)
 
         if k == Qt.Key_Escape:
             self._cmd = None
+            self._tab_matches = []
+            self.state_changed.emit()
+            return True
+
+        # Ctrl+Backspace / Ctrl+Delete delete a word, Ctrl+←/→ jump one.
+        if ctrl and k in (Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Left, Qt.Key_Right):
+            q = self._cmd["query"]
+            if not is_free:
+                if k == Qt.Key_Backspace and q:
+                    self._cmd["query"] = q[:_word_left(q, len(q))]
+                    self._cmd["cursor"] = 0
+                    self.state_changed.emit()
+                return True
+            caret = self._cmd.get("caret", len(q))
+            if k == Qt.Key_Backspace:
+                left = _word_left(q, caret)
+                self._cmd["query"], self._cmd["caret"] = q[:left] + q[caret:], left
+            elif k == Qt.Key_Delete:
+                self._cmd["query"] = q[:caret] + q[_word_right(q, caret):]
+            elif k == Qt.Key_Left:
+                self._cmd["caret"] = _word_left(q, caret)
+            else:
+                self._cmd["caret"] = _word_right(q, caret)
             self._tab_matches = []
             self.state_changed.emit()
             return True
@@ -1583,6 +1791,8 @@ class ImageView(QGraphicsView):
             log.debug("_cmd_handle_key: Tab  is_free=%s cmd=%s", is_free, self._cmd)
             if "axis" in self._cmd:
                 self._complete_subset()
+            elif is_free and self._cmd.get("verb") in _AXIS_FIRST_ARGS:
+                self._complete_axis_arg()
             elif is_free:
                 self._complete_path()
             elif self._cmd.get("phase") == "arg" and self._cmd.get("verb") == "grid":
@@ -1734,6 +1944,59 @@ class ImageView(QGraphicsView):
         QApplication.clipboard().setText(path)
         self._flash(f"copied: {path}")
 
+    def cli_command(self) -> str:
+        """A `juxt` command line that reopens the view as it is now.
+
+        Every axis is pinned to its current values (`--NAME VALUE ...`), so a
+        subset picked interactively, or edited with `:subset` and `:values`,
+        comes back without a scan or a dialogue.  The locked arrow axes and
+        the grid view are carried over.  What the command line cannot say is
+        left out: the cursor position, custom key letters, the session name,
+        and an SSH port or key file.
+        """
+        cfg = self.config
+        path = cfg.template
+        if cfg.remote is not None:
+            user = f"{cfg.remote.user}@" if cfg.remote.user else ""
+            path = f"{user}{cfg.remote.host}:{path}"
+        parts = ["juxt", _shell_quote(path)]
+        for name, vals in zip(self.axis_names, self.axis_values):
+            parts += [_shell_quote(f"--{name}"), *map(_shell_quote, vals)]
+        if self._locked_h is not None:
+            parts += ["--axis-h", _shell_quote(self.axis_names[self._locked_h])]
+        if self._locked_v is not None:
+            parts += ["--axis-v", _shell_quote(self.axis_names[self._locked_v])]
+        if self._grid_axis is not None:
+            vals = self.axis_values[self._grid_axis]
+            parts += ["--grid", _shell_quote(self.axis_names[self._grid_axis])]
+            if self._grid_filter is not None:
+                parts += ["--grid-values", *(_shell_quote(vals[i]) for i in self._grid_filter)]
+            if self._grid_layout is not None:
+                parts += ["--grid-layout", "{}x{}".format(*self._grid_layout)]
+            if not self._grid_sharex:
+                parts.append("--no-sharex")
+            if not self._grid_sharey:
+                parts.append("--no-sharey")
+        return " ".join(parts)
+
+    def copy_cli_command(self) -> None:
+        """Copy :meth:`cli_command` to the clipboard."""
+        cmd = self.cli_command()
+        QApplication.clipboard().setText(cmd)
+        log.info("copied CLI command: %s", cmd)
+        self._flash("copied: juxt command line")
+
+    def reveal_path(self) -> None:
+        """Show the current image's file in the system file manager."""
+        if self.config.remote is not None:
+            self._flash("remote file: nothing local to reveal")
+            return
+        path = self._key_to_path(self._key())
+        if _reveal_in_file_manager(path):
+            self._flash(f"revealed: {path}")
+        else:
+            self._flash(f"could not reveal: {path}")
+
     def _cmd_execute(self, cmd: str):
         parts = cmd.strip().split()
         if not parts:
@@ -1745,6 +2008,10 @@ class ImageView(QGraphicsView):
             QApplication.instance().quit()
         elif verb == "copy-path":
             self.copy_path()
+        elif verb == "reveal":
+            self.reveal_path()
+        elif verb == "copy-cli-command":
+            self.copy_cli_command()
         elif verb == "copy-image":
             pm = self.pixmaps.get(self._key())
             if pm and not pm.isNull():
@@ -1833,8 +2100,9 @@ class ImageView(QGraphicsView):
                     self._do_save(path_str)
         elif verb == "pattern":
             raw_arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            raw_arg, subset = _split_pattern_flags(raw_arg)
             if raw_arg:
-                self._do_pattern(raw_arg)
+                self._do_pattern(raw_arg, subset)
             else:
                 self._flash("usage: pattern <path-or-template>")
         elif verb == "axis-h":
@@ -2132,6 +2400,7 @@ class ImageView(QGraphicsView):
         self._skip_missing = settings.skip_missing
         self._dim_missing = settings.dim_missing
         self._sidebar_copy = settings.sidebar_copy
+        self._pattern_subset = settings.pattern_subset
         new_kb: dict[tuple[int, int], str] = {}
         for ks, action in settings.keybindings.items():
             try:
@@ -2913,6 +3182,50 @@ class ImageView(QGraphicsView):
             dlg.setMaximum(total)
         dlg.setValue(value)
 
+    def set_cmd_caret(self, pos: int) -> None:
+        """Move the caret of a free-text argument to *pos* (a click on it)."""
+        if self._cmd is None or "caret" not in self._cmd:
+            return
+        self._cmd["caret"] = max(0, min(pos, len(self._cmd["query"])))
+        self._tab_matches = []
+        self.state_changed.emit()
+
+    def _complete_axis_arg(self):
+        """Tab in :remove-value, :remove-axis and :change-key: complete the
+        axis name, then (:remove-value) one of that axis's values.
+
+        A unique match is filled in; several extend the text to what they
+        share and are listed on the right of the status bar.
+        """
+        verb = self._cmd["verb"]
+        q = self._cmd["query"][:self._cmd.get("caret", len(self._cmd["query"]))]
+        rest = self._cmd["query"][len(q):]
+        axis = max((n for n in self.axis_names if q.startswith(n + " ")), key=len, default=None)
+        if axis is None:
+            head, partial, pool = "", q, list(self.axis_names)
+            tail = " " if _AXIS_FIRST_ARGS[verb] else ""
+        elif _AXIS_FIRST_ARGS[verb] == "value":
+            head, partial, tail = axis + " ", q[len(axis) + 1:], ""
+            pool = list(self.axis_values[self.axis_names.index(axis)])
+        else:
+            return
+        low = partial.lower()
+        matches = [p for p in pool if p.lower().startswith(low)]
+        if not matches:
+            self._tab_matches = ["(no match)"]
+        elif len(matches) == 1:
+            self._tab_matches = []
+            partial = matches[0] + tail
+        else:
+            self._tab_matches = matches
+            common = os.path.commonprefix(matches)
+            if len(common) > len(partial):
+                partial = common
+        new = head + partial
+        self._cmd["query"] = new + rest
+        self._cmd["caret"] = len(new)
+        self.state_changed.emit()
+
     def _complete_path(self):
         """Tab-complete the path portion of a free-text command argument.
 
@@ -2963,29 +3276,56 @@ class ImageView(QGraphicsView):
             return f"{prefix}:{self.config.template}"
         return self.config.template
 
-    def _do_pattern(self, raw: str):
-        """Change the template/source entirely without restarting juxt."""
+    def _pattern_progress_dialog(self, label: str) -> threading.Event:
+        """Open the window-modal progress dialogue of `:pattern`; the returned
+        event is set when the user cancels it."""
+        from PySide6.QtWidgets import QProgressDialog
+        dlg = QProgressDialog(label, "Cancel", 0, 0, self.window())
+        dlg.setWindowTitle("juxt")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        self._pattern_dlg = dlg
+        cancel_event = threading.Event()
+        # Not cancel_event.set; see _download_added_remote.
+        dlg.canceled.connect(lambda: cancel_event.set())
+        return cancel_event
+
+    def _close_pattern_dlg(self) -> None:
+        if self._pattern_dlg is not None:
+            _dispose(self._pattern_dlg)
+            self._pattern_dlg = None
+
+    def _do_pattern(self, raw: str, subset: str | None = None):
+        """Change the template/source without restarting juxt.
+
+        Runs in three steps: discover the new axes (worker), settle what to
+        do with the current subset (:meth:`_on_pattern_found`), then load or
+        download the images (worker, :meth:`_pattern_load`).
+
+        *subset* decides the fate of the values picked for axes the new
+        pattern keeps, i.e. placeholders of the same name: "keep" pins them
+        to their current values, "ignore" scans the disk for all of them,
+        "smart" keeps them but opens the value picker when the new pattern
+        finds values the old one did not have, and "gui" / "cli" ask, in a
+        dialogue or in the status bar, whenever keep and ignore would differ.
+        Defaults to the `pattern.subset` setting.
+        """
         if self._reload_in_progress or self._listing_in_progress:
             self._flash("reload already in progress")
             return
+        subset = subset or self._pattern_subset
         raw = expand_home(normalize_template(raw))  # anonymous {} → {axis_1}, …; ~ → home
         self._reload_in_progress = True
         if self._watching and self.config.remote is not None:
             self._poll_timer.stop()
 
         get_pw = self._get_password
-
-        from PySide6.QtWidgets import QProgressDialog
-        dlg = QProgressDialog("Detecting axes…", "Cancel", 0, 0, self.window())
-        dlg.setWindowTitle("juxt")
-        dlg.setWindowModality(Qt.WindowModal)
-        dlg.setMinimumDuration(0)
-        dlg.setValue(0)
-        self._pattern_dlg = dlg
-
-        cancel_event = threading.Event()
-        # Not cancel_event.set; see _download_added_remote.
-        dlg.canceled.connect(lambda: cancel_event.set())
+        current = {n: list(vs) for n, vs in zip(self.axis_names, self.axis_values)}
+        want = ["keep", "ignore"] if subset in ("gui", "cli", "smart") else [subset]
+        # smart compares against every value the old pattern has on disk.
+        old = (self.config.template, self.config.remote) if subset == "smart" else None
+        cancel_event = self._pattern_progress_dialog("Detecting axes…")
 
         def _worker():
             def _check():
@@ -2993,157 +3333,355 @@ class ImageView(QGraphicsView):
                     raise _Cancelled()
 
             try:
-                from pathlib import Path
-                from itertools import product as _product
-                from .loader import local_cache_path
-                from .detect import (
-                    _is_remote_pattern, _parse_remote_pattern,
-                    _axes_from_sftp_template, _axes_from_local_template,
-                    detect_config, has_bare_wildcard, resolve_wildcard_template,
+                found = self._discover_pattern(raw, current, want, get_pw, _check, old)
+                found["subset"] = subset
+                self._pattern_found.emit(found)
+            except _Cancelled:
+                self._pattern_found.emit(None)
+            except Exception as e:
+                self._pattern_found.emit(e)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _discover_pattern(self, raw: str, current: dict[str, list[str]],
+                          want: list[str], get_pw, check, old=None) -> dict:
+        """Find the axes of pattern *raw*, once per subset choice in *want*.
+
+        Runs in the pattern worker.  Returns `{"raw", "options", "conn",
+        "known"}`: *options* maps "keep" / "ignore" to the Config that choice
+        gives, or to the exception its scan raised.  "keep" is only offered
+        for a template sharing a placeholder with *current*; directories,
+        YAML configs and wildcards are always scanned afresh.  With *old*,
+        `(template, remote)` of the pattern being replaced, *known* holds
+        every value that pattern has on disk (None if it could not be read).
+        """
+        from pathlib import Path
+        from .detect import (
+            _is_remote_pattern, _parse_remote_pattern, _parse_template_names,
+            _axes_from_sftp_template, _axes_from_local_template,
+            detect_config, has_bare_wildcard, resolve_wildcard_template,
+        )
+        from .config import Config, _auto_keys, load_config
+
+        conn: list = [None, None]
+        options: dict[str, object] = {}
+
+        def _templated(template: str, scan, remote=None) -> None:
+            names = _parse_template_names(template)[0]
+            pins = {n: current[n] for n in names if n in current}
+            choices = [c for c in want if c != "keep" or pins] or ["ignore"]
+            for choice in choices:
+                check()
+                try:
+                    tmpl, axes = scan(pins if choice == "keep" else None)
+                    options[choice] = Config(template=tmpl, axes=axes,
+                                             keys=_auto_keys(axes), remote=remote)
+                except Exception as e:
+                    options[choice] = e
+
+        if _is_remote_pattern(raw):
+            remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
+            if '{' not in remote_tmpl:
+                raise ValueError(
+                    "remote directory detection not supported via :pattern; "
+                    "use a template with {placeholders}"
                 )
-                from .config import Config, _auto_keys, load_config
+            self._pattern_progress.emit(0, 0, "Connecting…")
+            check()
+            from .loader import _connect_sftp
+            conn[0], conn[1] = _connect_sftp(remote_cfg, get_pw)
+            self._pattern_progress.emit(0, 0, "Detecting axes…")
+            _templated(remote_tmpl,
+                       lambda pinned: (remote_tmpl,
+                                       _axes_from_sftp_template(remote_tmpl, conn[1], pinned)),
+                       remote=remote_cfg)
+        elif Path(raw).is_dir():
+            options["ignore"], _ = detect_config(Path(raw), None, None)
+        elif raw.lower().endswith((".yaml", ".yml")):
+            options["ignore"] = load_config(raw)
+        elif has_bare_wildcard(raw):
+            tmpl, axes = resolve_wildcard_template(raw)
+            options["ignore"] = Config(template=tmpl, axes=axes, keys=_auto_keys(axes))
+        elif '{' in raw:
+            _templated(raw, lambda pinned: _axes_from_local_template(raw, pinned=pinned))
+        else:
+            raise ValueError(
+                f"{raw!r} is not a directory, YAML config, "
+                "template pattern, or remote path"
+            )
+        known = None
+        if old is not None and not isinstance(options.get("keep", Exception()), Exception):
+            check()
+            old_template, old_remote = old
+            new_remote = options["keep"].remote
+            try:
+                if old_remote is None and new_remote is None:
+                    known = _axes_from_local_template(old_template)[1]
+                elif (old_remote is not None and new_remote is not None
+                      and (old_remote.host, old_remote.user, old_remote.port)
+                      == (new_remote.host, new_remote.user, new_remote.port)):
+                    known = _axes_from_sftp_template(old_template, conn[1])
+            except Exception as e:
+                log.info(":pattern: could not rescan the old pattern (%s)", e)
+        return {"raw": raw, "options": options, "conn": conn, "known": known}
 
-                new_conn: list = [None, None]
-                new_tmpdir: str | None = None
-                new_mtimes: dict = {}
+    def _pattern_abort(self, msg: str | None, conn: list | None = None) -> None:
+        """End a `:pattern` run that will not replace the config."""
+        self._close_pattern_dlg()
+        self._pattern_choice = None
+        for c in reversed(conn or []):
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+        self._reload_in_progress = False
+        if self._watching and self.config.remote is not None:
+            self._poll_timer.start(self._poll_interval * 1000)
+        if msg:
+            self._flash(msg)
+        else:
+            self.state_changed.emit()
 
-                if _is_remote_pattern(raw):
-                    remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
-                    if '{' not in remote_tmpl:
-                        raise ValueError(
-                            "remote directory detection not supported via :pattern; "
-                            "use a template with {placeholders}"
-                        )
-                    self._pattern_progress.emit(0, 0, "Connecting…")
-                    _check()
-                    from .loader import _connect_sftp
-                    new_conn[0], new_conn[1] = _connect_sftp(remote_cfg, get_pw)
-                    self._pattern_progress.emit(0, 0, "Detecting axes…")
-                    _check()
-                    new_axes = _axes_from_sftp_template(remote_tmpl, new_conn[1])
-                    if not new_axes:
-                        raise ValueError(f"no images found for pattern {remote_tmpl!r}")
-                    n = 1
-                    for vs in new_axes.values():
-                        n *= len(vs)
-                    new_config = Config(
-                        template=remote_tmpl, axes=new_axes,
-                        keys=_auto_keys(new_axes), remote=remote_cfg,
-                    )
-                    import tempfile
-                    new_tmpdir = tempfile.mkdtemp(prefix="juxt_")
-                    self._pattern_progress.emit(0, n, f"Downloading {n} image{'s' if n != 1 else ''}…")
+    def _on_pattern_found(self, found: object):
+        """The new axes are known: settle the subset choice, then load."""
+        self._close_pattern_dlg()
+        if found is None:
+            self._pattern_abort(None)
+            return
+        if isinstance(found, Exception):
+            log.warning("Pattern change failed: %s", found)
+            self._pattern_abort(f"pattern failed: {found}")
+            return
+        options: dict = found["options"]
+        valid = {c: cfg for c, cfg in options.items()
+                 if not isinstance(cfg, Exception) and _n_combos(cfg.axes)}
+        subset = found["subset"]
 
-                    def _dl_progress(i, _n):
-                        _check()
-                        self._pattern_progress.emit(i + 1, n, "")
-
-                    from .loader import poll_remote_with_sftp
-                    poll_remote_with_sftp(
-                        remote_tmpl, new_axes, new_tmpdir, new_conn[1], new_mtimes,
-                        on_progress=_dl_progress,
-                    )
-                    axis_names = list(new_axes.keys())
-                    axis_values = list(new_axes.values())
-                    key_to_path = {}
-                    for combo in _product(*axis_values):
-                        mapping = dict(zip(axis_names, combo))
-                        rpath = remote_tmpl.format(**mapping)
-                        lpath = str(local_cache_path(new_tmpdir, rpath))
-                        key_to_path[tuple(vals.index(v) for vals, v in zip(axis_values, combo))] = lpath
-
-                elif Path(raw).is_dir():
-                    new_config, _ = detect_config(Path(raw), None, None)
-                    if not new_config.axes:
-                        raise ValueError(f"no images found in directory {raw!r}")
-                    axis_names = list(new_config.axes.keys())
-                    axis_values = list(new_config.axes.values())
-                    n = 1
-                    for vs in axis_values:
-                        n *= len(vs)
-                    _check()
-                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
-                    key_to_path = {
-                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
-                        new_config.template.format(**dict(zip(axis_names, combo)))
-                        for combo in _product(*axis_values)
-                    }
-
-                elif raw.lower().endswith((".yaml", ".yml")):
-                    new_config = load_config(raw)
-                    if not new_config.axes:
-                        raise ValueError(f"no axes defined in config {raw!r}")
-                    axis_names = list(new_config.axes.keys())
-                    axis_values = list(new_config.axes.values())
-                    n = 1
-                    for vs in axis_values:
-                        n *= len(vs)
-                    _check()
-                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
-                    key_to_path = {
-                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
-                        new_config.template.format(**dict(zip(axis_names, combo)))
-                        for combo in _product(*axis_values)
-                    }
-
-                elif has_bare_wildcard(raw):
-                    new_template, new_axes = resolve_wildcard_template(raw)
-                    if not new_axes:
-                        raise ValueError(f"no images found for pattern {raw!r}")
-                    new_config = Config(
-                        template=new_template, axes=new_axes, keys=_auto_keys(new_axes))
-                    axis_names = list(new_axes.keys())
-                    axis_values = list(new_axes.values())
-                    n = 1
-                    for vs in axis_values:
-                        n *= len(vs)
-                    _check()
-                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
-                    key_to_path = {
-                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
-                        new_template.format(**dict(zip(axis_names, combo)))
-                        for combo in _product(*axis_values)
-                    }
-
-                elif '{' in raw:
-                    new_template, new_axes = _axes_from_local_template(raw)
-                    if not new_axes:
-                        raise ValueError(f"no images found for pattern {raw!r}")
-                    new_config = Config(
-                        template=new_template, axes=new_axes, keys=_auto_keys(new_axes))
-                    axis_names = list(new_axes.keys())
-                    axis_values = list(new_axes.values())
-                    n = 1
-                    for vs in axis_values:
-                        n *= len(vs)
-                    _check()
-                    self._pattern_progress.emit(0, n, f"Loading {n} image{'s' if n != 1 else ''}…")
-                    key_to_path = {
-                        tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
-                        new_template.format(**dict(zip(axis_names, combo)))
-                        for combo in _product(*axis_values)
-                    }
-
+        if subset == "smart":
+            keep = valid.get("keep")
+            if keep is not None:
+                current = {n: list(vs) for n, vs in zip(self.axis_names, self.axis_values)}
+                new_vals = _new_values(keep.axes, options.get("ignore"),
+                                       found.get("known") or current)
+                if new_vals:
+                    self._pick_new_values(found, keep, new_vals)
                 else:
-                    raise ValueError(
-                        f"{raw!r} is not a directory, YAML config, "
-                        "template pattern, or remote path"
-                    )
+                    self._pattern_load(found, keep)
+                return
+            subset = "ignore"   # nothing shared, or the subset is not found there
 
-                self._pattern_result.emit({
-                    "config": new_config,
-                    "key_to_path": key_to_path,
-                    "conn": new_conn,
-                    "tmpdir": new_tmpdir,
-                    "mtimes": new_mtimes,
-                    "n_images": n,
-                })
+        if subset in ("keep", "ignore"):
+            choice = subset if subset in options else next(iter(options))
+            if choice in valid:
+                self._pattern_load(found, valid[choice])
+                return
+            other = "--ignore-subset" if choice == "keep" else "--keep-subset"
+            err = options[choice]
+            why = err if isinstance(err, Exception) else "no images found"
+            self._pattern_abort(f"pattern failed ({choice} subset): {why}"
+                                + (f"; try {other}" if choice == "keep" else ""),
+                                found["conn"])
+            return
+
+        if not valid:
+            err = options.get("ignore", options.get("keep"))
+            why = err if isinstance(err, Exception) else f"no images found for {found['raw']!r}"
+            self._pattern_abort(f"pattern failed: {why}", found["conn"])
+            return
+        if len(valid) == 1 or _same_values(valid["keep"].axes, valid["ignore"].axes):
+            choice = "keep" if "keep" in valid else next(iter(valid))
+            if len(options) > len(valid):
+                log.info(":pattern: only the %s-subset scan found images", choice)
+            self._pattern_load(found, valid[choice])
+            return
+
+        if subset == "cli":
+            self._pattern_choice = {"found": found, "valid": valid}
+            self.state_changed.emit()
+            return
+        from .dialogs import PatternSubsetDialog
+        dlg = PatternSubsetDialog(
+            {n: len(v) for n, v in zip(self.axis_names, self.axis_values)},
+            {c: {n: len(v) for n, v in cfg.axes.items()} for c, cfg in valid.items()},
+            parent=self.window(),
+        )
+        try:
+            dlg.exec()
+            choice = dlg.choice
+        finally:
+            _dispose(dlg)
+        self.setFocus()
+        self._resolve_pattern_choice(found, valid, choice)
+
+    def _pick_new_values(self, found: dict, keep: Config,
+                         new_vals: dict[str, list[str]]) -> None:
+        """`pattern.subset: smart` found values the old pattern lacked: let
+        the user tick which to load, in the value picker.
+
+        The picker shows the axes with new values (current values ticked,
+        new ones unticked) and the axes the new pattern adds (all ticked).
+        """
+        from .config import _auto_keys
+        from .dialogs import ValuesDialog
+        names = [n for n in keep.axes if n in new_vals or n not in self.axis_names]
+        current = {n: list(keep.axes[n]) for n in names}
+        on_disk = {n: current[n] + new_vals.get(n, []) for n in names}
+        dlg = ValuesDialog(current, on_disk, title="New values", apply_text="Load",
+                           parent=self.window())
+        try:
+            accepted = dlg.exec() == QDialog.DialogCode.Accepted
+            chosen = dlg.values()
+        finally:
+            _dispose(dlg)
+        self.setFocus()
+        if not accepted:
+            self._pattern_abort("pattern unchanged", found["conn"])
+            return
+        axes = {n: chosen.get(n, vals) for n, vals in keep.axes.items()}
+        self._pattern_load(found, Config(template=keep.template, axes=axes,
+                                         keys=_auto_keys(axes), remote=keep.remote))
+
+    def _resolve_pattern_choice(self, found: dict, valid: dict, choice: str | None):
+        """Go on with the subset *choice* ("keep" / "ignore"), or None to cancel."""
+        self._pattern_choice = None
+        if choice not in valid:
+            self._pattern_abort("pattern unchanged", found["conn"])
+            return
+        self._pattern_load(found, valid[choice])
+
+    def _pattern_choice_key(self, event: QKeyEvent) -> None:
+        """Answer the status-bar question of `pattern.subset: cli`."""
+        pc = self._pattern_choice
+        k, mods = event.key(), event.modifiers()
+        if k in (Qt.Key_K, Qt.Key_Return, Qt.Key_Enter):
+            self._resolve_pattern_choice(pc["found"], pc["valid"], "keep")
+        elif k == Qt.Key_I:
+            self._resolve_pattern_choice(pc["found"], pc["valid"], "ignore")
+        elif k == Qt.Key_Escape or (k == Qt.Key_C and mods == Qt.ControlModifier):
+            self._resolve_pattern_choice(pc["found"], pc["valid"], None)
+
+    def pattern_choice_text(self) -> tuple[str, str]:
+        """Status-bar text of the pending subset question: (prompt, details)."""
+        valid = self._pattern_choice["valid"]
+        current = {n: len(v) for n, v in zip(self.axis_names, self.axis_values)}
+        now = _n_combos(self.axis_values)
+        label = {"keep": "keep subset", "ignore": "ignore subset"}
+        prompt, details = [], []
+        for choice, key in (("keep", "k/Enter"), ("ignore", "i")):
+            axes = {n: len(v) for n, v in valid[choice].axes.items()}
+            prompt.append(f"{label[choice]}: {_images_with_factor(_n_combos(axes), now)}  [{key}]")
+            changes = _axis_count_changes(current, axes)
+            details.append(f"{choice}: {'  '.join(changes) or 'same axes'}")
+        prompt.append("cancel [Esc]")
+        return ":pattern  " + "   ·   ".join(prompt), "   ·   ".join(details)
+
+    def _pattern_load(self, found: dict, config: Config) -> None:
+        """Load (local) or download (remote) the images of *config* in a worker."""
+        self._pattern_choice = None
+        conn = found["conn"]
+        # Same host as now: download into the current cache, seeded with the
+        # mtimes of the files already there, so only new or changed files are
+        # fetched (and _apply_pattern can reuse their pixmaps).
+        reuse_remote = None
+        old = self.config.remote
+        if (config.remote is not None and old is not None and self._remote_tmpdir is not None
+                and (old.host, old.user, old.port)
+                == (config.remote.host, config.remote.user, config.remote.port)):
+            reuse_remote = (self._remote_tmpdir,
+                            {self._key_to_path(k): mt for k, mt in self._remote_mtimes.items()})
+        cancel_event = self._pattern_progress_dialog("Loading…")
+
+        def _worker():
+            def _check():
+                if cancel_event.is_set():
+                    raise _Cancelled()
+
+            try:
+                self._pattern_result.emit(
+                    self._materialize_pattern(config, conn, _check, reuse_remote))
             except _Cancelled:
                 self._pattern_result.emit(None)
             except Exception as e:
                 self._pattern_result.emit(e)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _materialize_pattern(self, config: Config, conn: list, check,
+                             reuse_remote: tuple[str, dict[str, float]] | None = None) -> dict:
+        """Map every key of *config* to a local file, downloading remote ones.
+
+        *reuse_remote* is `(tmpdir, {remote path: mtime})` of the current
+        session's cache, when the new pattern is on the same host: files
+        found there unchanged are not downloaded again.  Runs in the pattern
+        worker; the result goes to :meth:`_apply_pattern`.
+        """
+        from itertools import product as _product
+        axis_names = list(config.axes.keys())
+        axis_values = list(config.axes.values())
+        n = _n_combos(axis_values)
+        tmpdir: str | None = None
+        mtimes: dict = {}
+        plural = "s" if n != 1 else ""
+        check()
+        if config.remote is not None:
+            import tempfile
+            from .loader import local_cache_path, poll_remote_with_sftp
+            if reuse_remote is not None:
+                tmpdir, by_path = reuse_remote
+                for combo in _product(*axis_values):
+                    rpath = config.template.format(**dict(zip(axis_names, combo)))
+                    if rpath in by_path:
+                        key = tuple(vals.index(v) for vals, v in zip(axis_values, combo))
+                        mtimes[key] = by_path[rpath]
+                self._pattern_progress.emit(0, n, f"Checking {n} image{plural}…")
+            else:
+                tmpdir = tempfile.mkdtemp(prefix="juxt_")
+                self._pattern_progress.emit(0, n, f"Downloading {n} image{plural}…")
+
+            def _dl_progress(i, _n):
+                check()
+                self._pattern_progress.emit(i + 1, n, "")
+
+            poll_remote_with_sftp(config.template, config.axes, tmpdir, conn[1], mtimes,
+                                  on_progress=_dl_progress)
+            key_to_path = {}
+            for combo in _product(*axis_values):
+                rpath = config.template.format(**dict(zip(axis_names, combo)))
+                key = tuple(vals.index(v) for vals, v in zip(axis_values, combo))
+                key_to_path[key] = str(local_cache_path(tmpdir, rpath))
+        else:
+            self._pattern_progress.emit(0, n, f"Loading {n} image{plural}…")
+            key_to_path = {
+                tuple(vals.index(v) for vals, v in zip(axis_values, combo)):
+                config.template.format(**dict(zip(axis_names, combo)))
+                for combo in _product(*axis_values)
+            }
+        return {
+            "config": config,
+            "key_to_path": key_to_path,
+            "conn": conn,
+            "tmpdir": tmpdir,
+            "mtimes": mtimes,
+            "n_images": n,
+        }
+
+    def _loaded_pixmaps_by_path(self) -> dict[str, QPixmap]:
+        """Every image read so far, keyed by the normalised local file it came
+        from (the cache copy, for a remote session)."""
+        from .loader import local_cache_path
+        out: dict[str, QPixmap] = {}
+        remote = self.config.remote is not None
+        if remote and self._remote_tmpdir is None:
+            return out
+        for key, pm in self.pixmaps.items():
+            if isinstance(pm, MissingPixmap) or pm.isNull():
+                continue
+            path = self._key_to_path(key)
+            if remote:
+                path = str(local_cache_path(self._remote_tmpdir, path))
+            out[os.path.normpath(path)] = pm
+        return out
 
     def _apply_pattern(self, result: object):
         self._reload_in_progress = False
@@ -3176,8 +3714,23 @@ class ImageView(QGraphicsView):
         n_images: int = payload.get("n_images", len(key_to_path))
 
         from .loader import _error_pixmap
+        # Images already on show are reused rather than read again; after
+        # "keep subset" that is most of them.
+        loaded = self._loaded_pixmaps_by_path()
         new_pixmaps: dict[tuple, QPixmap] = {}
-        for i, (key, local_path) in enumerate(key_to_path.items()):
+        todo: list[tuple[tuple, str]] = []
+        for key, local_path in key_to_path.items():
+            pm = loaded.get(os.path.normpath(local_path))
+            if pm is not None:
+                new_pixmaps[key] = pm
+            else:
+                todo.append((key, local_path))
+        if new_pixmaps:
+            n_images = len(todo)
+            self._pattern_progress.emit(
+                0, n_images, f"Loading {n_images} new image{'s' if n_images != 1 else ''} "
+                             f"({len(new_pixmaps)} already loaded)…")
+        for i, (key, local_path) in enumerate(todo):
             if self._pattern_dlg is not None and self._pattern_dlg.wasCanceled():
                 _close_dlg()
                 if self._watching and self.config.remote is not None:
@@ -3316,6 +3869,11 @@ class ImageView(QGraphicsView):
     def keyPressEvent(self, event: QKeyEvent):
         k = event.key()
         mods = event.modifiers()
+
+        # A pending :pattern subset question takes every key until answered.
+        if self._pattern_choice is not None:
+            self._pattern_choice_key(event)
+            return
 
         # Ctrl+C copies a sidebar text selection when there is one.  Checked
         # before everything else so it wins over an axis key or a binding on
@@ -3503,7 +4061,8 @@ class ImageView(QGraphicsView):
         """
         menu = QMenu(self)
         for label, action in (("Copy image &path", "copy-path"),
-                              ("Copy &image", "copy-image")):
+                              ("Copy &image", "copy-image"),
+                              ("&Reveal in file manager", "reveal")):
             act = menu.addAction(label)
             chord = self._shortcut_for(action)
             if chord:
@@ -3548,6 +4107,7 @@ class InfoPanel(QTextEdit):
 
     value_clicked = Signal(int, int)  # axis index, value index
     path_clicked = Signal()
+    path_reveal_clicked = Signal()    # Ctrl+click on the path
     edit_clicked = Signal(int)        # axis index: open its value picker
 
     def __init__(self, parent=None):
@@ -3570,6 +4130,7 @@ class InfoPanel(QTextEdit):
         self._expanded: dict[str, bool] = {}
         self._press_axis: int | None = None
         self._press_path = False
+        self._press_reveal = False
         self._press_edit: int | None = None
         # href → full text, for every value the last layout had to elide.
         self._elided: dict[str, str] = {}
@@ -3604,6 +4165,7 @@ class InfoPanel(QTextEdit):
             w.view.setFocus()
         self._press_axis = None
         self._press_path = False
+        self._press_reveal = False
         self._press_edit = None
         if event.button() != Qt.MouseButton.LeftButton:
             return
@@ -3612,6 +4174,8 @@ class InfoPanel(QTextEdit):
             self.value_clicked.emit(*target)
         elif href == _PATH_HREF:
             self._press_path = True
+            # Qt maps the Command key to ControlModifier on macOS.
+            self._press_reveal = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         elif _parse_edit_href(href) is not None:
             self._press_edit = _parse_edit_href(href)
         else:
@@ -3624,6 +4188,7 @@ class InfoPanel(QTextEdit):
         # not rebuild the document under the selection.
         axis, self._press_axis = self._press_axis, None
         on_path, self._press_path = self._press_path, False
+        reveal, self._press_reveal = self._press_reveal, False
         edit, self._press_edit = self._press_edit, None
         if (event.button() != Qt.MouseButton.LeftButton
                 or self.textCursor().hasSelection()):
@@ -3632,7 +4197,7 @@ class InfoPanel(QTextEdit):
         if axis is not None and _parse_axis_href(href) == axis:
             self.toggle_axis(axis)
         elif on_path and href == _PATH_HREF:
-            self.path_clicked.emit()
+            (self.path_reveal_clicked if reveal else self.path_clicked).emit()
         elif edit is not None and _parse_edit_href(href) == edit:
             self.edit_clicked.emit(edit)
 
@@ -3655,7 +4220,7 @@ class InfoPanel(QTextEdit):
         if event.type() == QEvent.Type.ToolTip:
             href = self.anchorAt(event.pos())
             if href == _PATH_HREF:
-                full = "click to copy"
+                full = "click to copy  ·  Ctrl+click to reveal in file manager"
             elif _parse_edit_href(href) is not None:
                 full = "add or remove values  (:values)"
             else:
@@ -4086,6 +4651,7 @@ class MainWindow(QMainWindow):
         skip_missing: bool = False,
         dim_missing: bool = False,
         sidebar_copy: str = "selected",
+        pattern_subset: str = "smart",
         keybindings: dict[str, str] | None = None,
         highlight: Highlight | None = None,
         highlight_candidates: Highlight | None = None,
@@ -4128,6 +4694,7 @@ class MainWindow(QMainWindow):
             skip_missing=skip_missing,
             dim_missing=dim_missing,
             sidebar_copy=sidebar_copy,
+            pattern_subset=pattern_subset,
             keybindings=keybindings,
             grid=grid,
             grid_values=grid_values,
@@ -4144,14 +4711,32 @@ class MainWindow(QMainWindow):
         bar.addWidget(self._status_label, 1)
         self._help_label = QLabel()
         bar.addPermanentWidget(self._help_label)
+        # What the prompt shows of a free-text argument, for placing the caret
+        # on a click: (text before it, query, caret, start, end).
+        self._prompt_map: tuple[str, str, int, int, int] | None = None
+        self._status_label.clicked.connect(self._on_status_clicked)
         self._style_status_bar()
         bar.setVisible(show_status_bar)
 
         self._info_panel = InfoPanel()
         self._info_panel.set_highlight(self._hl)
         self._info_panel.set_value_list_style(sidebar_separator, sidebar_list_larger_than)
-        self._info_dock = QDockWidget("Info", self)
-        self._info_dock.setWidget(self._info_panel)
+        self._info_dock = QDockWidget("Axes", self)
+        self._info_cli_button = QPushButton("copy CLI command")
+        self._info_cli_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._info_cli_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._info_cli_button.setToolTip(
+            "copy a juxt command line that reopens this view  (:copy-cli-command)")
+        self._info_cli_button.clicked.connect(self.view.copy_cli_command)
+        info_box = QWidget()
+        info_layout = QVBoxLayout(info_box)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(0)
+        info_layout.addWidget(self._info_panel, 1)
+        info_layout.addWidget(self._info_cli_button)
+        self._info_box = info_box
+        self._style_info_button()
+        self._info_dock.setWidget(info_box)
         self._info_dock.setAllowedAreas(
             Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.LeftDockWidgetArea
         )
@@ -4165,6 +4750,7 @@ class MainWindow(QMainWindow):
             self._info_panel.refresh(self.view)
         self._info_panel.value_clicked.connect(self.view.goto_value)
         self._info_panel.path_clicked.connect(self.view.copy_path)
+        self._info_panel.path_reveal_clicked.connect(self.view.reveal_path)
         self._info_panel.edit_clicked.connect(self.view.open_values_dialog)
 
         # Docked opposite the info sidebar so the two can be open at once.
@@ -4250,10 +4836,20 @@ class MainWindow(QMainWindow):
             self._style_status_bar()
             self.view.apply_theme()
             self._info_panel.apply_theme()
+            self._style_info_button()
             self._shortcut_panel.apply_theme()
             self._update_status()
         finally:
             self._applying_theme = False
+
+    def _style_info_button(self) -> None:
+        t = _theme.current()
+        self._info_cli_button.setStyleSheet(
+            f"QPushButton {{ background: {t.panel}; color: {t.dim}; border: none; "
+            "padding: 4px 12px; text-align: left; "
+            "font-family: 'Courier New', monospace; font-size: 8pt; }"
+            f"QPushButton:hover {{ color: {t.muted}; }}"
+        )
 
     def _on_theme_requested(self, setting: str) -> None:
         if not setting:     # flip between the two
@@ -4274,7 +4870,8 @@ class MainWindow(QMainWindow):
     def _update_status(self):
         v = self.view
         sb = self.statusBar()
-        interactive = v._cmd is not None or v._sel is not None
+        interactive = (v._cmd is not None or v._sel is not None
+                       or v._pattern_choice is not None)
         if interactive:
             self._bar_hide_timer.stop()
             if not sb.isVisible():
@@ -4282,7 +4879,16 @@ class MainWindow(QMainWindow):
                 sb.show()
         elif self._bar_auto_shown and not self._bar_hide_timer.isActive():
             self._bar_hide_timer.start()
-        self._help_label.setText("")
+        self._set_help(self._image_count_text())
+        self._prompt_map = None
+
+        if v._pattern_choice is not None:
+            if self._spinner_timer.isActive():
+                self._spinner_timer.stop()
+            prompt, details = v.pattern_choice_text()
+            self._status_label.setText(prompt)
+            self._set_help(details)
+            return
 
         if v._reload_in_progress:
             if not self._spinner_timer.isActive():
@@ -4323,23 +4929,27 @@ class MainWindow(QMainWindow):
                 desc = _COMMAND_HELP.get(hlit, "") if hlit else ""
             else:
                 verb = v._cmd["verb"]
+                desc = _COMMAND_HELP.get(verb, "")
+                help_text = ("  ".join(v._tab_matches) if v._tab_matches
+                             else f"( {desc} )" if desc else "")
+                caret = v._cmd.get("caret", len(query))
                 if "axis" in v._cmd:
-                    shown = _cmd_query_display(query, v._cmd.get("caret", len(query)))
-                    prompt = f":{verb} {v._cmd['axis']}  {shown}"
+                    head = f":{verb} {v._cmd['axis']}  "
+                    prompt = head + self._shown_query(head, query, caret, help_text)
                 elif verb in _FREE_TEXT_ARGS:
-                    caret = v._cmd.get("caret", len(query))
-                    shown = _cmd_query_display(query, caret)
-                    prompt = f":{verb} {shown}"
+                    head = f":{verb} "
+                    shown = self._shown_query(head, query, caret, help_text)
+                    prompt = head + shown
                     # Colour each {placeholder} so a multi-axis template stays
                     # readable while it is being typed.
-                    prompt_html = _sp(f":{verb} ") + placeholder_html(shown)
+                    prompt_html = _sp(head) + placeholder_html(shown)
                 else:
                     prompt = f":{verb} {query}▌"
-                desc = _COMMAND_HELP.get(v._cmd["verb"], "")
+            share = self._HELP_SHARE_EDITING if self._prompt_map is not None else None
             if v._tab_matches:
-                self._help_label.setText("  ".join(v._tab_matches))
+                self._set_help("  ".join(v._tab_matches), share)
             elif desc:
-                self._help_label.setText(f"( {desc} )")
+                self._set_help(f"( {desc} )", share)
             if candidates:
                 cand_html = _candidate_html(candidates, cursor, self._hl_candidates)
                 head = prompt_html if prompt_html is not None else _sp(prompt)
@@ -4437,6 +5047,76 @@ class MainWindow(QMainWindow):
                 if key_hints:
                     parts.append(key_hints)
                 self._status_label.setText(sep.join(parts))
+
+    # Share of the status bar the right-hand hint may take, so the prompt
+    # on the left keeps most of the room; less while a path or other free
+    # text is being edited, which wants all the width it can get.
+    _HELP_SHARE = 0.4
+    _HELP_SHARE_EDITING = 0.25
+    # Horizontal padding of the hint label (see _style_status_bar), and the
+    # status-bar width the prompt's text cannot use besides the hint: its
+    # own padding, the bar's margins and spacing, the size grip (measured
+    # 48px) plus slack for font rounding on other platforms.
+    _HELP_PAD_PX = 24
+    _BAR_INSET_PX = 64
+
+    def _elided_help(self, text: str, share: float | None = None) -> str:
+        if not text:
+            return ""
+        cap = max(80, int(self.statusBar().width() * (share or self._HELP_SHARE)))
+        return self._help_label.fontMetrics().elidedText(
+            text, Qt.TextElideMode.ElideRight, cap)
+
+    def _set_help(self, text: str, share: float | None = None) -> None:
+        """Show *text* on the right of the status bar, cut to its *share*."""
+        self._help_label.setText(self._elided_help(text, share))
+
+    def _shown_query(self, head: str, query: str, caret: int, help_text: str) -> str:
+        """The part of a free-text *query* that fits after *head*, with the
+        caret drawn in; as wide as the status bar allows next to *help_text*."""
+        fm = self._status_label.fontMetrics()
+        shown_help = self._elided_help(help_text, self._HELP_SHARE_EDITING)
+        help_w = self._help_label.fontMetrics().horizontalAdvance(shown_help) + self._HELP_PAD_PX
+        budget = self.statusBar().width() - help_w - self._BAR_INSET_PX
+
+        def fits(n: int) -> bool:   # measured, not estimated from a glyph width
+            return fm.horizontalAdvance(head + _cmd_query_display(query, caret, n)) <= budget
+
+        n = len(query)
+        if not fits(n):
+            lo, hi = 1, n          # the most characters that still fit
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                lo, hi = (mid, hi) if fits(mid) else (lo, mid - 1)
+            n = max(lo, 20)
+        start, end = _cmd_query_window(query, caret, n)
+        self._prompt_map = (head, query, caret, start, end)
+        return _cmd_query_display(query, caret, n)
+
+    def _on_status_clicked(self, x: float) -> None:
+        """A click in a free-text argument moves the caret there."""
+        m = self._prompt_map
+        if m is None or self.view._cmd is None:
+            return
+        head, query, caret, start, end = m
+        fm = self._status_label.fontMetrics()
+        ellipsis = "…" if start > 0 else ""
+
+        def x_before(i: int) -> int:   # x of the gap before query[i]
+            shown = (query[start:i] if i <= caret
+                     else query[start:caret] + "▌" + query[caret:i])
+            return fm.horizontalAdvance(head + ellipsis + shown)
+
+        self.view.set_cmd_caret(min(range(start, end + 1), key=lambda i: abs(x_before(i) - x)))
+
+    def _image_count_text(self) -> str:
+        """`216 images`, or `210/216 images` while some have no file."""
+        v = self.view
+        total = _n_combos(v.axis_values)
+        loaded = min(total, sum(1 for pm in v.pixmaps.values()
+                                if not isinstance(pm, MissingPixmap) and not pm.isNull()))
+        noun = "image" if total == 1 else "images"
+        return f"{loaded} {noun}" if loaded == total else f"{loaded}/{total} {noun}"
 
     def showEvent(self, event):
         super().showEvent(event)

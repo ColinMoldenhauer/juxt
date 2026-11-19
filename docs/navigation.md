@@ -197,9 +197,11 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:grid-sharey [on\|off]` | Toggle or set synchronized vertical pan/zoom across cells (default: on) |
 | `:reload` | Re-detect axes and reload images from the current source |
 | `:copy-path` | Copy the current image's file path to the clipboard |
+| `:copy-cli-command` | Copy a `juxt` command line that reopens this view: the template, every axis pinned to its current values (so an interactively picked or `:subset`-edited selection returns without a scan or dialogue), the locked `←/→` / `↑/↓` axes, and the grid view. Also on the `copy CLI command` button at the bottom of the info sidebar. The cursor position, custom key letters, the session name and an SSH port or key file are not part of it |
+| `:reveal` | Show the current image file in the system file manager |
 | `:copy-image` | Copy the current image to the clipboard |
 | `:write [PATH]` / `:w [PATH]` | Write the current config to a YAML file; opens a file dialog if PATH is omitted |
-| `:pattern PATH` | Change the template / source path without restarting (see below) |
+| `:pattern PATH` | Change the template / source path without restarting (see below); `--keep-subset` / `--ignore-subset` decide what happens to the current values |
 | `:subset AXIS [VALUES]` | Edit the values of an axis: delete, reorder, rename or add (see below) |
 | `:subset-interactive` | Pick the values of every axis from those found on disk, one column per axis (see below) |
 | `:values AXIS` | Pick the values of one axis from those found on disk: add or remove (see below) |
@@ -214,7 +216,36 @@ A command that takes an argument is entered in two steps: type its name and pres
 
 `:pattern` accepts the same forms as the CLI `PATH` argument: a local template with `{placeholders}`, a local directory, a YAML config file, or a remote SSH path. The argument is pre-filled with the current template so you can edit it in place. A leading `~` is expanded to your home directory, here as well as in the `PATH` argument and in YAML configs. A progress dialog blocks the window while images are loaded or downloaded.
 
-Free-text arguments (`:pattern`, `:write`) support full cursor editing: `←`/`→` move the caret, `Home`/`End` jump to the ends, `Delete` removes the character at the caret. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session.
+#### Keeping the current subset
+
+`:pattern` is mostly used to refine the pattern: turn a fixed directory into a new `{placeholder}`, or fix a typo. If you picked values beforehand (with `--subset-interactive`, `:values`, `:subset` or `--NAME VALUE` pins), a fresh scan would bring every value on disk back. So by default, axes the new template keeps (placeholders of the same name) stay pinned to their current values, and only new placeholders are scanned. Images already loaded are reused, so only the new ones are read.
+
+Widening the pattern can also turn up values the old pattern never had on disk, e.g. a `dmm` that only exists in the sibling directory a new `{ref}` now reaches. Then juxt opens the value picker on the axes with such values (current values ticked, new ones unticked) and on the new axes (all ticked), so you choose which to load. Values you had left out before are not offered again; they stay available in `:values`. If the tree is symmetric, so the new axis only multiplies the image count, nothing is asked.
+
+This is the `smart` mode of `pattern.subset` in `~/.juxt/settings.yaml`:
+
+```yaml
+pattern:
+  subset: smart    # smart | keep | ignore | gui | cli
+```
+
+| Mode | Behaviour |
+|---|---|
+| `smart` (default) | Keep the subset; open the value picker for values the old pattern did not have |
+| `keep` | Keep the subset, never ask; new values stay available in `:values` |
+| `ignore` | Scan the disk afresh for every axis |
+| `gui` | Ask keep or ignore in a dialogue listing each axis's value count and the image count of either choice |
+| `cli` | Ask the same in the status bar: `k` or `Enter` keeps the subset, `i` ignores it, `Esc` cancels |
+
+A pattern with no placeholder in common with the current one, a directory, a YAML config or a wildcard is always scanned afresh. Append `--keep-subset` or `--ignore-subset` to the pattern to override the setting for one run:
+
+```
+:pattern plots/{run}/{sensor}/{date}.png --ignore-subset
+```
+
+`smart`, `gui` and `cli` scan the new pattern both ways (and `smart` the old one as well) before loading anything, so they take a little longer to start than `keep`.
+
+Free-text arguments (`:pattern`, `:write`, …) support full cursor editing: `←`/`→` move the caret, `Ctrl+←`/`Ctrl+→` jump a word, `Home`/`End` jump to the ends, `Delete` removes the character at the caret, and `Ctrl+Backspace`/`Ctrl+Delete` remove the word before or after it. A word runs over letters, digits and `_`, so `sm_vs_peatclsm` goes in one stroke. A click in the text puts the caret there. The argument gets the full width of the status bar, apart from a hint on the right. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session. For `:remove-value`, `:remove-axis` and `:change-key`, `Tab` completes the axis name instead, and after it (`:remove-value AXIS `) one of that axis's values; several matches are listed on the right.
 
 #### Placeholder-aware completion
 
@@ -417,7 +448,7 @@ The status bar at the bottom shows:
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode; description of the highlighted command shown right-aligned
 
-Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted. Values in the sidebar are clickable: a left click jumps to that value and focuses its axis. Clicking the path copies it to the clipboard (same as `:copy-path`).
+Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted. Values in the sidebar are clickable: a left click jumps to that value and focuses its axis. Clicking the path copies it to the clipboard (same as `:copy-path`); `Ctrl+click` shows the file in the system file manager (same as `:reveal`).
 
 ### Highlight format
 

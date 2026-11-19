@@ -3,7 +3,8 @@
 The grid builder (``Ctrl+Shift+G`` / ``:grid-dialog``), a point-and-click front
 end for the ``:grid`` command family, and the value picker
 (``:subset-interactive``, ``--subset-interactive``, the ``[+]`` next to an axis
-in the info sidebar), which adds and removes the values of one or all axes.
+in the info sidebar), which adds and removes the values of one or all axes,
+and the subset question of `:pattern` (`pattern.subset: gui`).
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -856,4 +858,76 @@ class ValuesDialog(QDialog):
         if not all(p.values() for p in self.panels):
             return
         log.debug("values dialog: %s", self.values())
+        self.accept()
+
+
+class PatternSubsetDialog(QDialog):
+    """Ask whether `:pattern` keeps the current subset of the shared axes.
+
+    *current* maps each axis on show to its number of values; *options* maps
+    "keep" and "ignore" to the value counts per axis that choice would load.
+    After ``exec()``, :attr:`choice` is "keep", "ignore", or None (cancelled).
+    """
+
+    _LABELS = {"keep": "&Keep", "ignore": "&Ignore"}
+
+    def __init__(self, current: dict[str, int], options: dict[str, dict[str, int]],
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self.choice: str | None = None
+        self.setWindowTitle("Keep subset?")
+        self.setModal(True)
+        t = _theme.current()
+        self.setStyleSheet(_STYLE.substitute(vars(t))
+                           + f"QLabel#changed {{ color: {t.accent}; }}"
+                           + f"QLabel#head {{ color: {t.header}; }}")
+
+        # One column per state: what is on show now and what each choice
+        # loads, with the button for it at the foot of its column (Cancel,
+        # which keeps things as they are, under "now").
+        choices = [c for c in ("keep", "ignore") if c in options]
+        grid = QGridLayout(self)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(2)
+        for col, text in enumerate(["axis", "now", *choices]):
+            head = QLabel(text)
+            head.setObjectName("head")
+            grid.addWidget(head, 0, col)
+        names = list(dict.fromkeys(
+            [n for c in choices for n in options[c]] + list(current)))
+        for row, name in enumerate(names, start=1):
+            grid.addWidget(QLabel(name), row, 0)
+            grid.addWidget(QLabel(str(current.get(name, "–"))), row, 1)
+            for col, c in enumerate(choices, start=2):
+                n = options[c].get(name)
+                cell = QLabel("–" if n is None else str(n))
+                if n != current.get(name):
+                    cell.setObjectName("changed")
+                grid.addWidget(cell, row, col)
+        row = len(names) + 1
+        now = math.prod(current.values())
+        grid.addWidget(QLabel("images"), row, 0)
+        grid.addWidget(QLabel(str(now)), row, 1)
+        for col, c in enumerate(choices, start=2):
+            n = math.prod(options[c].values())
+            factor = f" (×{n / now:.3g})" if now and n != now else ""
+            grid.addWidget(QLabel(f"{n}{factor}"), row, col)
+
+        row += 1
+        grid.setRowMinimumHeight(row, 10)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        grid.addWidget(cancel, row + 1, 1)
+        self.choice_buttons: dict[str, QPushButton] = {}
+        for col, c in enumerate(choices, start=2):
+            btn = QPushButton(self._LABELS[c])
+            btn.clicked.connect(lambda _checked=False, c=c: self._choose(c))
+            grid.addWidget(btn, row + 1, col)
+            self.choice_buttons[c] = btn
+        first = self.choice_buttons[choices[0]]
+        first.setDefault(True)
+        first.setFocus()
+
+    def _choose(self, choice: str) -> None:
+        self.choice = choice
         self.accept()

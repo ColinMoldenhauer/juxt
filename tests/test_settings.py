@@ -202,6 +202,22 @@ class TestSidebarCopy:
         s = self._load(tmp_path, "sidebar:\n  copy: off\n  dim_missing: true\n")
         assert (s.sidebar_copy, s.dim_missing) == ("off", True)
 
+    def test_pattern_subset_defaults_to_smart(self, tmp_path):
+        assert self._load(tmp_path, "seek:\n  greedy: true\n").pattern_subset == "smart"
+
+    @pytest.mark.parametrize("mode", ["smart", "keep", "ignore", "gui", "cli"])
+    def test_pattern_subset_modes(self, tmp_path, mode):
+        assert self._load(tmp_path, f"pattern:\n  subset: {mode}\n").pattern_subset == mode
+
+    def test_invalid_pattern_subset_falls_back_to_smart(self, tmp_path):
+        assert self._load(tmp_path, "pattern:\n  subset: maybe\n").pattern_subset == "smart"
+
+    def test_sidebar_opens_by_default(self, tmp_path):
+        assert self._load(tmp_path, "seek:\n  greedy: true\n").sidebar_open is True
+
+    def test_sidebar_open_can_be_turned_off(self, tmp_path):
+        assert self._load(tmp_path, "sidebar:\n  open: false\n").sidebar_open is False
+
     def test_generated_template_documents_it(self, tmp_path):
         from juxt.settings import ensure_settings_file
 

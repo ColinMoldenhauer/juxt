@@ -334,6 +334,43 @@ class TestInfoPanelLinks:
             for j in range(len(vals)):
                 assert f'href="juxt:value/{i}/{j}"' in html
 
+    def _click_path(self, panel, image_view, qtbot, modifier):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+
+        panel.resize(400, 600)
+        panel.show()
+        qtbot.waitExposed(panel)
+        cur = panel.document().find(image_view._key_to_path(image_view._key()))
+        assert not cur.isNull()
+        cur.setPosition(cur.selectionStart())   # find() leaves the cursor at the end
+        rect = panel.cursorRect(cur)
+        pos = QPoint(rect.left() + 3, rect.center().y())
+        QTest.mouseClick(panel.viewport(), Qt.MouseButton.LeftButton, modifier, pos)
+
+    def test_path_click_copies(self, image_view, qtbot):
+        from PySide6.QtCore import Qt
+
+        panel = self._panel(image_view, qtbot)
+        with qtbot.waitSignal(panel.path_clicked, timeout=500):
+            self._click_path(panel, image_view, qtbot, Qt.KeyboardModifier.NoModifier)
+
+    def test_ctrl_click_on_path_reveals(self, image_view, qtbot):
+        from PySide6.QtCore import Qt
+
+        panel = self._panel(image_view, qtbot)
+        with qtbot.waitSignal(panel.path_reveal_clicked, timeout=500):
+            self._click_path(panel, image_view, qtbot, Qt.KeyboardModifier.ControlModifier)
+
+    def test_reveal_path_hands_the_current_file_to_the_file_manager(
+        self, image_view, monkeypatch
+    ):
+        seen = []
+        monkeypatch.setattr("juxt.viewer._reveal_in_file_manager",
+                            lambda p: seen.append(p) or True)
+        image_view.reveal_path()
+        assert seen == [image_view._key_to_path(image_view._key())]
+
     def test_click_navigates(self, image_view, qtbot):
         panel = self._panel(image_view, qtbot)
         panel.value_clicked.emit(1, 1)
@@ -1925,9 +1962,9 @@ class TestImageContextMenu:
         """The menu itself — built without entering QMenu.exec's event loop."""
         return view.build_image_menu()
 
-    def test_menu_offers_both_copy_actions(self, image_view):
+    def test_menu_offers_copy_and_reveal_actions(self, image_view):
         labels = [a.text() for a in self._menu(image_view).actions()]
-        assert labels == ["Copy image &path", "Copy &image"]
+        assert labels == ["Copy image &path", "Copy &image", "&Reveal in file manager"]
 
     def test_menu_shows_the_bound_shortcut(self, viewer_config, mini_pixmaps, qtbot):
         from juxt.viewer import ImageView
@@ -2680,6 +2717,7 @@ class TestSubsetCommand:
 class TestSubsetPrompt:
     def test_status_bar_shows_axis_and_values(self, keys_window):
         w = keys_window
+        w.resize(1400, 800)         # room for the prompt beside the shortcut dock
         w.view._cmd_execute("subset sensor")
         w._update_status()
         text = w._status_label.text().replace("&nbsp;", " ")
@@ -3067,3 +3105,453 @@ class TestSetValuesAcrossAxes:
     def test_empty_axis_is_refused(self, view):
         view._set_values({0: ["A"], 1: []})
         assert view.axis_values == [["A", "B"], ["d1", "d2"]]
+
+
+# ---------------------------------------------------------------------------
+# :copy-cli-command
+# ---------------------------------------------------------------------------
+
+class TestCopyCliCommand:
+    @staticmethod
+    def _reparse(monkeypatch, cmd):
+        import shlex
+
+        from juxt.__main__ import _parse_args
+
+        argv = shlex.split(cmd)
+        assert argv[0] == "juxt"
+        monkeypatch.setattr("sys.argv", argv)
+        return _parse_args()
+
+    def test_pins_every_axis_to_its_current_values(self, image_view, monkeypatch):
+        args, pins = self._reparse(monkeypatch, image_view.cli_command())
+        assert args.path == image_view.config.template
+        assert pins == dict(zip(image_view.axis_names, image_view.axis_values))
+
+    def test_follows_a_subset(self, image_view, monkeypatch):
+        image_view.axis_values[0] = image_view.axis_values[0][::-1]
+        _args, pins = self._reparse(monkeypatch, image_view.cli_command())
+        assert pins[image_view.axis_names[0]] == image_view.axis_values[0]
+
+    def test_awkward_values_survive_the_shell(self, image_view, monkeypatch):
+        monkeypatch.setattr("juxt.viewer.sys.platform", "linux")   # POSIX quoting
+        image_view.axis_values[0] = ["a b", "it's", "x*y"]
+        _args, pins = self._reparse(monkeypatch, image_view.cli_command())
+        assert pins[image_view.axis_names[0]] == ["a b", "it's", "x*y"]
+
+    def test_carries_locked_axes_and_grid(self, image_view, monkeypatch):
+        name = image_view.axis_names[0]
+        image_view._cmd_execute(f"axis-h {image_view.axis_names[1]}")
+        image_view._enter_grid(0, [0], (1, 1))
+        image_view._grid_sharex = False
+        args, _pins = self._reparse(monkeypatch, image_view.cli_command())
+        assert args.axis_h == image_view.axis_names[1]
+        assert args.grid == name
+        assert args.grid_values == [image_view.axis_values[0][0]]
+        assert args.grid_layout == "1x1"
+        assert args.no_sharex is True and args.no_sharey is False
+
+    @pytest.mark.parametrize("arg, quoted", [
+        (r"C:\data\run_1\x.png", r"C:\data\run_1\x.png"),
+        ("it's", '"it\'s"'),
+        ("a,b", '"a,b"'),
+        ("a b", '"a b"'),
+        ("plots/{sensor}.png", '"plots/{sensor}.png"'),
+        ('say "hi"', '"say \\"hi\\""'),
+    ])
+    def test_windows_quoting(self, monkeypatch, arg, quoted):
+        from juxt.viewer import _shell_quote
+
+        monkeypatch.setattr("juxt.viewer.sys.platform", "win32")
+        assert _shell_quote(arg) == quoted
+
+    def test_remote_template_gets_a_host_prefix(self, image_view):
+        from juxt.config import RemoteConfig
+
+        image_view.config.remote = RemoteConfig(host="box", user="me")
+        import shlex
+
+        assert shlex.split(image_view.cli_command())[1] == f"me@box:{image_view.config.template}"
+
+    def test_command_copies_to_the_clipboard(self, image_view):
+        from PySide6.QtWidgets import QApplication
+
+        image_view._cmd_execute("copy-cli-command")
+        assert QApplication.clipboard().text() == image_view.cli_command()
+
+    def test_sidebar_button_copies_it(self, viewer_config, mini_pixmaps, qtbot):
+        from PySide6.QtWidgets import QApplication
+
+        from juxt.viewer import MainWindow
+
+        w = MainWindow(viewer_config, mini_pixmaps, watch=False)
+        qtbot.addWidget(w)
+        w._info_cli_button.click()
+        assert QApplication.clipboard().text() == w.view.cli_command()
+
+
+# ---------------------------------------------------------------------------
+# :pattern and the current subset (pattern.subset, --keep-subset / --ignore-subset)
+# ---------------------------------------------------------------------------
+
+class _PatternTree:
+    """`root/r1/{a}/{b}.png` with a subset a=[x, y], b=[p] on show; the new
+    pattern turns `r1` into `{ref}`.  r2 holds a value (`w`) r1 lacks."""
+
+    TREE = {"r1": (["x", "y", "z"], ["p", "q"]), "r2": (["x", "y", "w"], ["p", "q"])}
+
+    @pytest.fixture
+    def view(self, tmp_path, qtbot):
+        from PySide6.QtGui import QPixmap
+
+        from conftest import make_png
+        from juxt.config import Config, _auto_keys
+        from juxt.viewer import ImageView
+
+        for ref, (avals, bvals) in self.TREE.items():
+            for a in avals:
+                for b in bvals:
+                    f = tmp_path / ref / a / f"{b}.png"
+                    f.parent.mkdir(parents=True, exist_ok=True)
+                    f.write_bytes(make_png())
+        self.root = tmp_path.as_posix()
+        axes = {"a": ["x", "y"], "b": ["p"]}
+        template = f"{self.root}/r1/{{a}}/{{b}}.png"
+        pixmaps = {(i, 0): QPixmap(template.format(a=a, b="p")) for i, a in enumerate(axes["a"])}
+        v = ImageView(Config(template=template, axes=axes, keys=_auto_keys(axes)),
+                      pixmaps, watch=False)
+        qtbot.addWidget(v)
+        return v
+
+    @property
+    def new_pattern(self):
+        return f"{self.root}/{{ref}}/{{a}}/{{b}}.png"
+
+    @staticmethod
+    def _axes(v):
+        return {n: sorted(vs) for n, vs in zip(v.axis_names, v.axis_values)}
+
+    def _run(self, v, qtbot, subset):
+        with qtbot.waitSignal(v.config_changed, timeout=5000):
+            v._do_pattern(self.new_pattern, subset)
+
+
+
+class TestPatternSubset(_PatternTree):
+    def test_keep_pins_the_shared_axes(self, view, qtbot):
+        self._run(view, qtbot, "keep")
+        assert self._axes(view) == {"ref": ["r1", "r2"], "a": ["x", "y"], "b": ["p"]}
+        assert len(view.pixmaps) == 4
+
+    def test_images_on_show_are_not_read_again(self, view, qtbot, monkeypatch):
+        old = {view._key_to_path(k): pm.cacheKey() for k, pm in view.pixmaps.items()}
+        read = []
+        real = __import__("juxt.viewer", fromlist=["QPixmap"]).QPixmap
+        monkeypatch.setattr("juxt.viewer.QPixmap",
+                            lambda *a: (read.append(a[0]) if a and isinstance(a[0], str) else None)
+                            or real(*a))
+        self._run(view, qtbot, "keep")
+        reused = {view._key_to_path(k): pm.cacheKey() for k, pm in view.pixmaps.items()
+                  if view._key_to_path(k) in old}
+        assert reused == old
+        assert sorted(read) == sorted(p.replace("/r1/", "/r2/") for p in old)
+
+    def test_ignore_scans_everything_afresh(self, view, qtbot):
+        self._run(view, qtbot, "ignore")
+        assert self._axes(view) == {"ref": ["r1", "r2"], "a": ["w", "x", "y", "z"],
+                                    "b": ["p", "q"]}
+
+    def test_flags_override_the_setting(self, view, qtbot, monkeypatch):
+        monkeypatch.setattr("juxt.dialogs.PatternSubsetDialog.exec",
+                            lambda self: pytest.fail("asked despite a flag"))
+        view._pattern_subset = "gui"
+        with qtbot.waitSignal(view.config_changed, timeout=5000):
+            view._cmd_execute(f"pattern {self.new_pattern} --keep-subset")
+        assert self._axes(view)["a"] == ["x", "y"]
+
+    def test_gui_asks_and_follows_the_answer(self, view, qtbot, monkeypatch):
+        seen = {}
+
+        def _exec(dlg):
+            seen["buttons"] = sorted(dlg.choice_buttons)
+            dlg.choice = "ignore"
+            return 1
+
+        monkeypatch.setattr("juxt.dialogs.PatternSubsetDialog.exec", _exec)
+        self._run(view, qtbot, "gui")
+        assert seen["buttons"] == ["ignore", "keep"]
+        assert self._axes(view)["b"] == ["p", "q"]
+
+    def test_gui_cancel_leaves_the_view_alone(self, view, qtbot, monkeypatch):
+        monkeypatch.setattr("juxt.dialogs.PatternSubsetDialog.exec", lambda dlg: 0)
+        view._do_pattern(self.new_pattern, "gui")
+        qtbot.waitUntil(lambda: not view._reload_in_progress, timeout=5000)
+        assert view.axis_names == ["a", "b"]
+        assert view._flash_msg == "pattern unchanged"
+
+    def _ask_cli(self, view, qtbot):
+        view._do_pattern(self.new_pattern, "cli")
+        qtbot.waitUntil(lambda: view._pattern_choice is not None, timeout=5000)
+
+    def test_cli_shows_both_counts(self, view, qtbot):
+        self._ask_cli(view, qtbot)
+        prompt, details = view.pattern_choice_text()
+        assert "keep subset: 4 images (×2)" in prompt
+        assert "ignore subset: 16 images (×8)" in prompt
+        assert "ref new (2)" in details and "a 2→4" in details
+
+    @pytest.mark.parametrize("key, a_values", [("K", ["x", "y"]), ("I", ["w", "x", "y", "z"])])
+    def test_cli_key_picks(self, view, qtbot, key, a_values):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        self._ask_cli(view, qtbot)
+        with qtbot.waitSignal(view.config_changed, timeout=5000):
+            QTest.keyClick(view, getattr(Qt, f"Key_{key}"))
+        assert self._axes(view)["a"] == a_values
+
+    def test_cli_escape_cancels(self, view, qtbot):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        self._ask_cli(view, qtbot)
+        QTest.keyClick(view, Qt.Key_Escape)
+        assert view._pattern_choice is None and not view._reload_in_progress
+        assert view.axis_names == ["a", "b"]
+
+    def test_no_question_when_both_choices_agree(self, view, qtbot, monkeypatch):
+        monkeypatch.setattr("juxt.dialogs.PatternSubsetDialog.exec",
+                            lambda self: pytest.fail("asked with nothing to choose"))
+        view.axis_values[0] = ["w", "x", "y", "z"]        # already everything
+        view.axis_values[1] = ["p", "q"]
+        view.config.axes = dict(zip(view.axis_names, view.axis_values))
+        self._run(view, qtbot, "gui")
+        assert self._axes(view)["ref"] == ["r1", "r2"]
+
+    def test_keep_finding_nothing_fails_with_a_hint(self, view, qtbot):
+        view.axis_values[0] = ["nope"]
+        view._do_pattern(self.new_pattern, "keep")
+        qtbot.waitUntil(lambda: not view._reload_in_progress, timeout=5000)
+        assert view.axis_names == ["a", "b"]
+        assert "--ignore-subset" in view._flash_msg
+
+
+class TestPatternSmart(_PatternTree):
+    """`pattern.subset: smart`: keep the subset, and open the value picker
+    only for values the old pattern did not have on disk (`w`, under r2)."""
+
+    def _picker(self, monkeypatch, tick):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QDialog
+
+        seen = {}
+
+        def _exec(dlg):
+            seen.update({p.axis_name: {it.data(Qt.ItemDataRole.UserRole):
+                                       it.checkState() == Qt.CheckState.Checked
+                                       for it in p._items()} for p in dlg.panels})
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr("juxt.dialogs.ValuesDialog.exec", _exec)
+        monkeypatch.setattr("juxt.dialogs.ValuesDialog.values", lambda dlg: tick)
+        return seen
+
+    def test_symmetric_tree_loads_without_asking(self, view, qtbot, monkeypatch):
+        import shutil
+
+        shutil.rmtree(f"{self.root}/r2/w")
+        monkeypatch.setattr("juxt.dialogs.ValuesDialog.exec",
+                            lambda dlg: pytest.fail("asked with no new values"))
+        self._run(view, qtbot, "smart")
+        assert self._axes(view) == {"ref": ["r1", "r2"], "a": ["x", "y"], "b": ["p"]}
+
+    def test_values_left_out_before_are_not_new(self, view, qtbot, monkeypatch):
+        """z and q exist under the old pattern too: deselected, not new."""
+        seen = self._picker(monkeypatch, {"a": ["x", "y", "w"], "ref": ["r1", "r2"]})
+        self._run(view, qtbot, "smart")
+        assert seen == {"a": {"x": True, "y": True, "w": False},
+                        "ref": {"r1": True, "r2": True}}
+
+    def test_picked_values_are_loaded(self, view, qtbot, monkeypatch):
+        self._picker(monkeypatch, {"a": ["x", "y", "w"], "ref": ["r2"]})
+        self._run(view, qtbot, "smart")
+        assert self._axes(view) == {"ref": ["r2"], "a": ["w", "x", "y"], "b": ["p"]}
+
+    def test_cancel_leaves_the_view_alone(self, view, qtbot, monkeypatch):
+        monkeypatch.setattr("juxt.dialogs.ValuesDialog.exec", lambda dlg: 0)
+        view._do_pattern(self.new_pattern, "smart")
+        qtbot.waitUntil(lambda: not view._reload_in_progress, timeout=5000)
+        assert view.axis_names == ["a", "b"]
+        assert view._flash_msg == "pattern unchanged"
+
+
+class TestPatternHelpers:
+    @pytest.mark.parametrize("arg, expected", [
+        ("p/{a}.png", ("p/{a}.png", None)),
+        ("p/{a}.png --keep-subset", ("p/{a}.png", "keep")),
+        ("--ignore-subset p/{a}.png", ("p/{a}.png", "ignore")),
+        ("p/{a}.png --keep-subset --ignore-subset", ("p/{a}.png", "ignore")),
+    ])
+    def test_split_pattern_flags(self, arg, expected):
+        from juxt.viewer import _split_pattern_flags
+
+        assert _split_pattern_flags(arg) == expected
+
+    def test_axis_count_changes(self):
+        from juxt.viewer import _axis_count_changes
+
+        assert _axis_count_changes({"a": 2, "b": 1, "c": 3}, {"ref": 2, "a": 4, "b": 1}) == [
+            "ref new (2)", "a 2→4", "c gone"]
+
+    def test_dialog_marks_changes_and_answers(self, qtbot):
+        from juxt.dialogs import PatternSubsetDialog
+
+        dlg = PatternSubsetDialog({"a": 2, "b": 1},
+                                  {"keep": {"ref": 2, "a": 2, "b": 1},
+                                   "ignore": {"ref": 2, "a": 4, "b": 2}})
+        qtbot.addWidget(dlg)
+        assert dlg.choice_buttons["keep"].isDefault()
+        dlg.choice_buttons["ignore"].click()
+        assert dlg.choice == "ignore"
+
+
+# ---------------------------------------------------------------------------
+# Command line editing: word keys, axis completion, click to place the caret
+# ---------------------------------------------------------------------------
+
+def _key(view, key, mods=Qt.KeyboardModifier.NoModifier):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    return view._cmd_handle_key(QKeyEvent(QEvent.Type.KeyPress, key, mods))
+
+
+def _open_arg(view, verb, query, caret=None):
+    view._cmd = {"phase": "arg", "verb": verb, "query": query, "cursor": 0,
+                 "caret": len(query) if caret is None else caret}
+
+
+class TestWordEditing:
+    CTRL = Qt.KeyboardModifier.ControlModifier
+
+    @pytest.mark.parametrize("text, pos, left, right", [
+        ("a/sm_vs_peat/{plot}.png", 23, 20, 23),
+        ("a/sm_vs_peat/{plot}.png", 13, 2, 18),
+        ("a/sm_vs_peat/{plot}.png", 0, 0, 1),
+    ])
+    def test_word_boundaries(self, text, pos, left, right):
+        from juxt.viewer import _word_left, _word_right
+
+        assert (_word_left(text, pos), _word_right(text, pos)) == (left, right)
+
+    def test_ctrl_backspace_deletes_the_word_before_the_caret(self, image_view):
+        _open_arg(image_view, "pattern", "a/sm_vs_peat/{plot}.png", caret=12)
+        _key(image_view, Qt.Key.Key_Backspace, self.CTRL)
+        assert image_view._cmd["query"] == "a//{plot}.png"
+        assert image_view._cmd["caret"] == 2
+
+    def test_ctrl_delete_deletes_the_word_after_the_caret(self, image_view):
+        _open_arg(image_view, "pattern", "a/sm_vs_peat/{plot}.png", caret=1)
+        _key(image_view, Qt.Key.Key_Delete, self.CTRL)
+        assert image_view._cmd["query"] == "a/{plot}.png"
+
+    def test_ctrl_arrows_jump_words(self, image_view):
+        _open_arg(image_view, "pattern", "a/sm_vs_peat/{plot}.png", caret=0)
+        _key(image_view, Qt.Key.Key_Right, self.CTRL)
+        _key(image_view, Qt.Key.Key_Right, self.CTRL)
+        assert image_view._cmd["caret"] == 12
+        _key(image_view, Qt.Key.Key_Left, self.CTRL)
+        assert image_view._cmd["caret"] == 2
+
+    def test_ctrl_backspace_in_the_command_name(self, image_view):
+        image_view._cmd = {"phase": "verb", "query": "grid-lay", "cursor": 0}
+        _key(image_view, Qt.Key.Key_Backspace, self.CTRL)
+        assert image_view._cmd["query"] == "grid-"
+
+
+class TestAxisArgCompletion:
+    """Tab in :remove-value / :remove-axis / :change-key (axes sensor, date)."""
+
+    def _tab(self, view, verb, query):
+        _open_arg(view, verb, query)
+        _key(view, Qt.Key.Key_Tab)
+        return view._cmd["query"], view._tab_matches
+
+    def test_empty_lists_the_axes(self, image_view):
+        assert self._tab(image_view, "remove-value", "") == ("", ["sensor", "date"])
+
+    def test_completes_the_axis_and_moves_on(self, image_view):
+        assert self._tab(image_view, "remove-value", "se") == ("sensor ", [])
+
+    def test_lists_and_completes_values(self, image_view):
+        import os
+
+        vals = image_view.axis_values[1]
+        query, matches = self._tab(image_view, "remove-value", "date ")
+        assert (query, matches) == ("date " + os.path.commonprefix(vals), vals)
+        assert self._tab(image_view, "remove-value", f"date {vals[1]}")[0] == f"date {vals[1]}"
+
+    def test_remove_axis_takes_no_trailing_space(self, image_view):
+        assert self._tab(image_view, "remove-axis", "da")[0] == "date"
+
+    def test_no_match_says_so(self, image_view):
+        assert self._tab(image_view, "remove-value", "zz")[1] == ["(no match)"]
+
+
+class TestStatusBarExtras:
+    def test_image_count(self, main_window):
+        from juxt.loader import MissingPixmap
+
+        assert main_window._image_count_text() == "4 images"
+        main_window.view.pixmaps[(0, 0)] = MissingPixmap(4, 4)
+        assert main_window._image_count_text() == "3/4 images"
+
+    def test_count_shows_when_idle(self, main_window, qtbot):
+        main_window.show()
+        qtbot.waitExposed(main_window)
+        main_window.view._flash_msg = None
+        main_window._update_status()
+        assert main_window._help_label.text() == "4 images"
+
+    def _pattern(self, main_window, query, caret=None):
+        from PySide6.QtWidgets import QApplication
+
+        main_window.show()
+        QApplication.processEvents()
+        _open_arg(main_window.view, "pattern", query, caret)
+        main_window._update_status()
+
+    def test_long_pattern_uses_the_width(self, main_window):
+        """A query too long for the bar fills the room left of the hint,
+        however wide the screen lets the window be (not a fixed 55)."""
+        from PySide6.QtWidgets import QApplication
+
+        self._pattern(main_window, "/data/" + "x" * 400 + "/{sensor}_{date}.png")
+        QApplication.processEvents()
+        main_window._update_status()
+        lab = main_window._status_label
+        fm = lab.fontMetrics()
+        used = fm.horizontalAdvance(lab._full_plain)
+        assert used >= lab.contentsRect().width() - 4 * fm.horizontalAdvance("x") - 16
+
+    @pytest.mark.parametrize("width", [700, 1400, 2560])
+    def test_prompt_fits_next_to_the_hint(self, main_window, width):
+        """The query is cut to what the label really has room for, so it is
+        never elided on top (which would hide its end and the caret)."""
+        from PySide6.QtWidgets import QApplication
+
+        main_window.resize(width, 400)
+        self._pattern(main_window, "/data/" + "x" * 300 + "/{sensor}_{date}.png")
+        QApplication.processEvents()
+        main_window._update_status()
+        lab = main_window._status_label
+        assert lab.fontMetrics().horizontalAdvance(lab._full_plain) <= lab.contentsRect().width()
+
+    def test_click_places_the_caret(self, main_window):
+        query = "plots/{sensor}_{date}.png"
+        self._pattern(main_window, query)
+        head = main_window._prompt_map[0]
+        fm = main_window._status_label.fontMetrics()
+        target = query.index("{date}")
+        main_window._on_status_clicked(fm.horizontalAdvance(head + query[:target]) + 1)
+        assert main_window.view._cmd["caret"] == target
