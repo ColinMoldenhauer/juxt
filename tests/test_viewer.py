@@ -2717,6 +2717,7 @@ class TestSubsetCommand:
 class TestSubsetPrompt:
     def test_status_bar_shows_axis_and_values(self, keys_window):
         w = keys_window
+        w.resize(1400, 800)         # room for the prompt beside the shortcut dock
         w.view._cmd_execute("subset sensor")
         w._update_status()
         text = w._status_label.text().replace("&nbsp;", " ")
@@ -3133,6 +3134,7 @@ class TestCopyCliCommand:
         assert pins[image_view.axis_names[0]] == image_view.axis_values[0]
 
     def test_awkward_values_survive_the_shell(self, image_view, monkeypatch):
+        monkeypatch.setattr("juxt.viewer.sys.platform", "linux")   # POSIX quoting
         image_view.axis_values[0] = ["a b", "it's", "x*y"]
         _args, pins = self._reparse(monkeypatch, image_view.cli_command())
         assert pins[image_view.axis_names[0]] == ["a b", "it's", "x*y"]
@@ -3148,6 +3150,20 @@ class TestCopyCliCommand:
         assert args.grid_values == [image_view.axis_values[0][0]]
         assert args.grid_layout == "1x1"
         assert args.no_sharex is True and args.no_sharey is False
+
+    @pytest.mark.parametrize("arg, quoted", [
+        (r"C:\data\run_1\x.png", r"C:\data\run_1\x.png"),
+        ("it's", '"it\'s"'),
+        ("a,b", '"a,b"'),
+        ("a b", '"a b"'),
+        ("plots/{sensor}.png", '"plots/{sensor}.png"'),
+        ('say "hi"', '"say \\"hi\\""'),
+    ])
+    def test_windows_quoting(self, monkeypatch, arg, quoted):
+        from juxt.viewer import _shell_quote
+
+        monkeypatch.setattr("juxt.viewer.sys.platform", "win32")
+        assert _shell_quote(arg) == quoted
 
     def test_remote_template_gets_a_host_prefix(self, image_view):
         from juxt.config import RemoteConfig
@@ -3506,9 +3522,17 @@ class TestStatusBarExtras:
         main_window._update_status()
 
     def test_long_pattern_uses_the_width(self, main_window):
-        query = "/data/" + "x" * 90 + "/{sensor}_{date}.png"    # 116 characters, not 55
-        self._pattern(main_window, query)                       # 1400 px wide
-        assert "…" not in main_window._status_label._full_plain
+        """A query too long for the bar fills the room left of the hint,
+        however wide the screen lets the window be (not a fixed 55)."""
+        from PySide6.QtWidgets import QApplication
+
+        self._pattern(main_window, "/data/" + "x" * 400 + "/{sensor}_{date}.png")
+        QApplication.processEvents()
+        main_window._update_status()
+        lab = main_window._status_label
+        fm = lab.fontMetrics()
+        used = fm.horizontalAdvance(lab._full_plain)
+        assert used >= lab.contentsRect().width() - 4 * fm.horizontalAdvance("x") - 16
 
     @pytest.mark.parametrize("width", [700, 1400, 2560])
     def test_prompt_fits_next_to_the_hint(self, main_window, width):

@@ -312,10 +312,15 @@ def _axis_count_changes(current: dict[str, int], new: dict[str, int]) -> list[st
 
 
 def _shell_quote(arg: str) -> str:
-    """Quote *arg* for pasting into the user's shell (POSIX shells, cmd, PowerShell)."""
+    """Quote *arg* for pasting into the user's shell (POSIX shells, cmd, PowerShell).
+
+    On Windows anything beyond plain path characters is double-quoted: that
+    is the one quoting cmd and PowerShell agree on (PowerShell would read a
+    bare `'` as the start of a string and a bare `,` as an array).
+    """
     if sys.platform != "win32":
         return shlex.quote(arg)
-    if arg and not _re.search(r'[\s"{}*?&|<>^%()]', arg):
+    if _re.fullmatch(r"[\w./\\:@+=-]+", arg):
         return arg
     return '"' + arg.replace('"', '\\"') + '"'
 
@@ -5058,7 +5063,7 @@ class MainWindow(QMainWindow):
     def _elided_help(self, text: str, share: float | None = None) -> str:
         if not text:
             return ""
-        cap = max(160, int(self.statusBar().width() * (share or self._HELP_SHARE)))
+        cap = max(80, int(self.statusBar().width() * (share or self._HELP_SHARE)))
         return self._help_label.fontMetrics().elidedText(
             text, Qt.TextElideMode.ElideRight, cap)
 
