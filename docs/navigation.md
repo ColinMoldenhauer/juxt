@@ -197,6 +197,8 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:grid-sharey [on\|off]` | Toggle or set synchronized vertical pan/zoom across cells (default: on) |
 | `:reload` | Re-detect axes and reload images from the current source |
 | `:copy-path` | Copy the current image's file path to the clipboard |
+| `:copy-cli-command` | Copy a `juxt` command line that reopens this view: the template, every axis pinned to its current values (so an interactively picked or `:subset`-edited selection returns without a scan or dialogue), the locked `←/→` / `↑/↓` axes, and the grid view. Also on the `Copy CLI command` button at the bottom of the info sidebar. The cursor position, custom key letters, the session name and an SSH port or key file are not part of it |
+| `:reveal` | Show the current image file in the system file manager |
 | `:copy-image` | Copy the current image to the clipboard |
 | `:write [PATH]` / `:w [PATH]` | Write the current config to a YAML file; opens a file dialog if PATH is omitted |
 | `:pattern PATH` | Change the template / source path without restarting (see below) |
@@ -417,7 +419,7 @@ The status bar at the bottom shows:
 - Active query and candidate list when value picker or seek is active
 - Command being typed in command mode; description of the highlighted command shown right-aligned
 
-Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted. Values in the sidebar are clickable: a left click jumps to that value and focuses its axis. Clicking the path copies it to the clipboard (same as `:copy-path`).
+Toggle the status bar with `Ctrl+Shift+H`. Toggle the info sidebar with `Ctrl+Shift+I` or `:info`; it docks to the right side and shows the current image path and all axis values with the current value highlighted. Values in the sidebar are clickable: a left click jumps to that value and focuses its axis. Clicking the path copies it to the clipboard (same as `:copy-path`); `Ctrl+click` shows the file in the system file manager (same as `:reveal`).
 
 ### Highlight format
 

@@ -189,6 +189,7 @@ sidebar:
     list_larger_than: 20    # length (in characters) that triggers one-per-line
   dim_missing: false        # grey out values with no file on the last-moved axis
   copy: selected            # Ctrl+C copies selected sidebar text: selected | off
+  open: true                # start with the info sidebar open (--info / --no-info override)
 
 # Key bindings — map a key chord to an action name.
 # Action names match any :command (fit, zoom, fullscreen, reload, …) plus the
@@ -270,6 +271,7 @@ sidebar:
     list_larger_than: 20    # length (in characters) that triggers one-per-line
   dim_missing: false        # grey out values with no file on the last-moved axis
   copy: selected            # Ctrl+C copies selected sidebar text: selected | off
+  open: true                # start with the info sidebar open (--info / --no-info override)
 """,
     "placeholders": _PLACEHOLDERS_SECTION,
     "keybindings": """
@@ -309,6 +311,7 @@ class Settings:
     skip_missing: bool = False
     dim_missing: bool = False
     sidebar_copy: str = "selected"
+    sidebar_open: bool = True
     max_vals: int = 3
     max_vals_display: int = 10
     highlight: Highlight = field(
@@ -409,6 +412,8 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
                     s.sidebar_list_larger_than = int(value_list["list_larger_than"])
             if "dim_missing" in sidebar:
                 s.dim_missing = bool(sidebar["dim_missing"])
+            if "open" in sidebar:
+                s.sidebar_open = bool(sidebar["open"])
             if "copy" in sidebar:
                 s.sidebar_copy = _parse_sidebar_copy(sidebar["copy"])
         kb = data.get("keybindings") or {}

@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import html as _html
 import logging
+import os
 import re as _re
+import shlex
+import shutil
+import subprocess
+import sys
 import threading
 from collections.abc import Collection
 from enum import IntEnum
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QFileSystemWatcher, QRectF, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
+    QDesktopServices,
     QFontMetrics,
     QKeyEvent,
     QPainter,
@@ -30,10 +36,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QPushButton,
     QSizePolicy,
     QStackedWidget,
     QTextEdit,
     QToolTip,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -188,6 +196,58 @@ def _parse_edit_href(href: str) -> int | None:
     """Inverse of :func:`_edit_href`; returns None for foreign hrefs."""
     m = _EDIT_HREF_RE.match(href)
     return int(m.group(1)) if m else None
+
+
+def _reveal_in_file_manager(path: str) -> bool:
+    """Show *path* selected in the platform's file manager; False if that failed.
+
+    Windows and macOS have a native "select this file" call.  Linux has none
+    in general: the FileManager1 D-Bus interface (Nautilus, Dolphin, Nemo,
+    Thunar, ...) does it where a session bus exists, and elsewhere the best
+    on offer is opening the containing folder.  A path that does not exist
+    falls back to its nearest existing parent folder.
+    """
+    path = os.path.abspath(path)
+    target = path
+    while not os.path.exists(target):
+        parent = os.path.dirname(target)
+        if parent == target:
+            return False
+        target = parent
+    is_file = os.path.isfile(target)
+    try:
+        if sys.platform == "win32":
+            # explorer reports exit status 1 even on success, so don't check it.
+            arg = f"/select,{target}" if is_file else target
+            subprocess.Popen(["explorer", arg])
+            return True
+        if sys.platform == "darwin":
+            subprocess.run(["open", "-R", target] if is_file else ["open", target],
+                           check=True, timeout=5)
+            return True
+        if is_file and shutil.which("dbus-send"):
+            uri = QUrl.fromLocalFile(target).toString()
+            done = subprocess.run(
+                ["dbus-send", "--session", "--print-reply",
+                 "--dest=org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                 "org.freedesktop.FileManager1.ShowItems", f"array:string:{uri}", "string:"],
+                capture_output=True, timeout=5,
+            )
+            if done.returncode == 0:
+                return True
+    except (OSError, subprocess.SubprocessError) as e:
+        log.warning("Could not reveal %s: %s", target, e)
+    folder = target if os.path.isdir(target) else os.path.dirname(target)
+    return QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+
+def _shell_quote(arg: str) -> str:
+    """Quote *arg* for pasting into the user's shell (POSIX shells, cmd, PowerShell)."""
+    if sys.platform != "win32":
+        return shlex.quote(arg)
+    if arg and not _re.search(r'[\s"{}*?&|<>^%()]', arg):
+        return arg
+    return '"' + arg.replace('"', '\\"') + '"'
 
 
 def _dispose(dialog: QWidget) -> None:
@@ -368,6 +428,7 @@ _COMMANDS = [
     "axis-h",
     "axis-v",
     "change-key",
+    "copy-cli-command",
     "copy-image",
     "copy-path",
     "dim-missing",
@@ -392,6 +453,7 @@ _COMMANDS = [
     "settings",
     "skip-missing",
     "remove-value",
+    "reveal",
     "subset",
     "subset-interactive",
     "ungrid",
@@ -478,6 +540,8 @@ _COMMAND_HELP: dict[str, str] = {
     "change-key":   "assign a key letter to an axis  (e.g. change-key sensor x)",
     "copy-image":   "copy current image to clipboard",
     "copy-path":    "copy current image file path to clipboard",
+    "copy-cli-command": "copy a juxt command line that reopens this view (axes, values, grid)",
+    "reveal":       "show the current image file in the system file manager",
     "dim-missing":  "dim sidebar values with no file on the last-moved axis  (on / off)",
     "axis-h":       "lock the primary (←/→) axis to a named axis",
     "axis-v":       "lock the secondary (↑/↓) axis to a named axis",
@@ -1734,6 +1798,59 @@ class ImageView(QGraphicsView):
         QApplication.clipboard().setText(path)
         self._flash(f"copied: {path}")
 
+    def cli_command(self) -> str:
+        """A `juxt` command line that reopens the view as it is now.
+
+        Every axis is pinned to its current values (`--NAME VALUE ...`), so a
+        subset picked interactively, or edited with `:subset` and `:values`,
+        comes back without a scan or a dialogue.  The locked arrow axes and
+        the grid view are carried over.  What the command line cannot say is
+        left out: the cursor position, custom key letters, the session name,
+        and an SSH port or key file.
+        """
+        cfg = self.config
+        path = cfg.template
+        if cfg.remote is not None:
+            user = f"{cfg.remote.user}@" if cfg.remote.user else ""
+            path = f"{user}{cfg.remote.host}:{path}"
+        parts = ["juxt", _shell_quote(path)]
+        for name, vals in zip(self.axis_names, self.axis_values):
+            parts += [_shell_quote(f"--{name}"), *map(_shell_quote, vals)]
+        if self._locked_h is not None:
+            parts += ["--axis-h", _shell_quote(self.axis_names[self._locked_h])]
+        if self._locked_v is not None:
+            parts += ["--axis-v", _shell_quote(self.axis_names[self._locked_v])]
+        if self._grid_axis is not None:
+            vals = self.axis_values[self._grid_axis]
+            parts += ["--grid", _shell_quote(self.axis_names[self._grid_axis])]
+            if self._grid_filter is not None:
+                parts += ["--grid-values", *(_shell_quote(vals[i]) for i in self._grid_filter)]
+            if self._grid_layout is not None:
+                parts += ["--grid-layout", "{}x{}".format(*self._grid_layout)]
+            if not self._grid_sharex:
+                parts.append("--no-sharex")
+            if not self._grid_sharey:
+                parts.append("--no-sharey")
+        return " ".join(parts)
+
+    def copy_cli_command(self) -> None:
+        """Copy :meth:`cli_command` to the clipboard."""
+        cmd = self.cli_command()
+        QApplication.clipboard().setText(cmd)
+        log.info("copied CLI command: %s", cmd)
+        self._flash("copied: juxt command line")
+
+    def reveal_path(self) -> None:
+        """Show the current image's file in the system file manager."""
+        if self.config.remote is not None:
+            self._flash("remote file: nothing local to reveal")
+            return
+        path = self._key_to_path(self._key())
+        if _reveal_in_file_manager(path):
+            self._flash(f"revealed: {path}")
+        else:
+            self._flash(f"could not reveal: {path}")
+
     def _cmd_execute(self, cmd: str):
         parts = cmd.strip().split()
         if not parts:
@@ -1745,6 +1862,10 @@ class ImageView(QGraphicsView):
             QApplication.instance().quit()
         elif verb == "copy-path":
             self.copy_path()
+        elif verb == "reveal":
+            self.reveal_path()
+        elif verb == "copy-cli-command":
+            self.copy_cli_command()
         elif verb == "copy-image":
             pm = self.pixmaps.get(self._key())
             if pm and not pm.isNull():
@@ -3503,7 +3624,8 @@ class ImageView(QGraphicsView):
         """
         menu = QMenu(self)
         for label, action in (("Copy image &path", "copy-path"),
-                              ("Copy &image", "copy-image")):
+                              ("Copy &image", "copy-image"),
+                              ("&Reveal in file manager", "reveal")):
             act = menu.addAction(label)
             chord = self._shortcut_for(action)
             if chord:
@@ -3548,6 +3670,7 @@ class InfoPanel(QTextEdit):
 
     value_clicked = Signal(int, int)  # axis index, value index
     path_clicked = Signal()
+    path_reveal_clicked = Signal()    # Ctrl+click on the path
     edit_clicked = Signal(int)        # axis index: open its value picker
 
     def __init__(self, parent=None):
@@ -3570,6 +3693,7 @@ class InfoPanel(QTextEdit):
         self._expanded: dict[str, bool] = {}
         self._press_axis: int | None = None
         self._press_path = False
+        self._press_reveal = False
         self._press_edit: int | None = None
         # href → full text, for every value the last layout had to elide.
         self._elided: dict[str, str] = {}
@@ -3604,6 +3728,7 @@ class InfoPanel(QTextEdit):
             w.view.setFocus()
         self._press_axis = None
         self._press_path = False
+        self._press_reveal = False
         self._press_edit = None
         if event.button() != Qt.MouseButton.LeftButton:
             return
@@ -3612,6 +3737,8 @@ class InfoPanel(QTextEdit):
             self.value_clicked.emit(*target)
         elif href == _PATH_HREF:
             self._press_path = True
+            # Qt maps the Command key to ControlModifier on macOS.
+            self._press_reveal = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         elif _parse_edit_href(href) is not None:
             self._press_edit = _parse_edit_href(href)
         else:
@@ -3624,6 +3751,7 @@ class InfoPanel(QTextEdit):
         # not rebuild the document under the selection.
         axis, self._press_axis = self._press_axis, None
         on_path, self._press_path = self._press_path, False
+        reveal, self._press_reveal = self._press_reveal, False
         edit, self._press_edit = self._press_edit, None
         if (event.button() != Qt.MouseButton.LeftButton
                 or self.textCursor().hasSelection()):
@@ -3632,7 +3760,7 @@ class InfoPanel(QTextEdit):
         if axis is not None and _parse_axis_href(href) == axis:
             self.toggle_axis(axis)
         elif on_path and href == _PATH_HREF:
-            self.path_clicked.emit()
+            (self.path_reveal_clicked if reveal else self.path_clicked).emit()
         elif edit is not None and _parse_edit_href(href) == edit:
             self.edit_clicked.emit(edit)
 
@@ -3655,7 +3783,7 @@ class InfoPanel(QTextEdit):
         if event.type() == QEvent.Type.ToolTip:
             href = self.anchorAt(event.pos())
             if href == _PATH_HREF:
-                full = "click to copy"
+                full = "click to copy  ·  Ctrl+click to reveal in file manager"
             elif _parse_edit_href(href) is not None:
                 full = "add or remove values  (:values)"
             else:
@@ -4150,8 +4278,22 @@ class MainWindow(QMainWindow):
         self._info_panel = InfoPanel()
         self._info_panel.set_highlight(self._hl)
         self._info_panel.set_value_list_style(sidebar_separator, sidebar_list_larger_than)
-        self._info_dock = QDockWidget("Info", self)
-        self._info_dock.setWidget(self._info_panel)
+        self._info_dock = QDockWidget("Axes", self)
+        self._info_cli_button = QPushButton("Copy CLI command")
+        self._info_cli_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._info_cli_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._info_cli_button.setToolTip(
+            "copy a juxt command line that reopens this view  (:copy-cli-command)")
+        self._info_cli_button.clicked.connect(self.view.copy_cli_command)
+        info_box = QWidget()
+        info_layout = QVBoxLayout(info_box)
+        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setSpacing(0)
+        info_layout.addWidget(self._info_panel, 1)
+        info_layout.addWidget(self._info_cli_button)
+        self._info_box = info_box
+        self._style_info_button()
+        self._info_dock.setWidget(info_box)
         self._info_dock.setAllowedAreas(
             Qt.DockWidgetArea.RightDockWidgetArea | Qt.DockWidgetArea.LeftDockWidgetArea
         )
@@ -4165,6 +4307,7 @@ class MainWindow(QMainWindow):
             self._info_panel.refresh(self.view)
         self._info_panel.value_clicked.connect(self.view.goto_value)
         self._info_panel.path_clicked.connect(self.view.copy_path)
+        self._info_panel.path_reveal_clicked.connect(self.view.reveal_path)
         self._info_panel.edit_clicked.connect(self.view.open_values_dialog)
 
         # Docked opposite the info sidebar so the two can be open at once.
@@ -4250,10 +4393,20 @@ class MainWindow(QMainWindow):
             self._style_status_bar()
             self.view.apply_theme()
             self._info_panel.apply_theme()
+            self._style_info_button()
             self._shortcut_panel.apply_theme()
             self._update_status()
         finally:
             self._applying_theme = False
+
+    def _style_info_button(self) -> None:
+        t = _theme.current()
+        self._info_cli_button.setStyleSheet(
+            f"QPushButton {{ background: {t.panel}; color: {t.accent}; "
+            f"border: none; border-top: 1px solid {t.border}; padding: 6px; "
+            "font-size: 9pt; }"
+            f"QPushButton:hover {{ background: {t.hover}; }}"
+        )
 
     def _on_theme_requested(self, setting: str) -> None:
         if not setting:     # flip between the two

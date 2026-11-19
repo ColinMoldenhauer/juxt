@@ -260,7 +260,7 @@ To see all available commands, press `Ctrl+Shift+K` or run `:keys`.
 | `Ctrl+Shift+C` | copy the current image path to the clipboard |
 | right-click | menu: copy image path / copy image |
 | `Ctrl+Shift+H` | toggle status bar  (start hidden with `--no-status-bar`) |
-| `Ctrl+Shift+I` | toggle info sidebar  (start open with `--info`) |
+| `Ctrl+Shift+I` | toggle info sidebar  (starts open; `--no-info` or `sidebar.open: false` to change) |
 | `Ctrl+Shift+K` | toggle shortcut sidebar  (start open with `--keys`) |
 | `Ctrl+C` | copy the text selected in a sidebar  (otherwise cancels a command / value picker) |
 | `Ctrl+Shift+G` | open the grid builder dialogue |

@@ -334,6 +334,43 @@ class TestInfoPanelLinks:
             for j in range(len(vals)):
                 assert f'href="juxt:value/{i}/{j}"' in html
 
+    def _click_path(self, panel, image_view, qtbot, modifier):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+
+        panel.resize(400, 600)
+        panel.show()
+        qtbot.waitExposed(panel)
+        cur = panel.document().find(image_view._key_to_path(image_view._key()))
+        assert not cur.isNull()
+        cur.setPosition(cur.selectionStart())   # find() leaves the cursor at the end
+        rect = panel.cursorRect(cur)
+        pos = QPoint(rect.left() + 3, rect.center().y())
+        QTest.mouseClick(panel.viewport(), Qt.MouseButton.LeftButton, modifier, pos)
+
+    def test_path_click_copies(self, image_view, qtbot):
+        from PySide6.QtCore import Qt
+
+        panel = self._panel(image_view, qtbot)
+        with qtbot.waitSignal(panel.path_clicked, timeout=500):
+            self._click_path(panel, image_view, qtbot, Qt.KeyboardModifier.NoModifier)
+
+    def test_ctrl_click_on_path_reveals(self, image_view, qtbot):
+        from PySide6.QtCore import Qt
+
+        panel = self._panel(image_view, qtbot)
+        with qtbot.waitSignal(panel.path_reveal_clicked, timeout=500):
+            self._click_path(panel, image_view, qtbot, Qt.KeyboardModifier.ControlModifier)
+
+    def test_reveal_path_hands_the_current_file_to_the_file_manager(
+        self, image_view, monkeypatch
+    ):
+        seen = []
+        monkeypatch.setattr("juxt.viewer._reveal_in_file_manager",
+                            lambda p: seen.append(p) or True)
+        image_view.reveal_path()
+        assert seen == [image_view._key_to_path(image_view._key())]
+
     def test_click_navigates(self, image_view, qtbot):
         panel = self._panel(image_view, qtbot)
         panel.value_clicked.emit(1, 1)
@@ -1925,9 +1962,9 @@ class TestImageContextMenu:
         """The menu itself — built without entering QMenu.exec's event loop."""
         return view.build_image_menu()
 
-    def test_menu_offers_both_copy_actions(self, image_view):
+    def test_menu_offers_copy_and_reveal_actions(self, image_view):
         labels = [a.text() for a in self._menu(image_view).actions()]
-        assert labels == ["Copy image &path", "Copy &image"]
+        assert labels == ["Copy image &path", "Copy &image", "&Reveal in file manager"]
 
     def test_menu_shows_the_bound_shortcut(self, viewer_config, mini_pixmaps, qtbot):
         from juxt.viewer import ImageView
@@ -3067,3 +3104,71 @@ class TestSetValuesAcrossAxes:
     def test_empty_axis_is_refused(self, view):
         view._set_values({0: ["A"], 1: []})
         assert view.axis_values == [["A", "B"], ["d1", "d2"]]
+
+
+# ---------------------------------------------------------------------------
+# :copy-cli-command
+# ---------------------------------------------------------------------------
+
+class TestCopyCliCommand:
+    @staticmethod
+    def _reparse(monkeypatch, cmd):
+        import shlex
+
+        from juxt.__main__ import _parse_args
+
+        argv = shlex.split(cmd)
+        assert argv[0] == "juxt"
+        monkeypatch.setattr("sys.argv", argv)
+        return _parse_args()
+
+    def test_pins_every_axis_to_its_current_values(self, image_view, monkeypatch):
+        args, pins = self._reparse(monkeypatch, image_view.cli_command())
+        assert args.path == image_view.config.template
+        assert pins == dict(zip(image_view.axis_names, image_view.axis_values))
+
+    def test_follows_a_subset(self, image_view, monkeypatch):
+        image_view.axis_values[0] = image_view.axis_values[0][::-1]
+        _args, pins = self._reparse(monkeypatch, image_view.cli_command())
+        assert pins[image_view.axis_names[0]] == image_view.axis_values[0]
+
+    def test_awkward_values_survive_the_shell(self, image_view, monkeypatch):
+        image_view.axis_values[0] = ["a b", "it's", "x*y"]
+        _args, pins = self._reparse(monkeypatch, image_view.cli_command())
+        assert pins[image_view.axis_names[0]] == ["a b", "it's", "x*y"]
+
+    def test_carries_locked_axes_and_grid(self, image_view, monkeypatch):
+        name = image_view.axis_names[0]
+        image_view._cmd_execute(f"axis-h {image_view.axis_names[1]}")
+        image_view._enter_grid(0, [0], (1, 1))
+        image_view._grid_sharex = False
+        args, _pins = self._reparse(monkeypatch, image_view.cli_command())
+        assert args.axis_h == image_view.axis_names[1]
+        assert args.grid == name
+        assert args.grid_values == [image_view.axis_values[0][0]]
+        assert args.grid_layout == "1x1"
+        assert args.no_sharex is True and args.no_sharey is False
+
+    def test_remote_template_gets_a_host_prefix(self, image_view):
+        from juxt.config import RemoteConfig
+
+        image_view.config.remote = RemoteConfig(host="box", user="me")
+        import shlex
+
+        assert shlex.split(image_view.cli_command())[1] == f"me@box:{image_view.config.template}"
+
+    def test_command_copies_to_the_clipboard(self, image_view):
+        from PySide6.QtWidgets import QApplication
+
+        image_view._cmd_execute("copy-cli-command")
+        assert QApplication.clipboard().text() == image_view.cli_command()
+
+    def test_sidebar_button_copies_it(self, viewer_config, mini_pixmaps, qtbot):
+        from PySide6.QtWidgets import QApplication
+
+        from juxt.viewer import MainWindow
+
+        w = MainWindow(viewer_config, mini_pixmaps, watch=False)
+        qtbot.addWidget(w)
+        w._info_cli_button.click()
+        assert QApplication.clipboard().text() == w.view.cli_command()
