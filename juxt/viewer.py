@@ -574,6 +574,10 @@ _ARG_FORMATS: dict[str, str] = {
 }
 
 # Commands whose argument is free-text — preserve case when the user types it.
+# Free-text commands whose argument starts with an axis name, and what
+# follows it ("value": one of its values, "key": a letter, "": nothing).
+_AXIS_FIRST_ARGS = {"remove-value": "value", "change-key": "key", "remove-axis": ""}
+
 _FREE_TEXT_ARGS = {"change-key", "pattern", "remove-axis", "remove-value", "write"}
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -650,20 +654,55 @@ _COMMAND_HELP: dict[str, str] = {
 }
 
 
+def _cmd_query_window(query: str, caret: int, max_visible: int = 55) -> tuple[int, int]:
+    """The `(start, end)` slice of *query* shown in at most *max_visible*
+    characters, scrolled to keep *caret* roughly centred."""
+    if len(query) <= max_visible:
+        return 0, len(query)
+    start = max(0, min(caret - max_visible // 2, len(query) - max_visible))
+    return start, start + max_visible
+
+
 def _cmd_query_display(query: str, caret: int, max_visible: int = 55) -> str:
     """Return a viewport into *query* with ▌ at *caret*, scrolling to keep it visible."""
-    if len(query) <= max_visible:
-        return query[:caret] + "▌" + query[caret:]
-    # Keep caret roughly centred in the window
-    start = max(0, min(caret - max_visible // 2, len(query) - max_visible))
-    end = start + max_visible
+    start, end = _cmd_query_window(query, caret, max_visible)
     prefix = "…" if start > 0 else ""
     suffix = "…" if end < len(query) else ""
     return f"{prefix}{query[start:caret]}▌{query[caret:end]}{suffix}"
 
 
+def _is_word_char(ch: str) -> bool:
+    """Characters Ctrl+Backspace / Ctrl+←/→ treat as one word (`sm_vs_peatclsm`)."""
+    return ch.isalnum() or ch == "_"
+
+
+def _word_left(text: str, pos: int) -> int:
+    """Start of the word before *pos*, skipping separators first."""
+    while pos > 0 and not _is_word_char(text[pos - 1]):
+        pos -= 1
+    while pos > 0 and _is_word_char(text[pos - 1]):
+        pos -= 1
+    return pos
+
+
+def _word_right(text: str, pos: int) -> int:
+    """End of the word after *pos*, skipping separators first."""
+    while pos < len(text) and not _is_word_char(text[pos]):
+        pos += 1
+    while pos < len(text) and _is_word_char(text[pos]):
+        pos += 1
+    return pos
+
+
 class _ElidingLabel(QLabel):
     """QLabel that elides its content (plain text or HTML) to fit the available width."""
+
+    clicked = Signal(float)   # x of a left click, from the start of the text
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(event.position().x() - self.contentsRect().left())
+        super().mousePressEvent(event)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1677,9 +1716,33 @@ class ImageView(QGraphicsView):
         """Handle input while command mode is active. Returns True if consumed."""
         k = event.key()
         is_free = _is_free_text(self._cmd)
+        ctrl = bool(event.modifiers() & Qt.ControlModifier)
 
         if k == Qt.Key_Escape:
             self._cmd = None
+            self._tab_matches = []
+            self.state_changed.emit()
+            return True
+
+        # Ctrl+Backspace / Ctrl+Delete delete a word, Ctrl+←/→ jump one.
+        if ctrl and k in (Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Left, Qt.Key_Right):
+            q = self._cmd["query"]
+            if not is_free:
+                if k == Qt.Key_Backspace and q:
+                    self._cmd["query"] = q[:_word_left(q, len(q))]
+                    self._cmd["cursor"] = 0
+                    self.state_changed.emit()
+                return True
+            caret = self._cmd.get("caret", len(q))
+            if k == Qt.Key_Backspace:
+                left = _word_left(q, caret)
+                self._cmd["query"], self._cmd["caret"] = q[:left] + q[caret:], left
+            elif k == Qt.Key_Delete:
+                self._cmd["query"] = q[:caret] + q[_word_right(q, caret):]
+            elif k == Qt.Key_Left:
+                self._cmd["caret"] = _word_left(q, caret)
+            else:
+                self._cmd["caret"] = _word_right(q, caret)
             self._tab_matches = []
             self.state_changed.emit()
             return True
@@ -1723,6 +1786,8 @@ class ImageView(QGraphicsView):
             log.debug("_cmd_handle_key: Tab  is_free=%s cmd=%s", is_free, self._cmd)
             if "axis" in self._cmd:
                 self._complete_subset()
+            elif is_free and self._cmd.get("verb") in _AXIS_FIRST_ARGS:
+                self._complete_axis_arg()
             elif is_free:
                 self._complete_path()
             elif self._cmd.get("phase") == "arg" and self._cmd.get("verb") == "grid":
@@ -3111,6 +3176,50 @@ class ImageView(QGraphicsView):
         if dlg.maximum() != total:
             dlg.setMaximum(total)
         dlg.setValue(value)
+
+    def set_cmd_caret(self, pos: int) -> None:
+        """Move the caret of a free-text argument to *pos* (a click on it)."""
+        if self._cmd is None or "caret" not in self._cmd:
+            return
+        self._cmd["caret"] = max(0, min(pos, len(self._cmd["query"])))
+        self._tab_matches = []
+        self.state_changed.emit()
+
+    def _complete_axis_arg(self):
+        """Tab in :remove-value, :remove-axis and :change-key: complete the
+        axis name, then (:remove-value) one of that axis's values.
+
+        A unique match is filled in; several extend the text to what they
+        share and are listed on the right of the status bar.
+        """
+        verb = self._cmd["verb"]
+        q = self._cmd["query"][:self._cmd.get("caret", len(self._cmd["query"]))]
+        rest = self._cmd["query"][len(q):]
+        axis = max((n for n in self.axis_names if q.startswith(n + " ")), key=len, default=None)
+        if axis is None:
+            head, partial, pool = "", q, list(self.axis_names)
+            tail = " " if _AXIS_FIRST_ARGS[verb] else ""
+        elif _AXIS_FIRST_ARGS[verb] == "value":
+            head, partial, tail = axis + " ", q[len(axis) + 1:], ""
+            pool = list(self.axis_values[self.axis_names.index(axis)])
+        else:
+            return
+        low = partial.lower()
+        matches = [p for p in pool if p.lower().startswith(low)]
+        if not matches:
+            self._tab_matches = ["(no match)"]
+        elif len(matches) == 1:
+            self._tab_matches = []
+            partial = matches[0] + tail
+        else:
+            self._tab_matches = matches
+            common = os.path.commonprefix(matches)
+            if len(common) > len(partial):
+                partial = common
+        new = head + partial
+        self._cmd["query"] = new + rest
+        self._cmd["caret"] = len(new)
+        self.state_changed.emit()
 
     def _complete_path(self):
         """Tab-complete the path portion of a free-text command argument.
@@ -4597,6 +4706,10 @@ class MainWindow(QMainWindow):
         bar.addWidget(self._status_label, 1)
         self._help_label = QLabel()
         bar.addPermanentWidget(self._help_label)
+        # What the prompt shows of a free-text argument, for placing the caret
+        # on a click: (text before it, query, caret, start, end).
+        self._prompt_map: tuple[str, str, int, int, int] | None = None
+        self._status_label.clicked.connect(self._on_status_clicked)
         self._style_status_bar()
         bar.setVisible(show_status_bar)
 
@@ -4604,7 +4717,7 @@ class MainWindow(QMainWindow):
         self._info_panel.set_highlight(self._hl)
         self._info_panel.set_value_list_style(sidebar_separator, sidebar_list_larger_than)
         self._info_dock = QDockWidget("Axes", self)
-        self._info_cli_button = QPushButton("Copy CLI command")
+        self._info_cli_button = QPushButton("copy CLI command")
         self._info_cli_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._info_cli_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._info_cli_button.setToolTip(
@@ -4727,10 +4840,10 @@ class MainWindow(QMainWindow):
     def _style_info_button(self) -> None:
         t = _theme.current()
         self._info_cli_button.setStyleSheet(
-            f"QPushButton {{ background: {t.panel}; color: {t.accent}; "
-            f"border: none; border-top: 1px solid {t.border}; padding: 6px; "
-            "font-size: 9pt; }"
-            f"QPushButton:hover {{ background: {t.hover}; }}"
+            f"QPushButton {{ background: {t.panel}; color: {t.dim}; border: none; "
+            "padding: 4px 12px; text-align: left; "
+            "font-family: 'Courier New', monospace; font-size: 8pt; }"
+            f"QPushButton:hover {{ color: {t.muted}; }}"
         )
 
     def _on_theme_requested(self, setting: str) -> None:
@@ -4761,14 +4874,15 @@ class MainWindow(QMainWindow):
                 sb.show()
         elif self._bar_auto_shown and not self._bar_hide_timer.isActive():
             self._bar_hide_timer.start()
-        self._help_label.setText("")
+        self._set_help(self._image_count_text())
+        self._prompt_map = None
 
         if v._pattern_choice is not None:
             if self._spinner_timer.isActive():
                 self._spinner_timer.stop()
             prompt, details = v.pattern_choice_text()
             self._status_label.setText(prompt)
-            self._help_label.setText(details)
+            self._set_help(details)
             return
 
         if v._reload_in_progress:
@@ -4810,23 +4924,27 @@ class MainWindow(QMainWindow):
                 desc = _COMMAND_HELP.get(hlit, "") if hlit else ""
             else:
                 verb = v._cmd["verb"]
+                desc = _COMMAND_HELP.get(verb, "")
+                help_text = ("  ".join(v._tab_matches) if v._tab_matches
+                             else f"( {desc} )" if desc else "")
+                caret = v._cmd.get("caret", len(query))
                 if "axis" in v._cmd:
-                    shown = _cmd_query_display(query, v._cmd.get("caret", len(query)))
-                    prompt = f":{verb} {v._cmd['axis']}  {shown}"
+                    head = f":{verb} {v._cmd['axis']}  "
+                    prompt = head + self._shown_query(head, query, caret, help_text)
                 elif verb in _FREE_TEXT_ARGS:
-                    caret = v._cmd.get("caret", len(query))
-                    shown = _cmd_query_display(query, caret)
-                    prompt = f":{verb} {shown}"
+                    head = f":{verb} "
+                    shown = self._shown_query(head, query, caret, help_text)
+                    prompt = head + shown
                     # Colour each {placeholder} so a multi-axis template stays
                     # readable while it is being typed.
-                    prompt_html = _sp(f":{verb} ") + placeholder_html(shown)
+                    prompt_html = _sp(head) + placeholder_html(shown)
                 else:
                     prompt = f":{verb} {query}▌"
-                desc = _COMMAND_HELP.get(v._cmd["verb"], "")
+            share = self._HELP_SHARE_EDITING if self._prompt_map is not None else None
             if v._tab_matches:
-                self._help_label.setText("  ".join(v._tab_matches))
+                self._set_help("  ".join(v._tab_matches), share)
             elif desc:
-                self._help_label.setText(f"( {desc} )")
+                self._set_help(f"( {desc} )", share)
             if candidates:
                 cand_html = _candidate_html(candidates, cursor, self._hl_candidates)
                 head = prompt_html if prompt_html is not None else _sp(prompt)
@@ -4924,6 +5042,76 @@ class MainWindow(QMainWindow):
                 if key_hints:
                     parts.append(key_hints)
                 self._status_label.setText(sep.join(parts))
+
+    # Share of the status bar the right-hand hint may take, so the prompt
+    # on the left keeps most of the room; less while a path or other free
+    # text is being edited, which wants all the width it can get.
+    _HELP_SHARE = 0.4
+    _HELP_SHARE_EDITING = 0.25
+    # Horizontal padding of the hint label (see _style_status_bar), and the
+    # status-bar width the prompt's text cannot use besides the hint: its
+    # own padding, the bar's margins and spacing, the size grip (measured
+    # 48px) plus slack for font rounding on other platforms.
+    _HELP_PAD_PX = 24
+    _BAR_INSET_PX = 64
+
+    def _elided_help(self, text: str, share: float | None = None) -> str:
+        if not text:
+            return ""
+        cap = max(160, int(self.statusBar().width() * (share or self._HELP_SHARE)))
+        return self._help_label.fontMetrics().elidedText(
+            text, Qt.TextElideMode.ElideRight, cap)
+
+    def _set_help(self, text: str, share: float | None = None) -> None:
+        """Show *text* on the right of the status bar, cut to its *share*."""
+        self._help_label.setText(self._elided_help(text, share))
+
+    def _shown_query(self, head: str, query: str, caret: int, help_text: str) -> str:
+        """The part of a free-text *query* that fits after *head*, with the
+        caret drawn in; as wide as the status bar allows next to *help_text*."""
+        fm = self._status_label.fontMetrics()
+        shown_help = self._elided_help(help_text, self._HELP_SHARE_EDITING)
+        help_w = self._help_label.fontMetrics().horizontalAdvance(shown_help) + self._HELP_PAD_PX
+        budget = self.statusBar().width() - help_w - self._BAR_INSET_PX
+
+        def fits(n: int) -> bool:   # measured, not estimated from a glyph width
+            return fm.horizontalAdvance(head + _cmd_query_display(query, caret, n)) <= budget
+
+        n = len(query)
+        if not fits(n):
+            lo, hi = 1, n          # the most characters that still fit
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                lo, hi = (mid, hi) if fits(mid) else (lo, mid - 1)
+            n = max(lo, 20)
+        start, end = _cmd_query_window(query, caret, n)
+        self._prompt_map = (head, query, caret, start, end)
+        return _cmd_query_display(query, caret, n)
+
+    def _on_status_clicked(self, x: float) -> None:
+        """A click in a free-text argument moves the caret there."""
+        m = self._prompt_map
+        if m is None or self.view._cmd is None:
+            return
+        head, query, caret, start, end = m
+        fm = self._status_label.fontMetrics()
+        ellipsis = "…" if start > 0 else ""
+
+        def x_before(i: int) -> int:   # x of the gap before query[i]
+            shown = (query[start:i] if i <= caret
+                     else query[start:caret] + "▌" + query[caret:i])
+            return fm.horizontalAdvance(head + ellipsis + shown)
+
+        self.view.set_cmd_caret(min(range(start, end + 1), key=lambda i: abs(x_before(i) - x)))
+
+    def _image_count_text(self) -> str:
+        """`216 images`, or `210/216 images` while some have no file."""
+        v = self.view
+        total = _n_combos(v.axis_values)
+        loaded = min(total, sum(1 for pm in v.pixmaps.values()
+                                if not isinstance(pm, MissingPixmap) and not pm.isNull()))
+        noun = "image" if total == 1 else "images"
+        return f"{loaded} {noun}" if loaded == total else f"{loaded}/{total} {noun}"
 
     def showEvent(self, event):
         super().showEvent(event)

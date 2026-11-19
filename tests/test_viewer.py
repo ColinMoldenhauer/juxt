@@ -3397,3 +3397,137 @@ class TestPatternHelpers:
         assert dlg.choice_buttons["keep"].isDefault()
         dlg.choice_buttons["ignore"].click()
         assert dlg.choice == "ignore"
+
+
+# ---------------------------------------------------------------------------
+# Command line editing: word keys, axis completion, click to place the caret
+# ---------------------------------------------------------------------------
+
+def _key(view, key, mods=Qt.KeyboardModifier.NoModifier):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    return view._cmd_handle_key(QKeyEvent(QEvent.Type.KeyPress, key, mods))
+
+
+def _open_arg(view, verb, query, caret=None):
+    view._cmd = {"phase": "arg", "verb": verb, "query": query, "cursor": 0,
+                 "caret": len(query) if caret is None else caret}
+
+
+class TestWordEditing:
+    CTRL = Qt.KeyboardModifier.ControlModifier
+
+    @pytest.mark.parametrize("text, pos, left, right", [
+        ("a/sm_vs_peat/{plot}.png", 23, 20, 23),
+        ("a/sm_vs_peat/{plot}.png", 13, 2, 18),
+        ("a/sm_vs_peat/{plot}.png", 0, 0, 1),
+    ])
+    def test_word_boundaries(self, text, pos, left, right):
+        from juxt.viewer import _word_left, _word_right
+
+        assert (_word_left(text, pos), _word_right(text, pos)) == (left, right)
+
+    def test_ctrl_backspace_deletes_the_word_before_the_caret(self, image_view):
+        _open_arg(image_view, "pattern", "a/sm_vs_peat/{plot}.png", caret=12)
+        _key(image_view, Qt.Key.Key_Backspace, self.CTRL)
+        assert image_view._cmd["query"] == "a//{plot}.png"
+        assert image_view._cmd["caret"] == 2
+
+    def test_ctrl_delete_deletes_the_word_after_the_caret(self, image_view):
+        _open_arg(image_view, "pattern", "a/sm_vs_peat/{plot}.png", caret=1)
+        _key(image_view, Qt.Key.Key_Delete, self.CTRL)
+        assert image_view._cmd["query"] == "a/{plot}.png"
+
+    def test_ctrl_arrows_jump_words(self, image_view):
+        _open_arg(image_view, "pattern", "a/sm_vs_peat/{plot}.png", caret=0)
+        _key(image_view, Qt.Key.Key_Right, self.CTRL)
+        _key(image_view, Qt.Key.Key_Right, self.CTRL)
+        assert image_view._cmd["caret"] == 12
+        _key(image_view, Qt.Key.Key_Left, self.CTRL)
+        assert image_view._cmd["caret"] == 2
+
+    def test_ctrl_backspace_in_the_command_name(self, image_view):
+        image_view._cmd = {"phase": "verb", "query": "grid-lay", "cursor": 0}
+        _key(image_view, Qt.Key.Key_Backspace, self.CTRL)
+        assert image_view._cmd["query"] == "grid-"
+
+
+class TestAxisArgCompletion:
+    """Tab in :remove-value / :remove-axis / :change-key (axes sensor, date)."""
+
+    def _tab(self, view, verb, query):
+        _open_arg(view, verb, query)
+        _key(view, Qt.Key.Key_Tab)
+        return view._cmd["query"], view._tab_matches
+
+    def test_empty_lists_the_axes(self, image_view):
+        assert self._tab(image_view, "remove-value", "") == ("", ["sensor", "date"])
+
+    def test_completes_the_axis_and_moves_on(self, image_view):
+        assert self._tab(image_view, "remove-value", "se") == ("sensor ", [])
+
+    def test_lists_and_completes_values(self, image_view):
+        import os
+
+        vals = image_view.axis_values[1]
+        query, matches = self._tab(image_view, "remove-value", "date ")
+        assert (query, matches) == ("date " + os.path.commonprefix(vals), vals)
+        assert self._tab(image_view, "remove-value", f"date {vals[1]}")[0] == f"date {vals[1]}"
+
+    def test_remove_axis_takes_no_trailing_space(self, image_view):
+        assert self._tab(image_view, "remove-axis", "da")[0] == "date"
+
+    def test_no_match_says_so(self, image_view):
+        assert self._tab(image_view, "remove-value", "zz")[1] == ["(no match)"]
+
+
+class TestStatusBarExtras:
+    def test_image_count(self, main_window):
+        from juxt.loader import MissingPixmap
+
+        assert main_window._image_count_text() == "4 images"
+        main_window.view.pixmaps[(0, 0)] = MissingPixmap(4, 4)
+        assert main_window._image_count_text() == "3/4 images"
+
+    def test_count_shows_when_idle(self, main_window, qtbot):
+        main_window.show()
+        qtbot.waitExposed(main_window)
+        main_window.view._flash_msg = None
+        main_window._update_status()
+        assert main_window._help_label.text() == "4 images"
+
+    def _pattern(self, main_window, query, caret=None):
+        from PySide6.QtWidgets import QApplication
+
+        main_window.show()
+        QApplication.processEvents()
+        _open_arg(main_window.view, "pattern", query, caret)
+        main_window._update_status()
+
+    def test_long_pattern_uses_the_width(self, main_window):
+        query = "/data/" + "x" * 90 + "/{sensor}_{date}.png"    # 116 characters, not 55
+        self._pattern(main_window, query)                       # 1400 px wide
+        assert "…" not in main_window._status_label._full_plain
+
+    @pytest.mark.parametrize("width", [700, 1400, 2560])
+    def test_prompt_fits_next_to_the_hint(self, main_window, width):
+        """The query is cut to what the label really has room for, so it is
+        never elided on top (which would hide its end and the caret)."""
+        from PySide6.QtWidgets import QApplication
+
+        main_window.resize(width, 400)
+        self._pattern(main_window, "/data/" + "x" * 300 + "/{sensor}_{date}.png")
+        QApplication.processEvents()
+        main_window._update_status()
+        lab = main_window._status_label
+        assert lab.fontMetrics().horizontalAdvance(lab._full_plain) <= lab.contentsRect().width()
+
+    def test_click_places_the_caret(self, main_window):
+        query = "plots/{sensor}_{date}.png"
+        self._pattern(main_window, query)
+        head = main_window._prompt_map[0]
+        fm = main_window._status_label.fontMetrics()
+        target = query.index("{date}")
+        main_window._on_status_clicked(fm.horizontalAdvance(head + query[:target]) + 1)
+        assert main_window.view._cmd["caret"] == target

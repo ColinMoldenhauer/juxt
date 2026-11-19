@@ -197,7 +197,7 @@ Press `:` to open command mode. The status bar shows your input and a [fuzzy-fil
 | `:grid-sharey [on\|off]` | Toggle or set synchronized vertical pan/zoom across cells (default: on) |
 | `:reload` | Re-detect axes and reload images from the current source |
 | `:copy-path` | Copy the current image's file path to the clipboard |
-| `:copy-cli-command` | Copy a `juxt` command line that reopens this view: the template, every axis pinned to its current values (so an interactively picked or `:subset`-edited selection returns without a scan or dialogue), the locked `←/→` / `↑/↓` axes, and the grid view. Also on the `Copy CLI command` button at the bottom of the info sidebar. The cursor position, custom key letters, the session name and an SSH port or key file are not part of it |
+| `:copy-cli-command` | Copy a `juxt` command line that reopens this view: the template, every axis pinned to its current values (so an interactively picked or `:subset`-edited selection returns without a scan or dialogue), the locked `←/→` / `↑/↓` axes, and the grid view. Also on the `copy CLI command` button at the bottom of the info sidebar. The cursor position, custom key letters, the session name and an SSH port or key file are not part of it |
 | `:reveal` | Show the current image file in the system file manager |
 | `:copy-image` | Copy the current image to the clipboard |
 | `:write [PATH]` / `:w [PATH]` | Write the current config to a YAML file; opens a file dialog if PATH is omitted |
@@ -245,7 +245,7 @@ A pattern with no placeholder in common with the current one, a directory, a YAM
 
 `smart`, `gui` and `cli` scan the new pattern both ways (and `smart` the old one as well) before loading anything, so they take a little longer to start than `keep`.
 
-Free-text arguments (`:pattern`, `:write`) support full cursor editing: `←`/`→` move the caret, `Home`/`End` jump to the ends, `Delete` removes the character at the caret. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session.
+Free-text arguments (`:pattern`, `:write`, …) support full cursor editing: `←`/`→` move the caret, `Ctrl+←`/`Ctrl+→` jump a word, `Home`/`End` jump to the ends, `Delete` removes the character at the caret, and `Ctrl+Backspace`/`Ctrl+Delete` remove the word before or after it. A word runs over letters, digits and `_`, so `sm_vs_peatclsm` goes in one stroke. A click in the text puts the caret there. The argument gets the full width of the status bar, apart from a hint on the right. **`Tab`** completes the path: local paths use the filesystem; remote paths use the existing SFTP connection when the typed host matches the current session. For `:remove-value`, `:remove-axis` and `:change-key`, `Tab` completes the axis name instead, and after it (`:remove-value AXIS `) one of that axis's values; several matches are listed on the right.
 
 #### Placeholder-aware completion
 
