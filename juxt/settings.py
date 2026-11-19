@@ -177,6 +177,19 @@ modifiers:
 navigation:
   skip_missing: false
 
+# What :pattern does with the values picked for axes the new pattern keeps
+# (placeholders of the same name), e.g. a subset from --subset-interactive:
+#   smart   keep them; if the new pattern finds values the old one did not
+#           have on disk, open the value picker to tick which to load
+#   keep    pin those axes to their current values; only new placeholders
+#           are scanned (anything left out stays on offer in :values)
+#   ignore  scan the disk afresh for every axis
+#   gui     ask keep or ignore in a dialogue, with the image count of each
+#   cli     ask the same in the status bar
+# ":pattern PATH --keep-subset" or "--ignore-subset" overrides this once.
+pattern:
+  subset: smart
+
 # How an axis' values are laid out in the info sidebar.
 # Values are packed into rows, joined by "separator"; a value never breaks
 # across lines (one too long for a row is cut with an ellipsis). Once any
@@ -258,6 +271,20 @@ modifiers:
 navigation:
   skip_missing: false
 """,
+    "pattern": """
+# What :pattern does with the values picked for axes the new pattern keeps
+# (placeholders of the same name), e.g. a subset from --subset-interactive:
+#   smart   keep them; if the new pattern finds values the old one did not
+#           have on disk, open the value picker to tick which to load
+#   keep    pin those axes to their current values; only new placeholders
+#           are scanned (anything left out stays on offer in :values)
+#   ignore  scan the disk afresh for every axis
+#   gui     ask keep or ignore in a dialogue, with the image count of each
+#   cli     ask the same in the status bar
+# ":pattern PATH --keep-subset" or "--ignore-subset" overrides this once.
+pattern:
+  subset: smart
+""",
     "sidebar": """
 # How an axis' values are laid out in the info sidebar.
 # Values are packed into rows, joined by "separator"; a value never breaks
@@ -312,6 +339,7 @@ class Settings:
     dim_missing: bool = False
     sidebar_copy: str = "selected"
     sidebar_open: bool = True
+    pattern_subset: str = "smart"
     max_vals: int = 3
     max_vals_display: int = 10
     highlight: Highlight = field(
@@ -327,6 +355,19 @@ class Settings:
     sidebar_separator: str = "  "
     sidebar_list_larger_than: int = 20
     theme: str = "auto"
+
+
+_PATTERN_SUBSET_MODES = ("smart", "keep", "ignore", "gui", "cli")
+
+
+def _parse_pattern_subset(value: object) -> str:
+    """Normalise `pattern.subset` to one of smart, keep, ignore, gui, cli."""
+    mode = str(value).strip().lower()
+    if mode in _PATTERN_SUBSET_MODES:
+        return mode
+    log.warning("Invalid pattern.subset %r (expected %s); using smart",
+                value, " | ".join(_PATTERN_SUBSET_MODES))
+    return "smart"
 
 
 def _parse_sidebar_copy(value: object) -> str:
@@ -402,6 +443,9 @@ def load_settings(path: Path = SETTINGS_PATH, write: bool = True) -> Settings:
                 s.highlight_candidates = parse_highlight(
                     hl["candidates"], DEFAULT_HIGHLIGHT_CANDIDATES
                 )
+        pattern = data.get("pattern") or {}
+        if isinstance(pattern, dict) and "subset" in pattern:
+            s.pattern_subset = _parse_pattern_subset(pattern["subset"])
         sidebar = data.get("sidebar") or {}
         if isinstance(sidebar, dict):
             value_list = sidebar.get("value_list") or {}

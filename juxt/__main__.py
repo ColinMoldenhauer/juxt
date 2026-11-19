@@ -860,6 +860,7 @@ def main():
         skip_missing=settings.skip_missing,
         dim_missing=settings.dim_missing,
         sidebar_copy=settings.sidebar_copy,
+        pattern_subset=settings.pattern_subset,
         keybindings=settings.keybindings,
         highlight=settings.highlight,
         highlight_candidates=settings.highlight_candidates,

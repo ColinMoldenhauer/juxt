@@ -3172,3 +3172,228 @@ class TestCopyCliCommand:
         qtbot.addWidget(w)
         w._info_cli_button.click()
         assert QApplication.clipboard().text() == w.view.cli_command()
+
+
+# ---------------------------------------------------------------------------
+# :pattern and the current subset (pattern.subset, --keep-subset / --ignore-subset)
+# ---------------------------------------------------------------------------
+
+class _PatternTree:
+    """`root/r1/{a}/{b}.png` with a subset a=[x, y], b=[p] on show; the new
+    pattern turns `r1` into `{ref}`.  r2 holds a value (`w`) r1 lacks."""
+
+    TREE = {"r1": (["x", "y", "z"], ["p", "q"]), "r2": (["x", "y", "w"], ["p", "q"])}
+
+    @pytest.fixture
+    def view(self, tmp_path, qtbot):
+        from PySide6.QtGui import QPixmap
+
+        from conftest import make_png
+        from juxt.config import Config, _auto_keys
+        from juxt.viewer import ImageView
+
+        for ref, (avals, bvals) in self.TREE.items():
+            for a in avals:
+                for b in bvals:
+                    f = tmp_path / ref / a / f"{b}.png"
+                    f.parent.mkdir(parents=True, exist_ok=True)
+                    f.write_bytes(make_png())
+        self.root = tmp_path.as_posix()
+        axes = {"a": ["x", "y"], "b": ["p"]}
+        template = f"{self.root}/r1/{{a}}/{{b}}.png"
+        pixmaps = {(i, 0): QPixmap(template.format(a=a, b="p")) for i, a in enumerate(axes["a"])}
+        v = ImageView(Config(template=template, axes=axes, keys=_auto_keys(axes)),
+                      pixmaps, watch=False)
+        qtbot.addWidget(v)
+        return v
+
+    @property
+    def new_pattern(self):
+        return f"{self.root}/{{ref}}/{{a}}/{{b}}.png"
+
+    @staticmethod
+    def _axes(v):
+        return {n: sorted(vs) for n, vs in zip(v.axis_names, v.axis_values)}
+
+    def _run(self, v, qtbot, subset):
+        with qtbot.waitSignal(v.config_changed, timeout=5000):
+            v._do_pattern(self.new_pattern, subset)
+
+
+
+class TestPatternSubset(_PatternTree):
+    def test_keep_pins_the_shared_axes(self, view, qtbot):
+        self._run(view, qtbot, "keep")
+        assert self._axes(view) == {"ref": ["r1", "r2"], "a": ["x", "y"], "b": ["p"]}
+        assert len(view.pixmaps) == 4
+
+    def test_images_on_show_are_not_read_again(self, view, qtbot, monkeypatch):
+        old = {view._key_to_path(k): pm.cacheKey() for k, pm in view.pixmaps.items()}
+        read = []
+        real = __import__("juxt.viewer", fromlist=["QPixmap"]).QPixmap
+        monkeypatch.setattr("juxt.viewer.QPixmap",
+                            lambda *a: (read.append(a[0]) if a and isinstance(a[0], str) else None)
+                            or real(*a))
+        self._run(view, qtbot, "keep")
+        reused = {view._key_to_path(k): pm.cacheKey() for k, pm in view.pixmaps.items()
+                  if view._key_to_path(k) in old}
+        assert reused == old
+        assert sorted(read) == sorted(p.replace("/r1/", "/r2/") for p in old)
+
+    def test_ignore_scans_everything_afresh(self, view, qtbot):
+        self._run(view, qtbot, "ignore")
+        assert self._axes(view) == {"ref": ["r1", "r2"], "a": ["w", "x", "y", "z"],
+                                    "b": ["p", "q"]}
+
+    def test_flags_override_the_setting(self, view, qtbot, monkeypatch):
+        monkeypatch.setattr("juxt.dialogs.PatternSubsetDialog.exec",
+                            lambda self: pytest.fail("asked despite a flag"))
+        view._pattern_subset = "gui"
+        with qtbot.waitSignal(view.config_changed, timeout=5000):
+            view._cmd_execute(f"pattern {self.new_pattern} --keep-subset")
+        assert self._axes(view)["a"] == ["x", "y"]
+
+    def test_gui_asks_and_follows_the_answer(self, view, qtbot, monkeypatch):
+        seen = {}
+
+        def _exec(dlg):
+            seen["buttons"] = sorted(dlg.choice_buttons)
+            dlg.choice = "ignore"
+            return 1
+
+        monkeypatch.setattr("juxt.dialogs.PatternSubsetDialog.exec", _exec)
+        self._run(view, qtbot, "gui")
+        assert seen["buttons"] == ["ignore", "keep"]
+        assert self._axes(view)["b"] == ["p", "q"]
+
+    def test_gui_cancel_leaves_the_view_alone(self, view, qtbot, monkeypatch):
+        monkeypatch.setattr("juxt.dialogs.PatternSubsetDialog.exec", lambda dlg: 0)
+        view._do_pattern(self.new_pattern, "gui")
+        qtbot.waitUntil(lambda: not view._reload_in_progress, timeout=5000)
+        assert view.axis_names == ["a", "b"]
+        assert view._flash_msg == "pattern unchanged"
+
+    def _ask_cli(self, view, qtbot):
+        view._do_pattern(self.new_pattern, "cli")
+        qtbot.waitUntil(lambda: view._pattern_choice is not None, timeout=5000)
+
+    def test_cli_shows_both_counts(self, view, qtbot):
+        self._ask_cli(view, qtbot)
+        prompt, details = view.pattern_choice_text()
+        assert "keep subset: 4 images (×2)" in prompt
+        assert "ignore subset: 16 images (×8)" in prompt
+        assert "ref new (2)" in details and "a 2→4" in details
+
+    @pytest.mark.parametrize("key, a_values", [("K", ["x", "y"]), ("I", ["w", "x", "y", "z"])])
+    def test_cli_key_picks(self, view, qtbot, key, a_values):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        self._ask_cli(view, qtbot)
+        with qtbot.waitSignal(view.config_changed, timeout=5000):
+            QTest.keyClick(view, getattr(Qt, f"Key_{key}"))
+        assert self._axes(view)["a"] == a_values
+
+    def test_cli_escape_cancels(self, view, qtbot):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        self._ask_cli(view, qtbot)
+        QTest.keyClick(view, Qt.Key_Escape)
+        assert view._pattern_choice is None and not view._reload_in_progress
+        assert view.axis_names == ["a", "b"]
+
+    def test_no_question_when_both_choices_agree(self, view, qtbot, monkeypatch):
+        monkeypatch.setattr("juxt.dialogs.PatternSubsetDialog.exec",
+                            lambda self: pytest.fail("asked with nothing to choose"))
+        view.axis_values[0] = ["w", "x", "y", "z"]        # already everything
+        view.axis_values[1] = ["p", "q"]
+        view.config.axes = dict(zip(view.axis_names, view.axis_values))
+        self._run(view, qtbot, "gui")
+        assert self._axes(view)["ref"] == ["r1", "r2"]
+
+    def test_keep_finding_nothing_fails_with_a_hint(self, view, qtbot):
+        view.axis_values[0] = ["nope"]
+        view._do_pattern(self.new_pattern, "keep")
+        qtbot.waitUntil(lambda: not view._reload_in_progress, timeout=5000)
+        assert view.axis_names == ["a", "b"]
+        assert "--ignore-subset" in view._flash_msg
+
+
+class TestPatternSmart(_PatternTree):
+    """`pattern.subset: smart`: keep the subset, and open the value picker
+    only for values the old pattern did not have on disk (`w`, under r2)."""
+
+    def _picker(self, monkeypatch, tick):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QDialog
+
+        seen = {}
+
+        def _exec(dlg):
+            seen.update({p.axis_name: {it.data(Qt.ItemDataRole.UserRole):
+                                       it.checkState() == Qt.CheckState.Checked
+                                       for it in p._items()} for p in dlg.panels})
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr("juxt.dialogs.ValuesDialog.exec", _exec)
+        monkeypatch.setattr("juxt.dialogs.ValuesDialog.values", lambda dlg: tick)
+        return seen
+
+    def test_symmetric_tree_loads_without_asking(self, view, qtbot, monkeypatch):
+        import shutil
+
+        shutil.rmtree(f"{self.root}/r2/w")
+        monkeypatch.setattr("juxt.dialogs.ValuesDialog.exec",
+                            lambda dlg: pytest.fail("asked with no new values"))
+        self._run(view, qtbot, "smart")
+        assert self._axes(view) == {"ref": ["r1", "r2"], "a": ["x", "y"], "b": ["p"]}
+
+    def test_values_left_out_before_are_not_new(self, view, qtbot, monkeypatch):
+        """z and q exist under the old pattern too: deselected, not new."""
+        seen = self._picker(monkeypatch, {"a": ["x", "y", "w"], "ref": ["r1", "r2"]})
+        self._run(view, qtbot, "smart")
+        assert seen == {"a": {"x": True, "y": True, "w": False},
+                        "ref": {"r1": True, "r2": True}}
+
+    def test_picked_values_are_loaded(self, view, qtbot, monkeypatch):
+        self._picker(monkeypatch, {"a": ["x", "y", "w"], "ref": ["r2"]})
+        self._run(view, qtbot, "smart")
+        assert self._axes(view) == {"ref": ["r2"], "a": ["w", "x", "y"], "b": ["p"]}
+
+    def test_cancel_leaves_the_view_alone(self, view, qtbot, monkeypatch):
+        monkeypatch.setattr("juxt.dialogs.ValuesDialog.exec", lambda dlg: 0)
+        view._do_pattern(self.new_pattern, "smart")
+        qtbot.waitUntil(lambda: not view._reload_in_progress, timeout=5000)
+        assert view.axis_names == ["a", "b"]
+        assert view._flash_msg == "pattern unchanged"
+
+
+class TestPatternHelpers:
+    @pytest.mark.parametrize("arg, expected", [
+        ("p/{a}.png", ("p/{a}.png", None)),
+        ("p/{a}.png --keep-subset", ("p/{a}.png", "keep")),
+        ("--ignore-subset p/{a}.png", ("p/{a}.png", "ignore")),
+        ("p/{a}.png --keep-subset --ignore-subset", ("p/{a}.png", "ignore")),
+    ])
+    def test_split_pattern_flags(self, arg, expected):
+        from juxt.viewer import _split_pattern_flags
+
+        assert _split_pattern_flags(arg) == expected
+
+    def test_axis_count_changes(self):
+        from juxt.viewer import _axis_count_changes
+
+        assert _axis_count_changes({"a": 2, "b": 1, "c": 3}, {"ref": 2, "a": 4, "b": 1}) == [
+            "ref new (2)", "a 2→4", "c gone"]
+
+    def test_dialog_marks_changes_and_answers(self, qtbot):
+        from juxt.dialogs import PatternSubsetDialog
+
+        dlg = PatternSubsetDialog({"a": 2, "b": 1},
+                                  {"keep": {"ref": 2, "a": 2, "b": 1},
+                                   "ignore": {"ref": 2, "a": 4, "b": 2}})
+        qtbot.addWidget(dlg)
+        assert dlg.choice_buttons["keep"].isDefault()
+        dlg.choice_buttons["ignore"].click()
+        assert dlg.choice == "ignore"

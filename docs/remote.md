@@ -114,4 +114,4 @@ If you add files on the server that introduce a new axis value, juxt won't see t
 
 ### Changing the remote path at runtime
 
-**`:pattern PATH`** lets you switch to a different remote template (or any other source) without restarting juxt and re-entering credentials. The argument is pre-filled with the current template; edit it and press `Enter`. The existing SFTP connection is reused when the host matches, and `Tab` completes remote paths using that connection.
+**`:pattern PATH`** lets you switch to a different remote template (or any other source) without restarting juxt and re-entering credentials. The argument is pre-filled with the current template; edit it and press `Enter`. The values you picked for axes the new template keeps can be kept or rescanned; see [Keeping the current subset](navigation.md#keeping-the-current-subset). The existing SFTP connection is reused when the host matches, and `Tab` completes remote paths using that connection.
