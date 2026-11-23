@@ -587,3 +587,113 @@ class TestAxisValuesOnDisk:
             f"{root.as_posix()}/{{date}}/{{sensor}}.png", axes, "sensor", sftp)
         assert found == ["A", "B"]
         assert not any(p.endswith("/d2") for p in sftp.listed)
+
+
+class TestPatternPins:
+    """`--NAME 'A*'` / `--NAME 're:...'` keep the values on disk they match."""
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        """sensor/date.png where only B2 has d2, and the sensors include 10."""
+        for sensor, date in [("A1", "d1"), ("A2", "d1"), ("A10", "d1"),
+                             ("B1", "d1"), ("B2", "d2")]:
+            (tmp_path / sensor).mkdir(exist_ok=True)
+            (tmp_path / sensor / f"{date}.png").write_bytes(b"")
+        return f"{tmp_path.as_posix()}/{{sensor}}/{{date}}.png"
+
+    def _axes(self, template, **pins):
+        from juxt.detect import parse_pins
+        return _axes_from_local_template(template, pinned=parse_pins(pins))[1]
+
+    def test_parse_pin_kinds(self):
+        from juxt.detect import PinPattern, parse_pin
+        assert parse_pin("A1") == "A1"
+        assert parse_pin("1.5") == "1.5"  # '.' is common in values, not a regex
+        for typed in ("A*", "A?", "A[12]", "re:A.*"):
+            assert isinstance(parse_pin(typed), PinPattern)
+        with pytest.raises(ValueError, match="Invalid regex"):
+            parse_pin("re:A(")
+
+    def test_glob_keeps_the_matching_values(self, tree):
+        assert self._axes(tree, sensor=["A*"])["sensor"] == ["A1", "A10", "A2"]
+
+    def test_each_pattern_sorts_its_matches_like_a_discovered_axis(self, tree):
+        assert self._axes(tree, sensor=["A??", "A?"])["sensor"] == ["A10", "A1", "A2"]
+        assert self._axes(tree, date=["d*"])["date"] == ["d1", "d2"]
+
+    def test_regex_matches_in_full(self, tree):
+        assert self._axes(tree, sensor=["re:A\\d"])["sensor"] == ["A1", "A2"]
+        assert self._axes(tree, sensor=["re:[AB]1"])["sensor"] == ["A1", "B1"]
+
+    def test_match_is_case_sensitive(self, tree):
+        with pytest.raises(ValueError, match="matches no files"):
+            self._axes(tree, sensor=["a*"])
+
+    def test_literals_and_patterns_mix_in_the_given_order(self, tree):
+        axes = self._axes(tree, sensor=["B2", "A*", "A1"])
+        assert axes["sensor"] == ["B2", "A1", "A10", "A2"]
+
+    def test_a_regex_with_groups_and_flags(self, tree):
+        """Its own groups must not shift the template's, and a leading global
+        flag must survive being spliced into the template regex."""
+        assert self._axes(tree, sensor=["re:(A|B)(1)"])["sensor"] == ["A1", "B1"]
+        assert self._axes(tree, sensor=["re:(?i)b\\d"])["sensor"] == ["B1", "B2"]
+
+    def test_glob_star_stays_within_a_path_segment(self, tmp_path):
+        for sub in ("runs/a", "runs/b", "runs/b/deep"):
+            (tmp_path / sub).mkdir(parents=True)
+            (tmp_path / sub / "plot.png").write_bytes(b"")
+        root = tmp_path.as_posix()
+        axes = self._axes("{root}/plot.png", root=[f"{root}/runs/*"])
+        assert axes["root"] == [f"{root}/runs/a", f"{root}/runs/b"]
+
+    def test_other_axes_only_get_values_found_with_a_match(self, tree):
+        """d2 exists only for B2, which 'A*' leaves out."""
+        assert self._axes(tree, sensor=["A*"])["date"] == ["d1"]
+        assert self._axes(tree, sensor=["B*"])["date"] == ["d1", "d2"]
+
+    def test_patterns_on_several_axes(self, tree):
+        axes = self._axes(tree, sensor=["B*"], date=["re:d[2-9]"])
+        assert axes == {"sensor": ["B2"], "date": ["d2"]}
+
+    def test_a_pattern_that_matches_nothing_raises(self, tree):
+        with pytest.raises(ValueError, match="'Z\\*' matches no files"):
+            self._axes(tree, sensor=["A*", "Z*"])
+
+    def test_a_plain_str_pin_stays_literal(self, tmp_path):
+        """Discovered values are pinned again internally; a '[' in one is no class."""
+        (tmp_path / "run[1].png").write_bytes(b"")
+        (tmp_path / "run1.png").write_bytes(b"")
+        template = f"{tmp_path.as_posix()}/{{run}}.png"
+        _, axes = _axes_from_local_template(template, pinned={"run": ["run[1]"]})
+        assert axes["run"] == ["run[1]"]
+
+    def test_recursive_placeholder(self, tmp_path):
+        for sub in ("AM/x", "AM/y", "PM/x"):
+            (tmp_path / sub).mkdir(parents=True)
+            (tmp_path / sub / "plot.png").write_bytes(b"")
+        template = f"{tmp_path.as_posix()}/{{**run}}/plot.png"
+        assert self._axes(template, run=["AM/*"])["run"] == ["AM/x", "AM/y"]
+        assert self._axes(template, run=["*/x"])["run"] == ["AM/x", "PM/x"]
+
+    def test_wildcard_template(self, tmp_path):
+        for root, sensor in [("r1", "A"), ("r2", "B"), ("other", "C")]:
+            (tmp_path / root).mkdir()
+            (tmp_path / root / f"{sensor}_d1.png").write_bytes(b"")
+        from juxt.detect import parse_pins
+        _, axes = resolve_wildcard_template(
+            "{root}/*.png", pinned=parse_pins({"root": [f"{tmp_path.as_posix()}/r*"]}))
+        assert axes["root"] == [f"{tmp_path.as_posix()}/r1", f"{tmp_path.as_posix()}/r2"]
+        assert axes["axis_0"] == ["A", "B"]
+
+    def test_remote_matches_local(self, tree):
+        from juxt.detect import parse_pins
+        for pins in ({"sensor": ["A*"]}, {"sensor": ["B2", "re:A\\d"]}):
+            remote = _axes_from_sftp_template(tree, _OsSFTP(), parse_pins(pins))
+            assert remote == self._axes(tree, **pins)
+
+    def test_literal_pin_round_trips(self):
+        from juxt.detect import literal_pin, order_pinned, parse_pin
+        for value in ("plain", "x*y", "run[1]", "a?", "re:b", "1.5"):
+            spec = parse_pin(literal_pin(value))
+            assert order_pinned([spec], [value, value + "z", "b"]) == [value]

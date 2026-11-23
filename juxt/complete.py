@@ -673,14 +673,15 @@ def discover_values(template: str, name: str, pins: dict[str, list[str]],
 
     This is the same scan juxt runs at startup, so what completion offers is
     what the viewer would find: pins narrow it exactly as they do there, which
-    is what keeps `--sensor SMOS --model <Tab>` cheap and relevant.  Returns an
-    empty list for anything that cannot be scanned locally (a remote, a plain
+    is what keeps `--sensor SMOS --model <Tab>` cheap and relevant.  *pins* are
+    as typed, so a pattern pin (`--sensor 'A*'`) narrows the same way.  Returns
+    an empty list for anything that cannot be scanned locally (a remote, a plain
     directory, a YAML config) and for a scan that fails or runs out of time.
     """
     from pathlib import Path
 
     from .detect import (_axes_from_local_template, _is_remote_pattern,
-                         has_bare_wildcard, resolve_wildcard_template)
+                         has_bare_wildcard, parse_pins, resolve_wildcard_template)
 
     raw = expand_home(normalize_template(template))
     wildcard = has_bare_wildcard(raw)
@@ -693,6 +694,7 @@ def discover_values(template: str, name: str, pins: dict[str, list[str]],
         except ValueError:
             timeout = DISCOVERY_TIMEOUT
     try:
+        pins = parse_pins(pins)
         with _time_budget(timeout):
             if wildcard:
                 _, axes = resolve_wildcard_template(raw, pinned=pins)
@@ -713,7 +715,7 @@ def _option_value(words: list[str], flag: str) -> str | None:
 
 def _flag_value_candidates(flag: str, vals: list[str], template: str | None,
                            names: list[str], groups, words: list[str],
-                           word: str) -> list[str] | None:
+                           word: str, cur_quoted: bool = False) -> list[str] | None:
     """Candidates for the value of *flag*, *vals* being what it already has.
 
     None means juxt has no opinion (not an option with knowable values, or a
@@ -727,21 +729,59 @@ def _flag_value_candidates(flag: str, vals: list[str], template: str | None,
     if flag in _AXIS_NAME_OPTIONS:
         return None if vals else [n for n in names if n.startswith(word)]
 
+    from .detect import is_pin_pattern, parse_pin
+
+    pin = _is_pin_flag(flag, names)
     if flag == "--grid-values":
         axis = _option_value(words, "--grid")
         if axis not in names:
             return None
         pool = discover_values(template, axis, _pins_from(groups, names))
-    elif _is_pin_flag(flag, names):
+    elif pin:
         pool = discover_values(template, flag[2:], _pins_from(groups, names, skip=flag[2:]))
     else:
         return None
+    if pin and is_pin_pattern(word):
+        return _pattern_word(word, cur_quoted, pool)
     if not pool:
         return None
-    found = [shlex.quote(v) for v in pool if v not in vals and v.startswith(word)]
+    patterns = []
+    if pin:
+        for v in vals:
+            try:
+                spec = parse_pin(v)
+            except ValueError:
+                continue
+            if not isinstance(spec, str):
+                patterns.append(spec)
+    found = [shlex.quote(v) for v in pool
+             if v not in vals and v.startswith(word)
+             and not any(p.matches(v) for p in patterns)]
     # A typed prefix that matches no value is probably a path; nothing typed
     # and nothing left means every value is already on the line.
     return found if found or not word else None
+
+
+def _pattern_word(word: str, quoted: bool, pool: list[str]) -> list[str]:
+    """The candidates for a pin *word* that is a pattern, given the *pool* of
+    values on disk.
+
+    The pattern is kept as typed: bash would replace it with the longest
+    prefix its matches share (`A*` with A1 and A2 becomes `A`), so the values
+    themselves cannot be offered.  Tab instead closes the word when it matches
+    something, and does nothing (no candidate) when it does not, which flags a
+    typo before juxt is even started.  An invalid regex matches nothing.
+    """
+    from .detect import parse_pin
+    try:
+        spec = parse_pin(word)
+    except ValueError:
+        return []
+    if not any(spec.matches(v) for v in pool):
+        return []
+    # Inside an open quote readline closes the quote itself; outside one the
+    # pattern has to be quoted, or the shell would glob it.
+    return [word if quoted else shlex.quote(word)]
 
 
 def cli_complete(cur: str, prev: str = "", words: list[str] | None = None) -> list[str]:
@@ -778,7 +818,8 @@ def cli_complete(cur: str, prev: str = "", words: list[str] | None = None) -> li
         groups = groups + [(prev, [])]
     if groups:
         flag, vals = groups[-1]
-        found = _flag_value_candidates(flag, vals, template, names, groups, words, word)
+        found = _flag_value_candidates(flag, vals, template, names, groups, words, word,
+                                       cur_quoted=cur[:1] in ("'", '"'))
         if found is not None:
             return found
         if flag in _OPAQUE_VALUE_OPTIONS and not vals:

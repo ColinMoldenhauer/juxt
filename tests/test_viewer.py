@@ -3139,7 +3139,19 @@ class TestCopyCliCommand:
         monkeypatch.setattr("juxt.viewer.sys.platform", "linux")   # POSIX quoting
         image_view.axis_values[0] = ["a b", "it's", "x*y"]
         _args, pins = self._reparse(monkeypatch, image_view.cli_command())
-        assert pins[image_view.axis_names[0]] == ["a b", "it's", "x*y"]
+        a_b, its, pattern = pins[image_view.axis_names[0]]
+        assert (a_b, its) == ("a b", "it's")
+        # A value that reads as a pattern is escaped to match only itself.
+        assert pattern.matches("x*y") and not pattern.matches("xzy")
+
+    def test_values_that_look_like_patterns_stay_literal(self, image_view, monkeypatch):
+        from juxt.detect import order_pinned
+        monkeypatch.setattr("juxt.viewer.sys.platform", "linux")
+        values = ["run[1]", "a?", "re:b", "plain"]
+        image_view.axis_values[0] = values
+        _args, pins = self._reparse(monkeypatch, image_view.cli_command())
+        lookalikes = values + ["run1", "ab", "b"]
+        assert order_pinned(pins[image_view.axis_names[0]], lookalikes) == values
 
     def test_carries_locked_axes_and_grid(self, image_view, monkeypatch):
         name = image_view.axis_names[0]

@@ -36,6 +36,8 @@ from .detect import (
     detect_config,
     detect_config_remote,
     has_bare_wildcard,
+    order_pinned,
+    parse_pins,
     prompt_rename,
     resolve_wildcard_template,
 )
@@ -198,7 +200,9 @@ def _print_help() -> None:
                               globbing for them (template/wildcard PATH
                               only, must come after PATH); repeatable per
                               placeholder; required for every {placeholder}
-                              before a '*' wildcard
+                              before a '*' wildcard. A value with * ? [ is
+                              a glob, 're:REGEX' a regex, keeping the values
+                              on disk that match (quote it)
       --full-path             show a {**name} axis as the full path matched
                               instead of pruning the part shared by every
                               match (see {root}/{**plot}.png above)
@@ -326,8 +330,12 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     # Any flag not recognized above and appearing after PATH is treated as
     # '--{placeholder} VALUE ...', pinning that template placeholder to an
     # explicit value list instead of discovering it by globbing.
+    # A value with a glob character or a `re:` prefix selects by pattern.
     args, unknown = p.parse_known_args()
-    return args, _parse_axis_pins(unknown)
+    try:
+        return args, parse_pins(_parse_axis_pins(unknown))
+    except ValueError as e:
+        raise SystemExit(str(e)) from None
 
 
 def _resolve_config(
@@ -543,6 +551,11 @@ def _list_axes(args: argparse.Namespace, pins: dict[str, list[str]]) -> int:
     return 0
 
 
+def _pin_text(value) -> str:
+    """A pin as typed, whether a literal str or a `PinPattern`."""
+    return value if isinstance(value, str) else value.text
+
+
 def _resolve_for_picker(
     args: argparse.Namespace,
     pins: dict[str, list[str]],
@@ -566,14 +579,15 @@ def _resolve_for_picker(
     except ValueError:
         recursive = None
     needed = {n: vs for n, vs in pins.items()
-              if n == recursive or any("/" in v for v in vs)}
+              if n == recursive or any("/" in _pin_text(v) for v in vs)}
     if len(needed) < len(pins):
         try:
             config = _resolve_config(args, needed, ask_password)
         except Exception as e:
             log.info("Discovery without the pins failed (%s); keeping them", e)
         else:
-            return config, {n: vs for n, vs in pins.items()
+            # A pattern pin ticks the values it matches.
+            return config, {n: order_pinned(vs, config.axes[n]) for n, vs in pins.items()
                             if n not in needed and n in config.axes}
     return _resolve_config(args, pins, ask_password), {}
 

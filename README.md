@@ -72,6 +72,7 @@ juxt "examples/sample_plots/{sensor}_{date}_{overpass}_{source}.png" --sensor AS
 ```
 
 Each axis can be constrained by passing a custom subset via its axis name `--NAME VALUE ...`.
+A value can also be a quoted glob (`--sensor 'S*'`) or a regex (`--date 're:2024-03-1[5-7]'`) that keeps the values on disk it matches; see [pinning placeholder values](https://juxt.readthedocs.io/en/latest/configuration/#patterns).
 juxt comes with tab-completion, type `--sensor <TAB>` to see possible values for the subset.
 
 
@@ -192,6 +193,8 @@ Once the template is on the line, the options after it complete too. The placeho
 $ juxt "examples/sample_plots_nested/{sensor}/{overpass}/{date}_{source}.png" --sensor SMOS --source ⇥
 L2  L3     # what exists under SMOS
 ```
+
+A pattern pin narrows the other placeholders' values the same way. `Tab` on a pattern itself keeps it as typed (closing the word) when it matches something, and does nothing when it matches nothing.
 
 Other parameters that are tab-completed:
 `--axis-h`, `--axis-v` and `--grid`, `--grid-values` (the values of the `--grid` axis).
