@@ -49,7 +49,7 @@ Only the listing goes to stdout; errors and the SSH password prompt go elsewhere
 
 ### Picking values at startup
 
-`--subset-interactive` runs discovery as usual, then opens the value picker (one column per axis, every discovered value ticked) before a single image is read. Untick what you do not need and press `Load`; only the remaining combinations are loaded (or downloaded, for a remote PATH). `Cancel` quits.
+`--subset-interactive` runs discovery as usual, then opens the value picker (one column per axis, every discovered value ticked) before a single image is read. Untick what you do not need and press `Load`; only the remaining combinations are loaded (or downloaded, for a remote PATH). The counter next to the buttons shows how many images that is, and how many ticking everything would load (`8 of 12 images`). `Cancel` quits.
 
 It is the point-and-click alternative to narrowing the hypercube with `--NAME VALUE` pins. Together with it, pins preselect instead of narrowing: discovery runs without them, the picker shows every value on disk, and only the pinned values of a pinned axis start ticked (its other values are offered unticked).
 

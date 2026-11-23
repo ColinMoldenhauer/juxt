@@ -554,6 +554,35 @@ class TestJointValuesDialog:
         d.panel("date")._set_visible(True)
         assert _ok(d).isEnabled()
 
+    def test_counter_multiplies_the_ticked_values(self, qtbot):
+        d = self._dialog(qtbot, found={"sensor": ["A", "B", "C"], "date": ["d1", "d2", "d3"]})
+        assert d.image_count() == 6
+        assert d.image_total() == 9
+        assert d.count_label.text() == "6 of 9 images"
+        d.panel("sensor").value_list.item(2).setCheckState(Qt.CheckState.Checked)
+        assert d.count_label.text() == "9 images"
+        d.panel("date")._set_visible(False)
+        assert d.count_label.text() == "0 of 9 images"
+
+    def test_counter_has_no_total_while_a_listing_is_out(self, qtbot):
+        d = self._dialog(qtbot)
+        assert d.image_total() is None
+        assert d.count_label.text() == "6 images"
+        d.set_found("date", ["d1", "d2", "d3", "d4"])
+        assert d.count_label.text() == "6 images"
+        d.set_found("sensor", ["A", "B"])
+        assert d.count_label.text() == "6 of 8 images"
+
+    def test_counter_includes_the_axes_not_on_offer(self, qtbot):
+        d = ValuesDialog({"a": ["1"]}, {"a": ["1", "2"]}, other_combinations=5)
+        qtbot.addWidget(d)
+        assert d.count_label.text() == "5 of 10 images"
+
+    def test_counter_says_one_image(self, qtbot):
+        d = ValuesDialog({"a": ["1"]}, {"a": ["1"]})
+        qtbot.addWidget(d)
+        assert d.count_label.text() == "1 image"
+
     def test_custom_title_and_apply_text(self, qtbot):
         d = ValuesDialog({"a": ["1"]}, {"a": ["1"]}, title="pick", apply_text="Load")
         qtbot.addWidget(d)

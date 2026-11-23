@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html as _html
 import logging
+import math
 import os
 import re as _re
 import shlex
@@ -2871,7 +2872,9 @@ class ImageView(QGraphicsView):
                 self._values_found.emit((None, None))
 
         from .dialogs import ValuesDialog
-        dlg = ValuesDialog(current, parent=self.window())
+        others = math.prod(len(vals) for n, vals in zip(self.axis_names, self.axis_values)
+                           if n not in current)
+        dlg = ValuesDialog(current, other_combinations=others, parent=self.window())
         self._values_dlg = dlg
         threading.Thread(target=_worker, daemon=True).start()
         try:
@@ -3526,8 +3529,9 @@ class ImageView(QGraphicsView):
         names = [n for n in keep.axes if n in new_vals or n not in self.axis_names]
         current = {n: list(keep.axes[n]) for n in names}
         on_disk = {n: current[n] + new_vals.get(n, []) for n in names}
+        others = math.prod(len(vals) for n, vals in keep.axes.items() if n not in current)
         dlg = ValuesDialog(current, on_disk, title="New values", apply_text="Load",
-                           parent=self.window())
+                           other_combinations=others, parent=self.window())
         try:
             accepted = dlg.exec() == QDialog.DialogCode.Accepted
             chosen = dlg.values()
