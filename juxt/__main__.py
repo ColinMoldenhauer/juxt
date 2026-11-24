@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import glob
 import logging
+import os
+import re
 import signal
 import socket
 import sys
+from itertools import product
 from pathlib import Path
 
 from . import __version__
@@ -41,7 +46,15 @@ from .detect import (
     prompt_rename,
     resolve_wildcard_template,
 )
-from .loader import preload, preload_remote, set_remote_cache_days, set_threads
+from .loader import (
+    cached_pattern,
+    mark_cache_used,
+    preload,
+    preload_remote,
+    remote_cache_root,
+    set_remote_cache_days,
+    set_threads,
+)
 from . import theme
 from .settings import load_settings
 from .startup import StartupDialog
@@ -196,6 +209,12 @@ def _print_help() -> None:
                               dialogue (one column per axis) before any
                               image is read; --NAME VALUE pins then only
                               preselect, the other values stay on offer
+      --cached                open a remote PATH (or a YAML config with
+                              `remote`) from the local download cache
+                              instead, without connecting
+      --cache-dir             print where the downloads of a remote PATH
+                              are cached (without PATH: the cache root)
+                              and exit
       --NAME VALUE [...]      pin a {placeholder}'s values instead of
                               globbing for them (template/wildcard PATH
                               only, must come after PATH); repeatable per
@@ -310,6 +329,8 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
     p.add_argument("--full-path", action="store_true", default=False)
     p.add_argument("--list-axes", action="store_true", default=False)
     p.add_argument("--subset-interactive", action="store_true", default=False)
+    p.add_argument("--cached", action="store_true", default=False)
+    p.add_argument("--cache-dir", action="store_true", default=False)
     # Initial panel visibility; both are still toggleable at runtime.
     # These are declared here so parse_known_args recognises them; an
     # unrecognised --flag after PATH is read as an axis pin instead.
@@ -341,6 +362,120 @@ def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
         raise SystemExit(str(e)) from None
 
 
+_CACHED_NEEDS_REMOTE = (
+    "--cached needs a remote PATH (host:/path) or a YAML config with `remote`"
+)
+
+
+def _is_yaml(raw: str) -> bool:
+    return raw.lower().endswith((".yaml", ".yml"))
+
+
+def _split_fixed(local: str) -> tuple[Path, list[str]]:
+    """*local* split into its leading part without placeholders or
+    wildcards and the parts after it."""
+    parts = Path(local).parts
+    n = 0
+    while n < len(parts) and not ("{" in parts[n] or any(c in parts[n] for c in "*?[")):
+        n += 1
+    return Path(*parts[:n]), list(parts[n:])
+
+
+def _check_cached(local: str, raw: str) -> str:
+    """*local*, the cache copy of the remote pattern *raw*, if anything of
+    it was downloaded: its leading part without placeholders or wildcards
+    has to exist."""
+    fixed, _rest = _split_fixed(local)
+    if not fixed.exists():
+        raise ValueError(f"nothing of {raw} is cached ({fixed} does not exist)")
+    return local
+
+
+def _has_cached_files(local: str) -> bool:
+    """Whether the cache copy *local* of a remote directory or pattern holds
+    a file, its `{placeholders}` read as wildcards."""
+    fixed, rest = _split_fixed(local)
+    if not rest:
+        if fixed.is_file():
+            return True
+        return any(not f.startswith(".")   # not a download in progress
+                   for _dir, _dirs, files in os.walk(fixed) for f in files)
+    pattern = "/".join(rest)
+    pattern = re.sub(r"\{\*\*[^}]*\}", "**/*", pattern)
+    pattern = re.sub(r"\{[^}]*\}", "*", pattern)
+    return any(not os.path.isdir(fixed / m) and not Path(m).name.startswith(".")
+               for m in glob.iglob(pattern, root_dir=fixed, recursive=True))
+
+
+def _cache_hint(args: argparse.Namespace) -> str | None:
+    """For a remote PATH opened without `--cached`: a note that downloads
+    of it are in the cache already, so it could be opened offline."""
+    if args.cached or args.path is None:
+        return None
+    raw = expand_home(normalize_template(args.path))
+    try:
+        if _is_remote_pattern(raw):
+            local = cached_pattern(*_parse_remote_pattern(raw))
+        elif _is_yaml(raw):
+            config = load_config(raw)
+            if config.remote is None:
+                return None
+            local = cached_pattern(config.remote, config.template)
+        else:
+            return None
+        if not _has_cached_files(local):
+            return None
+    except Exception:   # a broken PATH is reported by the real resolution
+        return None
+    return (f"Cached run of {args.path} detected in {_split_fixed(local)[0]}. "
+            "Use --cached to open it without connecting.")
+
+
+def _cached_path(raw: str) -> str:
+    """`--cached`: the remote PATH *raw* moved into the download cache. A
+    YAML config is passed through, its template is moved once it is loaded
+    (`_cached_config`)."""
+    if _is_remote_pattern(raw):
+        remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
+        return _check_cached(cached_pattern(remote_cfg, remote_tmpl), raw)
+    if _is_yaml(raw):
+        return raw
+    raise ValueError(_CACHED_NEEDS_REMOTE)
+
+
+def _cached_config(config: Config) -> Config:
+    """`--cached` for a YAML config: its remote template, moved into the
+    download cache, as a local one."""
+    if config.remote is None:
+        raise ValueError(_CACHED_NEEDS_REMOTE)
+    template = cached_pattern(config.remote, config.template)
+    _check_cached(template, config.template)
+    return dataclasses.replace(config, template=template, remote=None)
+
+
+def _print_cache_dir(args: argparse.Namespace) -> int:
+    """`--cache-dir`: print where the downloads of PATH go, or the cache root."""
+    if args.path is None:
+        print(remote_cache_root())
+        return 0
+    raw = expand_home(normalize_template(args.path))
+    try:
+        if _is_remote_pattern(raw):
+            print(cached_pattern(*_parse_remote_pattern(raw)))
+            return 0
+        if _is_yaml(raw):
+            config = load_config(raw)
+            if config.remote is not None:
+                print(cached_pattern(config.remote, config.template))
+                return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    print("Error: --cache-dir needs a remote PATH (host:/path) or a YAML config "
+          "with `remote`", file=sys.stderr)
+    return 1
+
+
 def _resolve_config(
     args: argparse.Namespace,
     pins: dict[str, list[str]],
@@ -355,6 +490,8 @@ def _resolve_config(
     the reporting to the caller.
     """
     raw = expand_home(normalize_template(args.path))  # anonymous {} → {axis_1}, …; ~ → home
+    if args.cached:
+        raw = _cached_path(raw)
     prompt = rename and not args.auto
     if _is_remote_pattern(raw):
         remote_cfg, remote_tmpl = _parse_remote_pattern(raw)
@@ -379,12 +516,13 @@ def _resolve_config(
         files = _iter_images(p, args.max_depth)
         config, sep = detect_config(p, args.separator, args.max_depth)
         return prompt_rename(config, len(files), sep, p, args.max_depth) if prompt else config
-    if raw.lower().endswith((".yaml", ".yml")):
+    if _is_yaml(raw):
         if pins:
             raise ValueError(
                 "--NAME VALUE pinning requires a {placeholder} template, not a YAML config"
             )
-        return load_config(raw)
+        config = load_config(raw)
+        return _cached_config(config) if args.cached else config
     if has_bare_wildcard(raw):
         template, axes = resolve_wildcard_template(raw, pinned=pins)
         return Config(template=template, axes=axes, keys=_auto_keys(axes))
@@ -402,6 +540,11 @@ def _may_prompt(args: argparse.Namespace) -> bool:
     if args.auto or not args.path:
         return False
     raw = expand_home(normalize_template(args.path))
+    if args.cached:
+        try:
+            raw = _cached_path(raw)
+        except ValueError:
+            return False   # reported by _resolve_config
     if _is_remote_pattern(raw):
         return '{' not in _parse_remote_pattern(raw)[1]
     return Path(raw).is_dir()
@@ -675,6 +818,11 @@ def main():
     _detect._MAX_VALS = settings.max_vals
     _detect._MAX_VALS_DISPLAY = settings.max_vals_display
 
+    if args.cache_dir:
+        sys.exit(_print_cache_dir(args))
+    hint = _cache_hint(args)
+    if hint:
+        print(hint, file=sys.stderr)
     if args.list_axes:
         sys.exit(_list_axes(args, pins))
 
@@ -831,6 +979,9 @@ def main():
             config.template, config.axes, config.remote, on_progress, get_password)
     else:
         pixmaps = preload(config.template, config.axes, on_progress)
+        if args.cached:
+            mark_cache_used(config.template.format(**dict(zip(config.axes, combo)))
+                            for combo in product(*config.axes.values()))
         remote_tmpdir = None
         remote_mtimes = None
     progress.close()

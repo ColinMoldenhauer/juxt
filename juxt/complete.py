@@ -523,6 +523,7 @@ CLI_OPTIONS = [
     "-V", "--version",
     "-s", "--separator",
     "--axis-h", "--axis-v",
+    "--cached", "--cache-dir",
     "--full-path",
     "--grid", "--grid-layout", "--grid-values",
     "--info", "--no-info",

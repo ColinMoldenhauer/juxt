@@ -30,6 +30,11 @@ PATH                        directory to scan or YAML config file
                             its values, and exit (no window); see below
     --subset-interactive    after discovery, tick the values to load in a
                             dialogue before any image is read; see below
+    --cached                open a remote PATH (or a YAML config with
+                            `remote`) from the download cache, offline;
+                            see remote docs
+    --cache-dir             print where a remote PATH is cached (without
+                            PATH: the cache root) and exit
 -h, --help                  show usage and exit
 ```
 
