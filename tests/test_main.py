@@ -57,6 +57,15 @@ class TestParseArgsPinIntegration:
         assert args.path == "plots/{sensor}_{date}.png"
         assert pins == {"sensor": ["A", "B"]}
 
+    @pytest.mark.parametrize("flag", ["--s", "--gri", "--sub"])
+    def test_a_pin_named_like_an_option_prefix_is_a_pin(self, monkeypatch, flag):
+        """argparse would take `--s` as an ambiguous prefix of --separator,
+        --save, ..., and `--gri` as --grid."""
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/{x}.png", flag, "A"])
+        args, pins = _parse_args()
+        assert pins == {flag[2:]: ["A"]}
+        assert args.grid is None and args.separator is None
+
     def test_no_pins_gives_empty_dict(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["juxt", "/some/dir"])
         args, pins = _parse_args()
