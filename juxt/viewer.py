@@ -1955,6 +1955,8 @@ class ImageView(QGraphicsView):
         left out: the cursor position, custom key letters, the session name,
         and an SSH port or key file.
         """
+        from .detect import literal_pin
+
         cfg = self.config
         path = cfg.template
         if cfg.remote is not None:
@@ -1962,7 +1964,9 @@ class ImageView(QGraphicsView):
             path = f"{user}{cfg.remote.host}:{path}"
         parts = ["juxt", _shell_quote(path)]
         for name, vals in zip(self.axis_names, self.axis_values):
-            parts += [_shell_quote(f"--{name}"), *map(_shell_quote, vals)]
+            # A value such as `x*y` must not come back as a pattern.
+            parts += [_shell_quote(f"--{name}"),
+                      *(_shell_quote(literal_pin(v)) for v in vals)]
         if self._locked_h is not None:
             parts += ["--axis-h", _shell_quote(self.axis_names[self._locked_h])]
         if self._locked_v is not None:

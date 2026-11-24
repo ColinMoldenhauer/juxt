@@ -514,6 +514,39 @@ class TestOptionValueCompletion:
         assert got == ["m1/d1", "m1/d2", "m2/d1", "m2/d2"]
 
 
+class TestPatternPinCompletion:
+    """A pin may be a glob or `re:` pattern selecting the values it matches."""
+
+    def test_a_pattern_pin_narrows_the_other_placeholders(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--model", "*3", "--sensor"]
+        assert cli_complete("", "--sensor", words) == ["B"]
+        words = [UNEVEN, "--model", "re:m[23]", "--sensor"]
+        assert cli_complete("", "--sensor", words) == ["A", "B"]
+
+    def test_values_a_pattern_already_covers_are_not_offered(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--model", "m[12]"]
+        assert cli_complete("", "m[12]", words) == ["m3"]
+
+    def test_a_matching_pattern_is_kept_and_quoted(self, uneven_dir, monkeypatch):
+        """bash would cut `m*` down to the prefix its matches share, so the
+        pattern itself is the one candidate."""
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("m*", "--model", [UNEVEN, "--model"]) == ["'m*'"]
+        assert cli_complete("'m*", "--model", [UNEVEN, "--model"]) == ["m*"]
+
+    def test_a_pattern_matching_nothing_offers_nothing(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        assert cli_complete("'z*", "--model", [UNEVEN, "--model"]) == []
+        assert cli_complete("'re:(", "--model", [UNEVEN, "--model"]) == []
+
+    def test_a_pattern_is_checked_against_the_other_pins(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        words = [UNEVEN, "--sensor", "A", "--model"]
+        assert cli_complete("'*3", "--model", words) == []
+
+
 class TestAxisNameCompletion:
     @pytest.mark.parametrize("option", ["--axis-h", "--axis-v", "--grid"])
     def test_names_come_from_the_template(self, uneven_dir, monkeypatch, option):

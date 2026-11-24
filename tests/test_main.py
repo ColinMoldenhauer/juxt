@@ -66,6 +66,20 @@ class TestParseArgsPinIntegration:
         assert pins == {flag[2:]: ["A"]}
         assert args.grid is None and args.separator is None
 
+    def test_pattern_pins_are_parsed(self, monkeypatch):
+        from juxt.detect import PinPattern
+        monkeypatch.setattr(
+            "sys.argv", ["juxt", "plots/{sensor}.png", "--sensor", "A", "B*", "re:C.+"])
+        _args, pins = _parse_args()
+        literal, glob, regex = pins["sensor"]
+        assert literal == "A"
+        assert isinstance(glob, PinPattern) and isinstance(regex, PinPattern)
+
+    def test_invalid_regex_pin_exits(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["juxt", "plots/{sensor}.png", "--sensor", "re:("])
+        with pytest.raises(SystemExit, match="Invalid regex"):
+            _parse_args()
+
     def test_no_pins_gives_empty_dict(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["juxt", "/some/dir"])
         args, pins = _parse_args()
@@ -362,6 +376,15 @@ class TestPinsPreselectInThePicker:
             {"sensor": ["A", "C"]}, None)
         assert cfg.axes == {"sensor": ["A", "B", "C"], "date": ["d1", "d2"]}
         assert pre == {"sensor": ["A", "C"]}
+
+    def test_pattern_pins_preselect_their_matches(self, tree):
+        from juxt.__main__ import _resolve_for_picker
+        from juxt.detect import parse_pins
+        cfg, pre = _resolve_for_picker(
+            self._args(f"{tree.as_posix()}/{{sensor}}_{{date}}.png"),
+            parse_pins({"sensor": ["C", "[AB]"]}), None)
+        assert cfg.axes["sensor"] == ["A", "B", "C"]
+        assert pre == {"sensor": ["C", "A", "B"]}
 
     def test_no_pins_no_preselection(self, tree):
         from juxt.__main__ import _resolve_for_picker

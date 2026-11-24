@@ -7,6 +7,7 @@ import math
 import re
 import stat
 import sys
+from dataclasses import dataclass
 from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
@@ -370,20 +371,36 @@ def _parse_remote_pattern(arg: str) -> tuple[RemoteConfig, str]:
     return RemoteConfig(host=host_part, user=user), remote_template
 
 
-def _template_regex(template: str) -> str:
+def _template_regex(template: str, patterns: dict[str, str] | None = None) -> str:
     """Turn a template into a regex whose groups are its placeholders, in order.
 
-    Groups are numbered rather than named: a placeholder may be called
-    `{yyyy-mm-dd}`, which is not a valid Python group name.
+    The groups are named by position, `_g0`, `_g1`, ... (read them with
+    `_captures`): a placeholder may be called `{yyyy-mm-dd}`, which is not a
+    valid group name, and the groups of a pattern pin's own regex must not
+    shift the numbering.
 
     A placeholder named `**name` (see `_axes_from_local_template`) captures
-    across '/' rather than stopping at the next path separator.
+    across '/' rather than stopping at the next path separator.  *patterns*
+    maps a placeholder, as written inside its braces, to the regex its value
+    has to match instead (a pattern pin, see `PinPattern`).
     """
-    segs = PLACEHOLDER_NAME_RE.split(template)
-    return ''.join(
-        re.escape(s) if i % 2 == 0 else ('(.+)' if s.startswith('**') else '([^/]+)')
-        for i, s in enumerate(segs)
-    )
+    parts = []
+    for i, s in enumerate(PLACEHOLDER_NAME_RE.split(template)):
+        if i % 2 == 0:
+            parts.append(re.escape(s))
+            continue
+        if patterns and s in patterns:
+            body = f"(?:{patterns[s]})"
+        else:
+            body = '.+' if s.startswith('**') else '[^/]+'
+        parts.append(f"(?P<_g{i // 2}>{body})")
+    return ''.join(parts)
+
+
+def _captures(m: re.Match, names: list[str]) -> list[tuple[str, str]]:
+    """Pair the placeholder *names* (in template order) with what a
+    `_template_regex` match *m* captured for them."""
+    return [(n, m.group(f"_g{i}")) for i, n in enumerate(names)]
 
 
 def _strip_recursive_marker(name: str) -> tuple[str, bool]:
@@ -479,11 +496,170 @@ def _split_pinned(names: list[str], pinned: dict[str, list[str]]) -> tuple[list[
     return [n for n in names if n in pinned], [n for n in names if n not in pinned]
 
 
-def _pinned_combos(pinned_names: list[str], pinned: dict[str, list[str]]) -> list[dict[str, str]]:
+def _pinned_combos(pinned_names: list[str], pinned: dict[str, list]) -> list[dict]:
     """Every combination of the given axes' pinned values, as `{name: value}` dicts."""
     if not pinned_names:
         return [{}]
     return [dict(zip(pinned_names, vals)) for vals in product(*(pinned[n] for n in pinned_names))]
+
+
+# ── pattern pins ─────────────────────────────────────────────────────────────
+#
+# A `--NAME VALUE` pin is normally a literal value.  One containing a glob
+# character, or written `re:REGEX`, instead selects the values found on disk
+# that it matches (in full, case-sensitively).  Glob characters hardly ever
+# occur in filenames, whereas '.' does all the time (`1.5`, `v2.0`), which is
+# why a regex has to be asked for explicitly.
+#
+# Only pins the user typed are parsed (`parse_pins`); the resolvers take a str
+# literally, since they are also handed values discovered on disk, which may
+# well contain a '[' of their own.
+
+REGEX_PIN_PREFIX = "re:"
+_GLOB_CHARS = frozenset("*?[")
+
+
+@dataclass(frozen=True)
+class PinPattern:
+    """A pin that selects the discovered values it matches.
+
+    *text* is the pin as typed.  *regex* is what a value has to match in full;
+    it is also spliced into the template regex, so it may not start with
+    global flags (`parse_pin` scopes them).  *glob* is the glob, with '\\'
+    normalised to '/', when the pin is one: it then narrows the filesystem
+    glob too.
+    """
+    text: str
+    regex: re.Pattern
+    glob: str | None = None
+
+    def matches(self, value: str) -> bool:
+        return self.regex.fullmatch(value) is not None
+
+
+def _glob_regex(glob: str) -> str:
+    """Translate a shell-style *glob* into a regex, with shell semantics: `*`
+    and `?` stop at '/', the way the filesystem glob that a glob pin narrows
+    does, and `[...]` is a character class (`[!...]` negated)."""
+    out = []
+    i, n = 0, len(glob)
+    while i < n:
+        c = glob[i]
+        i += 1
+        if c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[":
+            j = i + 1 if i < n and glob[i] in "!^" else i
+            if j < n and glob[j] == "]":
+                j += 1  # a leading ']' is a member, not the end
+            j = glob.find("]", j)
+            if j < 0:
+                out.append(re.escape(c))
+                continue
+            body = glob[i:j].replace("\\", "\\\\").replace("[", "\\[")
+            if body[:1] in ("!", "^"):
+                body = "^" + body[1:]
+            out.append(f"[{body}]")
+            i = j + 1
+        else:
+            out.append(re.escape(c))
+    return "".join(out)
+
+
+def is_pin_pattern(value) -> bool:
+    """Whether the pin *value* (as typed, or parsed) selects by pattern."""
+    if isinstance(value, PinPattern):
+        return True
+    return value.startswith(REGEX_PIN_PREFIX) or bool(_GLOB_CHARS & set(value))
+
+
+def parse_pin(value):
+    """Parse one pin as typed: a literal value stays a str, anything else
+    becomes a `PinPattern`.  Already parsed pins pass through.
+
+    Raises ValueError for a `re:` pin that is not a valid regex.
+    """
+    if isinstance(value, PinPattern):
+        return value
+    if value.startswith(REGEX_PIN_PREFIX):
+        body = value[len(REGEX_PIN_PREFIX):]
+        # `(?i)abc` would be a global flag in the middle of the template
+        # regex, which re rejects; `(?i:abc)` means the same and nests.
+        flags = re.match(r"\(\?([aiLmsux]+)\)", body)
+        if flags:
+            body = f"(?{flags.group(1)}:{body[flags.end():]})"
+        try:
+            return PinPattern(value, re.compile(body))
+        except re.error as e:
+            raise ValueError(f"Invalid regex in pin {value!r}: {e}") from None
+    if _GLOB_CHARS & set(value):
+        glob = value.replace("\\", "/")
+        return PinPattern(value, re.compile(_glob_regex(glob)), glob)
+    return value
+
+
+def literal_pin(value: str) -> str:
+    """Write the literal *value* so that `parse_pin` reads it back as exactly
+    that value: one that would read as a pattern becomes an escaped regex."""
+    return REGEX_PIN_PREFIX + re.escape(value) if is_pin_pattern(value) else value
+
+
+def parse_pins(pins: dict[str, list] | None) -> dict[str, list]:
+    """`parse_pin` for every value of a `{name: [values...]}` pin dict."""
+    return {n: [parse_pin(v) for v in vs] for n, vs in (pins or {}).items()}
+
+
+def order_pinned(specs: list, found: list[str]) -> list[str]:
+    """The values of a pinned axis in the order its pins name them.
+
+    A literal pin contributes itself, a `PinPattern` the values of *found*
+    it matches, sorted as a discovered axis would be.  Duplicates are dropped.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        if isinstance(spec, PinPattern):
+            vals = _numeric_sort([v for v in found if spec.matches(v)])
+        else:
+            vals = [spec]
+        for v in vals:
+            if v not in seen:
+                seen.add(v)
+                out.append(v)
+    return out
+
+
+def _settle_pattern_axes(pinned: dict[str, list], axes: dict[str, list[str]]) -> None:
+    """Order every axis pinned with a pattern (see `order_pinned`), in place.
+
+    Raises ValueError for a pattern that matched nothing: most likely a typo,
+    and silently dropping it would hide that.
+    """
+    for n, specs in pinned.items():
+        patterns = [s for s in specs if isinstance(s, PinPattern)]
+        if not patterns:
+            continue
+        for spec in patterns:
+            if not any(spec.matches(v) for v in axes[n]):
+                raise ValueError(f"--{n} {spec.text!r} matches no files")
+        axes[n] = order_pinned(specs, axes[n])
+
+
+def _normalise_literals(pinned: dict[str, list] | None) -> dict[str, list]:
+    """Turn '\\' into '/' in the literal values of *pinned*."""
+    return {k: [v.replace("\\", "/") if isinstance(v, str) else v for v in vs]
+            for k, vs in (pinned or {}).items()}
+
+
+def _record_match(m: re.Match, open_names: list[str],
+                  axes: dict[str, list[str]], seen: dict[str, set]) -> None:
+    """Add the values a template match *m* captured for *open_names*."""
+    for n, v in _captures(m, open_names):
+        if v not in seen[n]:
+            seen[n].add(v)
+            axes[n].append(v)
 
 
 def _axes_from_local_template(
@@ -498,7 +674,10 @@ def _axes_from_local_template(
 
     *pinned*, if given, fixes one or more placeholders to an explicit list of
     values (in the given order) instead of discovering them by globbing, e.g.
-    `{'root': ['/data/run1', '/data/run2']}`. Globbing then only resolves the
+    `{'root': ['/data/run1', '/data/run2']}`. A value may also be a pattern
+    (a `PinPattern`, see `parse_pin`), which keeps the values on disk that it
+    matches. A str is always taken literally, so discovered values can be
+    pinned again safely. Globbing then only resolves the
     remaining placeholders, once per combination of pinned values, and the
     results are merged into a shared axis space. This also lets a pinned
     value contain '/', which plain globbing can't discover since '*' never
@@ -527,7 +706,7 @@ def _axes_from_local_template(
     # below — otherwise a Windows path pinned with '\' survives into the glob
     # pattern and its regex, while the matched files it's compared against
     # (via f.replace('\\', '/')) never do, and nothing matches.
-    pinned = {k: [v.replace('\\', '/') for v in vs] for k, vs in (pinned or {}).items()}
+    pinned = _normalise_literals(pinned)
     pinned_names, free_names = _split_pinned(names, pinned)
     norm = template.replace('\\', '/')
     recursive_free = recursive_name is not None and recursive_name in free_names
@@ -536,43 +715,52 @@ def _axes_from_local_template(
     seen: dict[str, set] = {n: set() for n in names}
 
     for combo in _pinned_combos(pinned_names, pinned):
-        for n, v in combo.items():
+        fixed = {n: v for n, v in combo.items() if isinstance(v, str)}
+        filters = {n: v for n, v in combo.items() if isinstance(v, PinPattern)}
+        for n, v in fixed.items():
             if v not in seen[n]:
                 seen[n].add(v)
                 axes[n].append(v)
 
-        if not free_names:
+        # In template order, one per capture group: a pattern pin is matched
+        # like a free placeholder, but by its own regex.
+        open_names = [n for n in names if n not in fixed]
+        if not open_names:
             continue
 
         sub = norm
-        for n, v in combo.items():
+        for n, v in fixed.items():
             sub = sub.replace(f"{{{raw_token_of[n]}}}", v)
-        regex = _template_regex(sub)
+        regex = _template_regex(
+            sub, {raw_token_of[n]: p.regex.pattern for n, p in filters.items()})
 
-        if recursive_free:
+        if recursive_name in open_names:
             first_brace = sub.index('{')
             prefix = sub[:first_brace]
             last_slash = prefix.rfind('/')
             base_dir = prefix[:last_slash] if last_slash >= 0 else '.'
             if not Path(base_dir).is_dir():
                 raise ValueError(f"{base_dir!r} is not a directory")
-            matches = sorted(str(f) for f in _iter_images(Path(base_dir)))
+            matches = [str(f) for f in _iter_images(Path(base_dir))]
         else:
-            glob_pat = PLACEHOLDER_NAME_RE.sub('*', sub)
-            matches = sorted(_glob_mod.glob(glob_pat))
+            glob_sub = sub
+            for n, p in filters.items():
+                if p.glob is not None:  # narrows the scan, e.g. to some directories
+                    glob_sub = glob_sub.replace(f"{{{raw_token_of[n]}}}", p.glob)
+            glob_pat = PLACEHOLDER_NAME_RE.sub('*', glob_sub)
+            matches = _glob_mod.glob(glob_pat)
 
-        for f in matches:
-            m = re.fullmatch(regex, f.replace('\\', '/'))
+        # Sorted with '/' as the separator, so values come out in the same
+        # order on Windows ('\\' sorts after the digits, '/' before them).
+        for f in sorted(f.replace('\\', '/') for f in matches):
+            m = re.fullmatch(regex, f)
             if m:
-                for i, n in enumerate(free_names):
-                    v = m.group(i + 1)
-                    if v not in seen[n]:
-                        seen[n].add(v)
-                        axes[n].append(v)
+                _record_match(m, open_names, axes, seen)
 
-    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
+    _settle_pattern_axes(pinned, axes)
     if any(not axes[n] for n in free_names):
         raise ValueError(f"No files match template {template!r}")
+    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
 
     resolved_template = template
     if recursive_name is not None:
@@ -631,7 +819,7 @@ def resolve_wildcard_template(
             f"Template {template!r}: a {{placeholder}} cannot appear after a '*' wildcard"
         )
 
-    pinned = {k: [v.replace("\\", "/") for v in vs] for k, vs in (pinned or {}).items()}
+    pinned = _normalise_literals(pinned)
     unknown = sorted(set(pinned) - set(names))
     if unknown:
         raise ValueError(
@@ -650,6 +838,14 @@ def resolve_wildcard_template(
     rest_pattern = norm[slash_idx + 1:]
     pattern_re = re.compile(_wildcard_regex(rest_pattern))
 
+    # A pattern pin is resolved to the directories it matches first; the walk
+    # below then treats them like literal ones.  Their values are found per
+    # axis, so not every combination of them need be a directory.
+    expanded = any(isinstance(v, PinPattern) for vs in pinned.values() for v in vs)
+    if expanded:
+        _, found = _axes_from_local_template(dir_prefix, pinned=pinned)
+        pinned = {n: found[n] for n in pinned}
+
     axes: dict[str, list[str]] = {n: [] for n in names}
     seen: dict[str, set] = {n: set() for n in names}
     ext: str | None = None
@@ -666,6 +862,8 @@ def resolve_wildcard_template(
             base_dir = base_dir.replace(f"{{{n}}}", v)
         base = Path(base_dir)
         if not base.is_dir():
+            if expanded:
+                continue
             raise ValueError(f"{base_dir!r} is not a directory")
 
         files = [
@@ -735,32 +933,39 @@ def _axes_from_sftp_template(
         return listings[path]
 
     for combo in _pinned_combos(pinned_names, pinned):
-        for n, v in combo.items():
+        fixed = {n: v for n, v in combo.items() if isinstance(v, str)}
+        filters = {n: v for n, v in combo.items() if isinstance(v, PinPattern)}
+        for n, v in fixed.items():
             if v not in seen[n]:
                 seen[n].add(v)
                 axes[n].append(v)
 
-        if not free_names:
+        open_names = [n for n in names if n not in fixed]
+        if not open_names:
             continue
 
         sub = template
-        for n, v in combo.items():
+        for n, v in fixed.items():
             sub = sub.replace(f"{{{n}}}", v)
 
         prefix = sub[:sub.index('{')]
         last_slash = prefix.rfind('/')
         base_dir = prefix[:last_slash] if last_slash > 0 else '/'
-        regex = _template_regex(sub)
+        patterns = {n: p.regex.pattern for n, p in filters.items()}
+        regex = _template_regex(sub, patterns)
 
         # One regex per path segment below base_dir: a directory whose name
         # can't be part of a match is skipped instead of being read out, and
         # the walk stops at the depth the files sit at. A '{**name}' spans '/'
         # and so pins neither the names nor the depth below it — there the
-        # whole subtree has to be read (seg_res None).
+        # whole subtree has to be read (seg_res None).  So does a pattern pin
+        # that may span '/': a regex, or a glob with a '/' in it.  A glob
+        # within one segment prunes like the rest of it.
         segs = sub[len(base_dir):].lstrip('/').split('/')
+        spans = any(p.glob is None or '/' in p.glob for p in filters.values())
         seg_res = (
-            None if any('**' in s for s in segs)
-            else [re.compile(_template_regex(s)) for s in segs]
+            None if spans or any('**' in s for s in segs)
+            else [re.compile(_template_regex(s, patterns)) for s in segs]
         )
         leaf = len(segs) - 1
 
@@ -785,16 +990,12 @@ def _axes_from_sftp_template(
         for f in sorted(remote_files):
             m = re.fullmatch(regex, f)
             if m:
-                for i, n in enumerate(free_names):
-                    v = m.group(i + 1)
-                    if v not in seen[n]:
-                        seen[n].add(v)
-                        axes[n].append(v)
+                _record_match(m, open_names, axes, seen)
 
-    axes = {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
+    _settle_pattern_axes(pinned, axes)
     if any(not axes[n] for n in free_names):
         raise ValueError(f"No files on remote match template {template!r}")
-    return axes
+    return {k: (v if k in pinned else _numeric_sort(v)) for k, v in axes.items()}
 
 
 def axis_values_on_disk(

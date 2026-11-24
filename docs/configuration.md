@@ -22,7 +22,8 @@ PATH                        directory to scan or YAML config file
 -a, --auto                  skip the axis naming prompt
     --max-depth N           maximum subdirectory search depth
     --NAME VALUE [...]      pin a {placeholder}'s values (template/wildcard
-                            PATH only, must come after PATH); see below
+                            PATH only, must come after PATH); a value may
+                            be a glob or 're:REGEX' pattern; see below
     --full-path             show the full matched path of a {**name} axis
                             instead of pruning the shared leading part
     --list-axes             run axis discovery, print every axis with all
@@ -51,7 +52,7 @@ Only the listing goes to stdout; errors and the SSH password prompt go elsewhere
 
 `--subset-interactive` runs discovery as usual, then opens the value picker (one column per axis, every discovered value ticked) before a single image is read. Untick what you do not need and press `Load`; only the remaining combinations are loaded (or downloaded, for a remote PATH). The counter next to the buttons shows how many images that is, and how many ticking everything would load (`8 of 12 images`). `Cancel` quits.
 
-It is the point-and-click alternative to narrowing the hypercube with `--NAME VALUE` pins. Together with it, pins preselect instead of narrowing: discovery runs without them, the picker shows every value on disk, and only the pinned values of a pinned axis start ticked (its other values are offered unticked).
+It is the point-and-click alternative to narrowing the hypercube with `--NAME VALUE` pins. Together with it, pins preselect instead of narrowing: discovery runs without them, the picker shows every value on disk, and only the pinned values of a pinned axis start ticked (its other values are offered unticked). A [pattern](#patterns) pin ticks the values it matches.
 
 ```bash
 juxt "plots/{sensor}_{date}.png" --subset-interactive --sensor SMAP SMOS
@@ -174,6 +175,25 @@ This is useful for two things a plain glob can't do:
 
 Each `--NAME` must match a placeholder already in the template; repeat the flag once per placeholder to pin more than one. Values keep the order given on the command line rather than being sorted.
 
+#### Patterns
+
+A value can also be a pattern that keeps the values on disk it matches, instead of naming each one:
+
+```bash
+juxt "plots/{sensor}_{date}.png" --sensor 'S*'               # SMAP, SMOS, ...
+juxt "plots/{sensor}_{date}.png" --date 're:2024-03-1[5-7]'  # a regex
+juxt "plots/{sensor}_{date}.png" --sensor ASCAT 'S*'         # literals and patterns mix
+```
+
+- **Glob**: any value containing `*`, `?` or `[` is a shell-style glob. As in the shell, `*` and `?` stop at `/` (so `--root 'runs/*'` matches `runs/a` but not `runs/a/b`), and `[!...]` negates a class.
+- **Regex**: a value written `re:REGEX` is a Python regular expression. A plain value is never read as a regex, since `.` is common in values (`1.5`, `v2.0`). A leading flag such as `re:(?i)smos` works. Because discovery globs one path component at a time, a regex only matches within one component (except on a `{**name}` placeholder); to match a path like `runs/a`, use a glob.
+
+A pattern matches the whole value, case-sensitively. The matches of each pattern are sorted the way a discovered axis is, and the patterns and literal values keep their command-line order relative to each other. Only files whose value matches count, so the other axes are narrowed too: with `--sensor 'S*'`, a date that only exists for ASCAT is left out. A pattern that matches nothing is an error, since that is usually a typo.
+
+Quote patterns, or the shell expands them against the current directory first (zsh refuses to run the command at all when nothing matches). A filename that really contains `*`, `?` or `[` can be pinned as an escaped regex: `re:x\*y`. The command line copied by `:copy-cli-command` does this for you.
+
+With `--subset-interactive`, a pattern ticks the values it matches. On a remote PATH a glob within one path component narrows the SFTP walk just like a literal value would, whereas a regex (or a glob with a `/` in it) means the subtree below the fixed prefix is read in full.
+
 ### Wildcard matching
 
 A `*` in the path is matched recursively: unlike a shell glob, it reaches into nested subdirectories, so `plots/*.png` finds every PNG under `plots/`, however deeply nested. The matched files are then split into axes exactly the way auto-discover mode splits a directory scan, so any part of the path (or filename) that varies becomes an `axis_N`.
@@ -186,6 +206,7 @@ Combine a wildcard with `--NAME VALUE ...` to pin a `{placeholder}` before it an
 
 ```bash
 juxt "{root}/*.png" --root /data/run1 /data/run2
+juxt "{root}/*.png" --root '/data/run*'   # every run directory, as a pattern
 ```
 
 Every `{placeholder}` in the path must sit before the first `*` and be pinned; a wildcard replaces the need to name the remaining path components, so there is nothing left for a free `{placeholder}` to bind to.
