@@ -741,17 +741,19 @@ def _axes_from_local_template(
             base_dir = prefix[:last_slash] if last_slash >= 0 else '.'
             if not Path(base_dir).is_dir():
                 raise ValueError(f"{base_dir!r} is not a directory")
-            matches = sorted(str(f) for f in _iter_images(Path(base_dir)))
+            matches = [str(f) for f in _iter_images(Path(base_dir))]
         else:
             glob_sub = sub
             for n, p in filters.items():
                 if p.glob is not None:  # narrows the scan, e.g. to some directories
                     glob_sub = glob_sub.replace(f"{{{raw_token_of[n]}}}", p.glob)
             glob_pat = PLACEHOLDER_NAME_RE.sub('*', glob_sub)
-            matches = sorted(_glob_mod.glob(glob_pat))
+            matches = _glob_mod.glob(glob_pat)
 
-        for f in matches:
-            m = re.fullmatch(regex, f.replace('\\', '/'))
+        # Sorted with '/' as the separator, so values come out in the same
+        # order on Windows ('\\' sorts after the digits, '/' before them).
+        for f in sorted(f.replace('\\', '/') for f in matches):
+            m = re.fullmatch(regex, f)
             if m:
                 _record_match(m, open_names, axes, seen)
 
