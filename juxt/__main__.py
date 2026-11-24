@@ -292,7 +292,10 @@ class _HelpAction(argparse.Action):
 
 
 def _parse_args() -> tuple[argparse.Namespace, dict[str, list[str]]]:
-    p = argparse.ArgumentParser(prog="juxt", add_help=False)
+    # No abbreviated options: a --NAME pin that is a prefix of a juxt option
+    # would be taken for that option instead. `--s` for {s} is rejected as
+    # ambiguous (--separator, --save, ...), `--gri` for {gri} becomes --grid.
+    p = argparse.ArgumentParser(prog="juxt", add_help=False, allow_abbrev=False)
     p.add_argument("path", nargs="?", default=None, metavar="PATH")
     p.add_argument("-s", "--separator", metavar="SEP", nargs="+")
     p.add_argument("-a", "--auto", action="store_true")
