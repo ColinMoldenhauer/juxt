@@ -332,6 +332,7 @@ The dialogue opens at once with the current values and a spinner while the disk 
 - Several rows at once: select them (click, `Shift`+click for a range, `Ctrl`+click to add one, or drag over the row text), then press `Space` or double-click one of them. `Space` ticks them all, or unticks them all if they all were ticked; a double-click gives them all the opposite of the clicked row's state. Rows the filter hides are left alone.
 - Or paint: press on a check box and drag across rows; each row passed over takes the state that first box got. A double-click followed by a drag paints the same way.
 - A current value with no file on disk is marked `no files`.
+- The counter next to the buttons shows how many images the ticked values make, counting the axes not in the dialogue with their current values, and once every listing is in, how many ticking everything would make (`8 of 12 images`). It counts combinations, so one without a file shows up as `MISSING`.
 - Changes on several axes apply in one go: every combination involving an added value is loaded, and an added value that has no image among the combinations you end up with is refused, which catches a value that only exists next to one you dropped.
 - To pick the values before anything is loaded, start juxt with [`--subset-interactive`](configuration.md#picking-values-at-startup).
 

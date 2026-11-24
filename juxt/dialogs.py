@@ -735,6 +735,11 @@ class ValuesDialog(QDialog):
     still being searched: its column shows a spinner until :meth:`set_found`
     brings the listing in. After ``exec()`` returns :data:`Accepted`,
     :meth:`values` maps every axis to its ticked values, in list order.
+
+    A counter next to the buttons shows how many images the ticked values
+    make: their combinations, times *other_combinations* for the axes not
+    on offer (their current values multiplied out). Once every listing is
+    in, it also shows how many ticking everything would make.
     """
 
     def __init__(
@@ -744,10 +749,12 @@ class ValuesDialog(QDialog):
         *,
         title: str | None = None,
         apply_text: str = "Apply",
+        other_combinations: int = 1,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         found = found or {}
+        self._other_combinations = other_combinations
         names = list(axes)
         self.setWindowTitle(title or (f"Values of {names[0]}" if len(names) == 1
                                       else "Values"))
@@ -783,10 +790,19 @@ class ValuesDialog(QDialog):
         self.buttons.accepted.connect(self._accept)
         self.buttons.rejected.connect(self.reject)
 
+        self.count_label = QLabel()
+        self.count_label.setToolTip(
+            "Every combination of the ticked values. A combination without a "
+            "file is shown as MISSING.")
+        foot = QHBoxLayout()
+        foot.addWidget(self.count_label)
+        foot.addStretch(1)
+        foot.addWidget(self.buttons)
+
         root = QVBoxLayout(self)
         root.setSpacing(8)
         root.addWidget(self._scroll, 1)
-        root.addWidget(self.buttons)
+        root.addLayout(foot)
 
         self._size_to_lists()
         self._update_ok()
@@ -813,6 +829,18 @@ class ValuesDialog(QDialog):
     def values(self) -> dict[str, list[str]]:
         """Every axis's ticked values, in list order."""
         return {p.axis_name: p.values() for p in self.panels}
+
+    def image_count(self) -> int:
+        """How many images the ticked values make."""
+        return math.prod(len(p.values()) for p in self.panels) * self._other_combinations
+
+    def image_total(self) -> int | None:
+        """How many images ticking every value would make, or None while a
+        listing is still out."""
+        if self.loading:
+            return None
+        return (math.prod(p.value_list.count() for p in self.panels)
+                * self._other_combinations)
 
     # ── size ─────────────────────────────────────────────────────────────────
 
@@ -853,6 +881,12 @@ class ValuesDialog(QDialog):
     def _update_ok(self, *_):
         ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok.setEnabled(all(p.values() for p in self.panels))
+        self._update_count()
+
+    def _update_count(self):
+        n, total = self.image_count(), self.image_total()
+        text = f"{n:,}" if total is None or total == n else f"{n:,} of {total:,}"
+        self.count_label.setText(f"{text} {'image' if text == '1' else 'images'}")
 
     def _accept(self):
         if not all(p.values() for p in self.panels):
