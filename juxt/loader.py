@@ -241,6 +241,36 @@ def remote_cache_root() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "juxt" / "ssh"
 
 
+def remote_cache_dir(remote: "RemoteConfig") -> Path:
+    """The cache directory of *remote*, one per `user@host_port` under
+    `remote_cache_root`; not created here."""
+    name = f"{remote.user + '@' if remote.user else ''}{remote.host}_{remote.port}"
+    name = "".join(c if c.isalnum() or c in "@._-" else "_" for c in name)
+    return remote_cache_root() / name
+
+
+def cached_pattern(remote: "RemoteConfig", remote_pattern: str) -> str:
+    """*remote_pattern* (a remote directory, template or wildcard path) moved
+    to where its downloads sit in the cache, for browsing them offline.
+
+    The same mapping as the downloads themselves (`local_cache_path`), so
+    `{placeholders}` and wildcards carry over unchanged.
+    """
+    return local_cache_path(str(remote_cache_dir(remote)), remote_pattern).as_posix()
+
+
+def mark_cache_used(paths) -> None:
+    """Count a local read of cached downloads as a use, so a cache that is
+    only browsed offline (`juxt --cached`) is not pruned under the viewer:
+    access time = now, the modification time (the server's) is kept."""
+    now = time.time()
+    for path in paths:
+        try:
+            os.utime(path, (now, os.stat(path).st_mtime))
+        except OSError:
+            pass
+
+
 def remote_download_dir(remote: "RemoteConfig") -> str:
     """Where the files of a session on *remote* are downloaded to.
 
@@ -252,9 +282,7 @@ def remote_download_dir(remote: "RemoteConfig") -> str:
         tmpdir = tempfile.mkdtemp(prefix="juxt_ssh_")
         atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)
         return tmpdir
-    name = f"{remote.user + '@' if remote.user else ''}{remote.host}_{remote.port}"
-    name = "".join(c if c.isalnum() or c in "@._-" else "_" for c in name)
-    path = remote_cache_root() / name
+    path = remote_cache_dir(remote)
     path.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=prune_remote_cache, daemon=True,
                      name="juxt-cache-prune").start()

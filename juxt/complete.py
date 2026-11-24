@@ -516,13 +516,19 @@ def sftp_listdir(sftp):
 # `juxt-complete` backs the bash function in juxt/completion.bash.  It must stay
 # import-light — no Qt — so pressing Tab at a shell prompt costs milliseconds.
 
-# Mirrors the parser in juxt/__main__.py; kept in sync by a test.
+# `--pin NAME VALUE ...` pins a placeholder whatever its name, also one that
+# is a juxt option itself (`{name}`, `{grid}`, ...), where `--NAME` would be
+# that option.  Read by `_parse_axis_pins` in juxt/__main__.py, not argparse.
+PIN_OPTION = "--pin"
+
+# Mirrors the parser in juxt/__main__.py, plus PIN_OPTION; kept in sync by a test.
 CLI_OPTIONS = [
     "-a", "--auto",
     "-h", "--help",
     "-V", "--version",
     "-s", "--separator",
     "--axis-h", "--axis-v",
+    "--cached", "--cache-dir",
     "--full-path",
     "--grid", "--grid-layout", "--grid-values",
     "--info", "--no-info",
@@ -532,6 +538,7 @@ CLI_OPTIONS = [
     "--max-depth",
     "--name",
     "--no-sharex", "--no-sharey", "--no-watch",
+    PIN_OPTION,
     "--save",
     "--squeeze",
     "--status-bar", "--no-status-bar",
@@ -631,17 +638,39 @@ def _flag_groups(words: list[str]) -> list[tuple[str, list[str]]]:
     return groups
 
 
+def is_reserved_axis_name(name: str) -> bool:
+    """True when `--NAME` is a juxt option, so the placeholder *name* can only
+    be pinned as `--pin NAME VALUE ...`."""
+    return f"--{name}" in CLI_OPTIONS
+
+
+def pin_flag(name: str) -> list[str]:
+    """The words that start a pin of the placeholder *name* on the command
+    line: `--NAME`, or `--pin NAME` for a reserved name."""
+    return [PIN_OPTION, name] if is_reserved_axis_name(name) else [f"--{name}"]
+
+
 def _is_pin_flag(flag: str, names: list[str]) -> bool:
     """True when *flag* is `--NAME` for a placeholder NAME and not a juxt option."""
     return flag.startswith("--") and flag not in CLI_OPTIONS and flag[2:] in names
 
 
+def _pin_group(flag: str, vals: list[str], names: list[str]) -> tuple[str, list[str]] | None:
+    """`(NAME, values)` of a flag group that pins a placeholder, in either
+    form (`--NAME ...` or `--pin NAME ...`); None for any other group."""
+    if flag == PIN_OPTION:
+        return (vals[0], vals[1:]) if vals and vals[0] in names else None
+    return (flag[2:], vals) if _is_pin_flag(flag, names) else None
+
+
 def _pins_from(groups, names: list[str], skip: str | None = None) -> dict[str, list[str]]:
-    """The `--NAME VALUE ...` pins typed so far, minus the placeholder *skip*."""
-    return {
-        flag[2:]: vals for flag, vals in groups
-        if vals and flag[2:] != skip and _is_pin_flag(flag, names)
-    }
+    """The pins typed so far, minus the placeholder *skip*."""
+    pins = {}
+    for flag, vals in groups:
+        pin = _pin_group(flag, vals, names)
+        if pin and pin[1] and pin[0] != skip:
+            pins[pin[0]] = pin[1]
+    return pins
 
 
 @contextlib.contextmanager
@@ -729,16 +758,21 @@ def _flag_value_candidates(flag: str, vals: list[str], template: str | None,
     if flag in _AXIS_NAME_OPTIONS:
         return None if vals else [n for n in names if n.startswith(word)]
 
+    if flag == PIN_OPTION and not vals:
+        return [n for n in names if n.startswith(word)]
+
     from .detect import is_pin_pattern, parse_pin
 
-    pin = _is_pin_flag(flag, names)
+    pin_group = _pin_group(flag, vals, names)
+    pin = pin_group is not None
     if flag == "--grid-values":
         axis = _option_value(words, "--grid")
         if axis not in names:
             return None
         pool = discover_values(template, axis, _pins_from(groups, names))
     elif pin:
-        pool = discover_values(template, flag[2:], _pins_from(groups, names, skip=flag[2:]))
+        axis, vals = pin_group
+        pool = discover_values(template, axis, _pins_from(groups, names, skip=axis))
     else:
         return None
     if pin and is_pin_pattern(word):
@@ -807,10 +841,12 @@ def cli_complete(cur: str, prev: str = "", words: list[str] | None = None) -> li
         if prev in _OPAQUE_VALUE_OPTIONS:
             return []
         if prev not in _PATH_OPTIONS:
-            # The template's placeholders are offered as --NAME pins too.
-            used = {flag for flag, _ in groups}
+            # The template's placeholders are offered as --NAME pins too
+            # (a reserved name only through --pin, which is in CLI_OPTIONS).
+            used = {f"--{pin[0]}" for flag, vals in groups
+                    if (pin := _pin_group(flag, vals, names))}
             pins = [f"--{n}" for n in names
-                    if f"--{n}" not in CLI_OPTIONS and f"--{n}" not in used]
+                    if not is_reserved_axis_name(n) and f"--{n}" not in used]
             return [o for o in pins + CLI_OPTIONS if o.startswith(cur)]
 
     # An option placed before PATH is not in `groups`, but may be the previous word.

@@ -24,12 +24,18 @@ PATH                        directory to scan or YAML config file
     --NAME VALUE [...]      pin a {placeholder}'s values (template/wildcard
                             PATH only, must come after PATH); a value may
                             be a glob or 're:REGEX' pattern; see below
+    --pin NAME VALUE [...]  the same, for a NAME that is a juxt option too
     --full-path             show the full matched path of a {**name} axis
                             instead of pruning the shared leading part
     --list-axes             run axis discovery, print every axis with all
                             its values, and exit (no window); see below
     --subset-interactive    after discovery, tick the values to load in a
                             dialogue before any image is read; see below
+    --cached                open a remote PATH (or a YAML config with
+                            `remote`) from the download cache, offline;
+                            see remote docs
+    --cache-dir             print where a remote PATH is cached (without
+                            PATH: the cache root) and exit
 -h, --help                  show usage and exit
 ```
 
@@ -174,6 +180,16 @@ This is useful for two things a plain glob can't do:
 - **Values that don't line up with a `*` glob** — a pinned value may itself contain `/`, so unrelated directory trees (like the three `run*` roots above, which don't share a common naming pattern) can become one axis.
 
 Each `--NAME` must match a placeholder already in the template; repeat the flag once per placeholder to pin more than one. Values keep the order given on the command line rather than being sorted.
+
+#### Placeholders named like a juxt option
+
+A placeholder such as `{name}`, `{grid}` or `{save}` cannot be pinned as `--name A`: that is juxt's own `--name` option (the session name), and it keeps that meaning. Pin it with `--pin NAME VALUE ...` instead, which works for any placeholder and mixes freely with `--NAME` pins:
+
+```bash
+juxt "plots/{grid}/{sensor}.png" --pin grid g1 g2 --sensor SMOS
+```
+
+If such an option is on the command line while the placeholder is not pinned with `--pin`, juxt warns on stderr that the option did not pin it. `:copy-cli-command` writes `--pin NAME` for these placeholders, and shell completion offers the placeholder names after `--pin`.
 
 #### Patterns
 

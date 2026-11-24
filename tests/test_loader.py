@@ -5,6 +5,7 @@ import os
 import struct
 import zlib
 from itertools import product as iproduct
+from pathlib import Path
 
 import pytest
 
@@ -312,6 +313,27 @@ class TestRemoteCache:
             assert not remote_download_dir(r).startswith(os.environ["JUXT_CACHE_DIR"])
         finally:
             set_remote_cache_days(7)
+
+    def test_cached_pattern_is_where_the_downloads_go(self):
+        from juxt.config import RemoteConfig
+        from juxt.loader import cached_pattern, local_cache_path, remote_download_dir
+
+        r = RemoteConfig(host="box", user="me", port=2222)
+        pattern = cached_pattern(r, "/data/{sensor}/{**plot}_*.png")
+        root = Path(os.environ["JUXT_CACHE_DIR"]).as_posix()
+        assert pattern == f"{root}/me@box_2222/data/{{sensor}}/{{**plot}}_*.png"
+        download = local_cache_path(remote_download_dir(r), "/data/A/x/y_1.png")
+        assert download.as_posix() == f"{root}/me@box_2222/data/A/x/y_1.png"
+
+    def test_mark_cache_used_keeps_the_servers_mtime(self, tmp_path):
+        from juxt.loader import mark_cache_used
+
+        f = tmp_path / "a.png"
+        f.write_bytes(b"x")
+        os.utime(f, (1000, 2000))
+        mark_cache_used([str(f), str(tmp_path / "gone.png")])
+        st = os.stat(f)
+        assert st.st_mtime == 2000 and st.st_atime > 2000
 
     def test_prune_drops_files_unused_for_days(self, tmp_path):
         import time

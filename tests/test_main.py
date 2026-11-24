@@ -2,7 +2,10 @@
 placeholder-pinning flags (see juxt.detect._axes_from_local_template)."""
 from __future__ import annotations
 
+import os
 import sys
+from itertools import product
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
@@ -34,6 +37,39 @@ class TestParseAxisPins:
     def test_duplicate_flag_raises(self):
         with pytest.raises(SystemExit, match="Duplicate axis flag"):
             _parse_axis_pins(["--sensor", "A", "--sensor", "B"])
+
+    def test_pin_option_pins_any_name(self):
+        assert _parse_axis_pins(["--pin", "name", "A", "B", "--date", "X"]) == {
+            "name": ["A", "B"], "date": ["X"]}
+        assert _parse_axis_pins(["--pin", "sensor", "-1"]) == {"sensor": ["-1"]}
+
+    def test_pin_option_and_direct_pin_of_one_name_is_a_duplicate(self):
+        with pytest.raises(SystemExit, match="Duplicate axis flag: --sensor"):
+            _parse_axis_pins(["--pin", "sensor", "A", "--sensor", "B"])
+        with pytest.raises(SystemExit, match="Duplicate axis flag: --pin sensor"):
+            _parse_axis_pins(["--sensor", "A", "--pin", "sensor", "B"])
+
+    @pytest.mark.parametrize("argv", [["--pin"], ["--pin", "--sensor", "A"]])
+    def test_pin_option_needs_a_name(self, argv):
+        with pytest.raises(SystemExit, match="--pin needs a placeholder NAME"):
+            _parse_axis_pins(argv)
+
+    def test_pin_option_needs_values(self):
+        with pytest.raises(SystemExit, match="--name was given no values"):
+            _parse_axis_pins(["--pin", "name"])
+
+    def test_pin_option_leaves_the_juxt_option_alone(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["juxt", "p/{name}_{grid}.png", "--pin", "name", "A",
+                                         "--name", "Title", "--pin", "grid", "g1"])
+        args, pins = _parse_args()
+        assert args.name == "Title" and args.grid is None
+        assert pins == {"name": ["A"], "grid": ["g1"]}
+
+    def test_pin_option_is_in_the_help_text(self, capsys):
+        from juxt.__main__ import _print_help
+
+        _print_help()
+        assert "--pin NAME VALUE" in capsys.readouterr().out
 
     def test_value_with_no_preceding_flag_raises(self):
         with pytest.raises(SystemExit, match="Unrecognized argument"):
@@ -293,6 +329,155 @@ class TestListAxes:
         assert "No image files found" in r.stderr
 
 
+class TestReservedNameWarnings:
+    """A placeholder whose --NAME is a juxt option is warned about when that
+    option is given, since it then did not pin the placeholder."""
+
+    def _warn(self, path, argv, pins=None):
+        import argparse
+
+        from juxt.__main__ import _reserved_name_warnings
+        return _reserved_name_warnings(argparse.Namespace(path=path), pins or {}, argv)
+
+    def test_the_option_given_is_named(self):
+        (warning,) = self._warn("p/{name}_{d}.png", ["--name", "A"])
+        assert "--name is a juxt option, so it did not pin {name}" in warning
+        assert "--pin name VALUE" in warning
+        assert self._warn("me@box:/p/{grid}.png", ["--grid=x"])
+
+    def test_no_warning_without_the_option_or_with_a_pin(self):
+        assert self._warn("p/{name}_{d}.png", []) == []
+        assert self._warn("p/{name}_{d}.png", ["--d", "1"]) == []
+        assert self._warn("p/{name}_{d}.png", ["--pin", "name", "A", "--name", "T"],
+                          pins={"name": ["A"]}) == []
+        assert self._warn("p/{sensor}.png", ["--name", "T"]) == []
+        assert self._warn(None, ["--name", "T"]) == []
+
+
+class TestCached:
+    """--cached opens a remote PATH from the download cache, --cache-dir
+    prints where that is."""
+
+    _run = TestListAxes._run
+
+    @pytest.fixture
+    def cache(self):
+        """A cache holding me@box:/data/{sensor}_{date}.png, 2x2 files."""
+        from conftest import make_png
+
+        root = Path(os.environ["JUXT_CACHE_DIR"])
+        data = root / "me@box_22" / "data"
+        data.mkdir(parents=True)
+        for sensor, date in product(["A", "B"], ["d1", "d2"]):
+            (data / f"{sensor}_{date}.png").write_bytes(make_png())
+        return root
+
+    def test_flags_are_parsed_and_default_off(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["juxt", "me@box:/data/"])
+        args = _parse_args()[0]
+        assert args.cached is False and args.cache_dir is False
+        monkeypatch.setattr("sys.argv", ["juxt", "me@box:/data/{s}.png", "--cached",
+                                         "--cache-dir", "--s", "A"])
+        args, pins = _parse_args()
+        assert args.cached is True and args.cache_dir is True
+        assert pins == {"s": ["A"]}
+
+    def test_are_in_the_help_text(self, capsys):
+        from juxt.__main__ import _print_help
+
+        _print_help()
+        out = capsys.readouterr().out
+        assert "--cached" in out and "--cache-dir" in out
+
+    def test_template_is_read_from_the_cache(self, cache):
+        r = self._run("me@box:/data/{sensor}_{date}.png", "--cached", "--list-axes",
+                      "--sensor", "B")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.splitlines()[0] == (
+            f"template: {cache.as_posix()}/me@box_22/data/{{sensor}}_{{date}}.png")
+        assert "sensor (1):  B" in r.stdout
+        assert "date (2):    d1  d2" in r.stdout
+
+    def test_directory_is_scanned_in_the_cache(self, cache):
+        r = self._run("me@box:/data/", "--cached", "--list-axes")
+        assert r.returncode == 0, r.stderr
+        assert "axis_0 (2):  A  B" in r.stdout
+
+    def test_yaml_remote_config_is_read_from_the_cache(self, cache, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("remote: me@box\ntemplate: '/data/{sensor}_{date}.png'\n"
+                       "axes:\n  sensor: [A]\n  date: [d1, d2]\n")
+        r = self._run(str(cfg), "--cached", "--list-axes")
+        assert r.returncode == 0, r.stderr
+        assert f"{cache.as_posix()}/me@box_22/data/" in r.stdout
+        assert "sensor (1):  A" in r.stdout
+
+    def test_nothing_cached_is_an_error(self, cache):
+        r = self._run("me@other:/data/{sensor}.png", "--cached", "--list-axes")
+        assert r.returncode == 1
+        assert "nothing of me@other:/data/{sensor}.png is cached" in r.stderr
+
+    def test_local_path_is_an_error(self, flat_plot_dir):
+        r = self._run(str(flat_plot_dir), "--cached", "--list-axes")
+        assert r.returncode == 1
+        assert "--cached needs a remote PATH" in r.stderr
+
+    def test_local_yaml_config_is_an_error(self, flat_plot_dir, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"template: '{flat_plot_dir.as_posix()}/{{s}}_{{d}}.png'\n"
+                       "axes:\n  s: [A]\n  d: [d1]\n")
+        r = self._run(str(cfg), "--cached", "--list-axes")
+        assert r.returncode == 1
+        assert "--cached needs a remote PATH" in r.stderr
+
+    def test_cache_dir_prints_the_root_or_the_paths_copy(self):
+        root = Path(os.environ["JUXT_CACHE_DIR"])
+        r = self._run("--cache-dir")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == str(root)
+        r = self._run("me@box:/data/{sensor}.png", "--cache-dir")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == f"{root.as_posix()}/me@box_22/data/{{sensor}}.png"
+
+    def _hint(self, path, cached=False):
+        import argparse
+
+        from juxt.__main__ import _cache_hint
+        return _cache_hint(argparse.Namespace(path=path, cached=cached))
+
+    def test_hint_names_the_cached_copy(self, cache):
+        for path in ("me@box:/data/{sensor}_{date}.png", "me@box:/data/",
+                     "me@box:/{**plot}.png", "me@box:/data/*_d1.png"):
+            hint = self._hint(path)
+            assert hint and hint.startswith(f"Cached run of {path} detected in "), path
+            assert "--cached" in hint
+
+    def test_hint_for_a_yaml_remote_config(self, cache, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("remote: me@box\ntemplate: '/data/{sensor}_{date}.png'\n"
+                       "axes:\n  sensor: [A]\n  date: [d1]\n")
+        assert self._hint(str(cfg))
+
+    def test_no_hint_without_a_match(self, cache, flat_plot_dir):
+        assert self._hint("me@box:/data/{sensor}_{date}.png", cached=True) is None
+        assert self._hint("me@box:/data/{sensor}.jpg") is None
+        assert self._hint("me@other:/data/") is None
+        assert self._hint(str(flat_plot_dir)) is None
+        assert self._hint(None) is None
+
+    def test_no_hint_for_a_download_in_progress(self):
+        part = Path(os.environ["JUXT_CACHE_DIR"]) / "me@box_22" / "data" / ".a.png.1.2.part"
+        part.parent.mkdir(parents=True)
+        part.write_bytes(b"x")
+        assert self._hint("me@box:/data/") is None
+        assert self._hint("me@box:/data/{name}") is None
+
+    def test_cache_dir_of_a_local_path_is_an_error(self, flat_plot_dir):
+        r = self._run(str(flat_plot_dir), "--cache-dir")
+        assert r.returncode == 1
+        assert r.stdout == ""
+
+
 class TestSubsetInteractive:
     """--subset-interactive: tick the values to load before any image is read."""
 
@@ -367,7 +552,7 @@ class TestPinsPreselectInThePicker:
     def _args(self, path):
         import argparse
         return argparse.Namespace(path=path, auto=True, separator=None,
-                                  max_depth=None, full_path=False)
+                                  max_depth=None, full_path=False, cached=False)
 
     def test_pins_become_the_preselection(self, tree):
         from juxt.__main__ import _resolve_for_picker
@@ -581,7 +766,7 @@ class TestDiscoveryBusyBox:
 class TestMayPrompt:
     def _args(self, path, auto=False):
         import argparse
-        return argparse.Namespace(path=path, auto=auto)
+        return argparse.Namespace(path=path, auto=auto, cached=False)
 
     def test_plain_directory_may_prompt(self, tmp_path):
         from juxt.__main__ import _may_prompt

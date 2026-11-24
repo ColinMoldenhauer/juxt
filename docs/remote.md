@@ -117,6 +117,34 @@ loading:
 
 With `remote_cache_days: 0`, each session downloads into a temporary directory that is deleted when juxt exits, as before the cache existed. Deleting the cache directory by hand is always safe.
 
+### Browsing the cache offline
+
+The cache copies the remote paths below the `user@host_port` directory, so `me@box:/data/plots/A_1.png` is kept as `~/.cache/juxt/ssh/me@box_22/data/plots/A_1.png`. Add `--cached` to the command you used remotely and juxt opens that copy instead, without connecting:
+
+```bash
+juxt "me@box:/data/plots/{sensor}_{date}.png"            # downloads
+juxt "me@box:/data/plots/{sensor}_{date}.png" --cached   # the same plots, offline
+```
+
+It works for every remote `PATH` form (directory, template, wildcard) and for a YAML config with `remote`, together with `--NAME VALUE` pins and the other options. A remote launch whose files are already cached says so on stderr:
+
+```
+Cached run of me@box:/data/plots/{sensor}_{date}.png detected in /home/me/.cache/juxt/ssh/me@box_22/data/plots. Use --cached to open it without connecting.
+```
+
+`--cache-dir` prints where a remote `PATH` is cached and exits, or, without a `PATH`, the cache root:
+
+```bash
+$ juxt "me@box:/data/plots/{sensor}_{date}.png" --cache-dir
+/home/me/.cache/juxt/ssh/me@box_22/data/plots/{sensor}_{date}.png
+```
+
+Some things to keep in mind:
+
+- Only what was downloaded is there. A session narrowed with pins or `--subset-interactive` cached only those files, and the files of other sessions under the same directory are there as well, so a directory scan may find more or fewer values than the remote run did.
+- The cache is per `user@host_port` as written: `box:/data` and `me@box:/data` are cached apart, even when `me` is your local user name.
+- A `--cached` session counts as a use, so the files it opens are not pruned for another `remote_cache_days`. To keep a set for good, copy it out of the cache.
+
 `remote` cannot be combined with `discover` in a YAML config — use a template instead, or pass the remote directory path directly on the command line.
 
 ---
