@@ -38,6 +38,39 @@ class TestParseAxisPins:
         with pytest.raises(SystemExit, match="Duplicate axis flag"):
             _parse_axis_pins(["--sensor", "A", "--sensor", "B"])
 
+    def test_pin_option_pins_any_name(self):
+        assert _parse_axis_pins(["--pin", "name", "A", "B", "--date", "X"]) == {
+            "name": ["A", "B"], "date": ["X"]}
+        assert _parse_axis_pins(["--pin", "sensor", "-1"]) == {"sensor": ["-1"]}
+
+    def test_pin_option_and_direct_pin_of_one_name_is_a_duplicate(self):
+        with pytest.raises(SystemExit, match="Duplicate axis flag: --sensor"):
+            _parse_axis_pins(["--pin", "sensor", "A", "--sensor", "B"])
+        with pytest.raises(SystemExit, match="Duplicate axis flag: --pin sensor"):
+            _parse_axis_pins(["--sensor", "A", "--pin", "sensor", "B"])
+
+    @pytest.mark.parametrize("argv", [["--pin"], ["--pin", "--sensor", "A"]])
+    def test_pin_option_needs_a_name(self, argv):
+        with pytest.raises(SystemExit, match="--pin needs a placeholder NAME"):
+            _parse_axis_pins(argv)
+
+    def test_pin_option_needs_values(self):
+        with pytest.raises(SystemExit, match="--name was given no values"):
+            _parse_axis_pins(["--pin", "name"])
+
+    def test_pin_option_leaves_the_juxt_option_alone(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["juxt", "p/{name}_{grid}.png", "--pin", "name", "A",
+                                         "--name", "Title", "--pin", "grid", "g1"])
+        args, pins = _parse_args()
+        assert args.name == "Title" and args.grid is None
+        assert pins == {"name": ["A"], "grid": ["g1"]}
+
+    def test_pin_option_is_in_the_help_text(self, capsys):
+        from juxt.__main__ import _print_help
+
+        _print_help()
+        assert "--pin NAME VALUE" in capsys.readouterr().out
+
     def test_value_with_no_preceding_flag_raises(self):
         with pytest.raises(SystemExit, match="Unrecognized argument"):
             _parse_axis_pins(["A"])
@@ -294,6 +327,31 @@ class TestListAxes:
         r = self._run(str(tmp_path), "--list-axes")
         assert r.returncode == 1
         assert "No image files found" in r.stderr
+
+
+class TestReservedNameWarnings:
+    """A placeholder whose --NAME is a juxt option is warned about when that
+    option is given, since it then did not pin the placeholder."""
+
+    def _warn(self, path, argv, pins=None):
+        import argparse
+
+        from juxt.__main__ import _reserved_name_warnings
+        return _reserved_name_warnings(argparse.Namespace(path=path), pins or {}, argv)
+
+    def test_the_option_given_is_named(self):
+        (warning,) = self._warn("p/{name}_{d}.png", ["--name", "A"])
+        assert "--name is a juxt option, so it did not pin {name}" in warning
+        assert "--pin name VALUE" in warning
+        assert self._warn("me@box:/p/{grid}.png", ["--grid=x"])
+
+    def test_no_warning_without_the_option_or_with_a_pin(self):
+        assert self._warn("p/{name}_{d}.png", []) == []
+        assert self._warn("p/{name}_{d}.png", ["--d", "1"]) == []
+        assert self._warn("p/{name}_{d}.png", ["--pin", "name", "A", "--name", "T"],
+                          pins={"name": ["A"]}) == []
+        assert self._warn("p/{sensor}.png", ["--name", "T"]) == []
+        assert self._warn(None, ["--name", "T"]) == []
 
 
 class TestCached:

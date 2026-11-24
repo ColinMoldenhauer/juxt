@@ -13,7 +13,15 @@ from itertools import product
 from pathlib import Path
 
 from . import __version__
-from .complete import SCRIPT_FLAGS, WORDS_FLAG, expand_home, normalize_template
+from .complete import (
+    PIN_OPTION,
+    SCRIPT_FLAGS,
+    WORDS_FLAG,
+    expand_home,
+    is_reserved_axis_name,
+    normalize_template,
+    placeholder_names,
+)
 from .complete import main as _complete_main
 
 # Shell completion runs on every Tab press, so answer it here — before Qt is
@@ -222,6 +230,9 @@ def _print_help() -> None:
                               before a '*' wildcard. A value with * ? [ is
                               a glob, 're:REGEX' a regex, keeping the values
                               on disk that match (quote it)
+      --pin NAME VALUE [...]  the same, for any NAME: also one that is a
+                              juxt option ({name}, {grid}, ...), where
+                              --NAME is that option
       --full-path             show a {**name} axis as the full path matched
                               instead of pruning the part shared by every
                               match (see {root}/{**plot}.png above)
@@ -273,13 +284,26 @@ def _parse_axis_pins(unknown: list[str]) -> dict[str, list[str]]:
 
     Axis names are taken verbatim, unlike a generic flag-to-kwarg grabber,
     since a {placeholder} name may itself contain hyphens (e.g. {yyyy-mm-dd}).
+    `--pin NAME VALUE ...` is the same as `--NAME VALUE ...`, for a NAME
+    whose `--NAME` is a juxt option (argparse takes those first).
     Must appear after PATH on the command line — argparse would otherwise
     swallow a pinned value as PATH before it ever sees the real one.
     """
     pins: dict[str, list[str]] = {}
     current: str | None = None
+    want_name = False
     for arg in unknown:
-        if arg.startswith("--"):
+        if want_name:
+            if arg.startswith("--"):
+                raise SystemExit(f"{PIN_OPTION} needs a placeholder NAME, then its values")
+            want_name = False
+            current = arg
+            if current in pins:
+                raise SystemExit(f"Duplicate axis flag: {PIN_OPTION} {current}")
+            pins[current] = []
+        elif arg == PIN_OPTION:
+            want_name = True
+        elif arg.startswith("--"):
             current = arg[2:]
             if not current:
                 raise SystemExit(f"Unexpected argument {arg!r}")
@@ -293,6 +317,8 @@ def _parse_axis_pins(unknown: list[str]) -> dict[str, list[str]]:
                     f"values, use '--NAME VALUE ...' after PATH."
                 )
             pins[current].append(arg)
+    if want_name:
+        raise SystemExit(f"{PIN_OPTION} needs a placeholder NAME, then its values")
     for name, values in pins.items():
         if not values:
             raise SystemExit(f"--{name} was given no values to pin.")
@@ -405,6 +431,23 @@ def _has_cached_files(local: str) -> bool:
     pattern = re.sub(r"\{[^}]*\}", "*", pattern)
     return any(not os.path.isdir(fixed / m) and not Path(m).name.startswith(".")
                for m in glob.iglob(pattern, root_dir=fixed, recursive=True))
+
+
+def _reserved_name_warnings(args: argparse.Namespace, pins: dict,
+                            argv: list[str]) -> list[str]:
+    """One warning per placeholder of PATH whose `--NAME`, a juxt option,
+    is on the command line *argv*: it was taken as that option, not as a
+    pin. A placeholder pinned with `--pin NAME` is fine."""
+    if not args.path:
+        return []
+    out = []
+    for name in placeholder_names(args.path):
+        flag = f"--{name}"
+        if (is_reserved_axis_name(name) and name not in pins
+                and any(a == flag or a.startswith(flag + "=") for a in argv)):
+            out.append(f"Warning: {flag} is a juxt option, so it did not pin {{{name}}}; "
+                       f"pin that placeholder with {PIN_OPTION} {name} VALUE ...")
+    return out
 
 
 def _cache_hint(args: argparse.Namespace) -> str | None:
@@ -820,6 +863,8 @@ def main():
 
     if args.cache_dir:
         sys.exit(_print_cache_dir(args))
+    for warning in _reserved_name_warnings(args, pins, sys.argv[1:]):
+        print(warning, file=sys.stderr)
     hint = _cache_hint(args)
     if hint:
         print(hint, file=sys.stderr)

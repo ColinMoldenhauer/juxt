@@ -3153,6 +3153,14 @@ class TestCopyCliCommand:
         lookalikes = values + ["run1", "ab", "b"]
         assert order_pinned(pins[image_view.axis_names[0]], lookalikes) == values
 
+    def test_reserved_axis_names_are_pinned_with_pin(self, image_view, monkeypatch):
+        image_view.axis_names[0] = "grid"
+        cmd = image_view.cli_command()
+        assert " --pin grid " in cmd
+        args, pins = self._reparse(monkeypatch, cmd)
+        assert args.grid is None
+        assert pins == dict(zip(image_view.axis_names, image_view.axis_values))
+
     def test_carries_locked_axes_and_grid(self, image_view, monkeypatch):
         name = image_view.axis_names[0]
         image_view._cmd_execute(f"axis-h {image_view.axis_names[1]}")

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from juxt.complete import CLI_OPTIONS, bash_script, cli_complete, main
+from juxt.complete import CLI_OPTIONS, PIN_OPTION, bash_script, cli_complete, main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPLETION_BASH = REPO_ROOT / "juxt" / "completion.bash"
@@ -80,7 +80,7 @@ class TestCliComplete:
             for arg in node.args
             if isinstance(arg, ast.Constant) and str(arg.value).startswith("-")
         }
-        assert declared == set(CLI_OPTIONS)
+        assert declared | {PIN_OPTION} == set(CLI_OPTIONS)
 
 
 class TestHelperCommand:
@@ -438,6 +438,28 @@ class TestOptionValueCompletion:
     def test_a_placeholder_named_like_an_option_stays_that_option(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         assert cli_complete("--na", words=["plots/{name}.png"]) == ["--name"]
+
+    def test_pin_offers_the_placeholder_names(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        words = ["plots/{name}_{date}.png", "--pin"]
+        assert cli_complete("", "--pin", words) == ["name", "date"]
+        assert cli_complete("n", "--pin", words) == ["name"]
+
+    def test_pin_values_are_discovered_for_a_reserved_name(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "plots").mkdir()
+        for f in ("A_1", "A_2", "B_1"):
+            (tmp_path / "plots" / f"{f}.png").write_bytes(b"")
+        t = "plots/{name}_{date}.png"
+        assert cli_complete("", "name", [t, "--pin", "name"]) == ["A", "B"]
+        assert cli_complete("", "A", [t, "--pin", "name", "A"]) == ["B"]
+        # A --pin narrows the other placeholders like a --NAME pin.
+        assert cli_complete("", "--date", [t, "--pin", "name", "B", "--date"]) == ["1"]
+
+    def test_a_pin_through_pin_is_not_offered_again(self, uneven_dir, monkeypatch):
+        monkeypatch.chdir(uneven_dir)
+        found = cli_complete("--", words=[UNEVEN, "--pin", "sensor", "A"])
+        assert "--sensor" not in found and "--model" in found and PIN_OPTION in found
 
     def test_pin_values_are_discovered(self, uneven_dir, monkeypatch):
         monkeypatch.chdir(uneven_dir)
